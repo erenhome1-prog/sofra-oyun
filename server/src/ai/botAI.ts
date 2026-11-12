@@ -56,11 +56,13 @@ export interface RoomPlayerBrief {
 }
 
 const FAKE_ALIBI_ROOMS = [
-  "Toplantı & Konsey Salonu",
-  "Etkinlik & Bulmaca Salonu",
+  "Konsey & Harita Salonu",
+  "Rün & Bulmaca Salonu",
   "Saat Kulesi",
-  "Kargalı Avlu",
-  "Kütüphane"
+  "Kargalı Avlu & Dilek Kuyusu",
+  "Şato Kütüphanesi & Arşiv",
+  "Simya & İksir Mahzeni",
+  "Şövalye Cephaneliği"
 ];
 
 export function getPersonalityForSeat(seat: number): BotPersonality {
@@ -1028,11 +1030,11 @@ export function generateRoundQuests(params: {
   const q3: PersonalQuest = {
     id: "q_detective",
     kind: "DETECTIVE",
-    title: "🔍 Yakınlık İncele & Kürsü Çöz",
-    description: "🔍 İncele ile bir oyuncunun Arkadaşlık Barına bak veya Etkinlik Salonu'nda bir bulmaca kürsüsü çöz!",
+    title: "🏰 Orta Çağ Odalarını Keşfet & İncele",
+    description: "Simya, Cephanelik, Kütüphane, Zindan veya Rün Kürsüsü etkileşimini kullan ya da 🔍 İncele yap!",
     progress: 0,
     goal: 1,
-    rewardGold: 20,
+    rewardGold: 25,
     done: false
   };
 

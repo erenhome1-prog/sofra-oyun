@@ -3,6 +3,8 @@ import {
   CHARACTERS,
   COUNCIL_BOARD_POS,
   DOORS,
+  MEDIEVAL_STATIONS,
+  MedievalStationDef,
   PUZZLE_ALTARS,
   SOFRA_CONFIG,
   detectRoomZone,
@@ -53,17 +55,30 @@ interface PMThread {
   messages: Array<{ fromMe: boolean; senderNick: string; text: string }>;
 }
 
-const DEFAULT_UNLOCKED = ["none", "fedora", "hood", "bun", "glasses", "beard"];
+const DEFAULT_UNLOCKED = [
+  "none",
+  "knight",
+  "wizard",
+  "noble",
+  "fedora",
+  "hood",
+  "bun",
+  "ironmask",
+  "glasses",
+  "beard"
+];
 
 const COAT_PALETTE = [
-  "#5c1a24", // Şato Bordosu
+  "#5c1a24", // Tapınak Bordosu
+  "#2f3e4e", // Şövalye Çeliği
+  "#1b4332", // Orman Okçusu Yeşili
+  "#3b1d54", // Kraliyet Moru
+  "#5c3a1e", // Simyacı Kehribarı
+  "#18181b", // Kuzgun Zırhı
+  "#7f1d1d", // Ejderha Kanı
+  "#0f4c5c", // Gece Safiri
   "#1e293b", // Gece Laciverti
-  "#1b4332", // Zümrüt Yeşili
-  "#3b1d54", // Asil Mor
-  "#4a2c18", // Koyu Kehribar
-  "#18181b", // Kuzgun Siyahı
-  "#7f1d1d", // Kan Kırmızısı
-  "#0f4c5c"  // Okyanus Derini
+  "#6b4423"  // Bakır Deri Zırh
 ];
 
 function createGuestToken(): string {
@@ -244,6 +259,8 @@ class SofraGameApp {
       }
       const parsed = { ...fallback, ...JSON.parse(raw) };
       if (!parsed.playerToken) parsed.playerToken = createGuestToken();
+      const mergedUnlocked = new Set<string>([...DEFAULT_UNLOCKED, ...(parsed.unlockedItems || [])]);
+      parsed.unlockedItems = Array.from(mergedUnlocked);
       return parsed;
     } catch {
       return fallback;
@@ -1568,6 +1585,11 @@ class SofraGameApp {
     }
     if (nearestId) {
       this.room.send("interact_door", { doorId: nearestId });
+      return;
+    }
+    // Kapı yakınında değilsek [E] tuşu veya Kapı/Etkileşim butonu Orta Çağ Odası İstasyonu / Kürsü / Konsey Tahtasını açar!
+    if ((this.room.state as any)?.phase === "DAY") {
+      this.handleContextWheelClick(true);
     }
   }
 
@@ -1866,6 +1888,13 @@ class SofraGameApp {
       .join("");
   }
 
+  private getActiveMedievalStation(): MedievalStationDef | undefined {
+    const curZoneId = detectRoomZone(this.localX, this.localZ).id;
+    return MEDIEVAL_STATIONS.find(
+      (s) => Math.hypot(this.localX - s.x, this.localZ - s.z) <= 5.2 || s.roomId === curZoneId
+    );
+  }
+
   private renderDayExtraActions(state: any): void {
     const box = document.getElementById("day-extra-actions");
     if (!box || !this.room) return;
@@ -1873,12 +1902,20 @@ class SofraGameApp {
     const isHain = this.myRole?.role === "HAIN";
     const isGhost = !me?.alive || Boolean(me?.ghost);
     const canAskKahya = !isGhost && (state.pot || 0) >= 50;
+    const activeStation = !isGhost ? this.getActiveMedievalStation() : undefined;
 
-    const key = `${state.round}|${isHain}|${isGhost}|${canAskKahya}|${state.pot || 0}`;
+    const key = `${state.round}|${isHain}|${isGhost}|${canAskKahya}|${state.pot || 0}|${activeStation?.id || ""}`;
     if (key === this.lastDayExtraKey) return;
     this.lastDayExtraKey = key;
 
-    const btns: string[] = [];
+    const btns: string[] = [
+      `<button class="btn" id="btn-day-castle-map" style="flex:1; padding:4px 7px; font-size:0.7rem; border-color:var(--gold); color:var(--gold);">🗺️ Şato Odaları</button>`
+    ];
+    if (activeStation) {
+      btns.push(
+        `<button class="btn btn-emerald" id="btn-day-medieval-station" style="flex:1; padding:4px 7px; font-size:0.7rem;">${activeStation.icon} ${activeStation.shortLabel} Seçenekleri</button>`
+      );
+    }
     if (!isGhost && isHain) {
       btns.push(
         `<button class="btn btn-crimson" id="btn-day-sabotage" style="flex:1; padding:4px 7px; font-size:0.7rem;">🗡️ Sabotaj</button>`
@@ -1897,6 +1934,13 @@ class SofraGameApp {
 
     box.innerHTML = btns.join("");
 
+    document.getElementById("btn-day-castle-map")?.addEventListener("click", () => {
+      this.openCastleRoomsGuideModal();
+    });
+    document.getElementById("btn-day-medieval-station")?.addEventListener("click", () => {
+      const st = this.getActiveMedievalStation();
+      if (st) this.openMedievalStationModal(st);
+    });
     document.getElementById("btn-day-sabotage")?.addEventListener("click", () => {
       this.openSabotageModal();
     });
@@ -2031,7 +2075,7 @@ class SofraGameApp {
     });
   }
 
-  private handleContextWheelClick(): void {
+  private handleContextWheelClick(fromKeyOnly = false): void {
     const state: any = this.room?.state;
     if (this.room && state?.phase === "DAY") {
       const nearAltar = PUZZLE_ALTARS.find(
@@ -2051,8 +2095,124 @@ class SofraGameApp {
         this.openCouncilBoardModal();
         return;
       }
+
+      const activeStation = this.getActiveMedievalStation();
+      if (activeStation) {
+        this.openMedievalStationModal(activeStation);
+        return;
+      }
     }
-    this.scene.cycleBrightnessBoost();
+    if (!fromKeyOnly) {
+      this.scene.cycleBrightnessBoost();
+    }
+  }
+
+  private openMedievalStationModal(station: MedievalStationDef): void {
+    sfx.playSealBreak();
+    const modal = document.getElementById("puzzle-modal")!;
+    const card = document.getElementById("puzzle-card-content")!;
+
+    card.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--gold-soft); padding-bottom:6px;">
+        <strong style="color:var(--gold); font-size:0.96rem;">${station.title}</strong>
+        <button class="btn" id="btn-close-med-station" style="padding:3px 8px;">✕</button>
+      </div>
+      <p style="font-size:0.8rem; color:var(--parchment); line-height:1.45;">
+        ${station.description}
+      </p>
+      <div style="display:flex; flex-direction:column; gap:7px;">
+        ${station.options
+          .map(
+            (opt) => `
+          <button
+            class="btn"
+            data-med-opt="${opt.id}"
+            style="text-align:left; padding:9px 11px; display:flex; flex-direction:column; gap:3px; border-color:rgba(212,175,55,0.45);"
+          >
+            <div style="display:flex; justify-content:space-between; width:100%; align-items:center;">
+              <strong style="color:var(--gold); font-size:0.84rem;">${opt.label}</strong>
+              <span style="font-size:0.68rem; padding:2px 7px; border-radius:999px; background:rgba(212,175,55,0.18); color:#ffe69c;">${opt.badge}</span>
+            </div>
+            <span style="font-size:0.74rem; color:var(--text-muted); line-height:1.35;">${opt.desc}</span>
+          </button>
+        `
+          )
+          .join("")}
+      </div>
+      <div style="font-size:0.7rem; color:var(--text-muted); text-align:center;">
+        🕯️ Her gündüz turunda en fazla 2 farklı Orta Çağ odası etkileşimi kullanabilirsin.
+      </div>
+    `;
+    modal.classList.remove("hidden");
+
+    document.getElementById("btn-close-med-station")?.addEventListener("click", () => {
+      modal.classList.add("hidden");
+    });
+    card.querySelectorAll("[data-med-opt]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const optionId = (btn as HTMLElement).dataset.medOpt!;
+        modal.classList.add("hidden");
+        this.room?.send("use_medieval_station", { stationId: station.id, optionId });
+      });
+    });
+  }
+
+  private openCastleRoomsGuideModal(): void {
+    sfx.playSealBreak();
+    const modal = document.getElementById("puzzle-modal")!;
+    const card = document.getElementById("puzzle-card-content")!;
+    card.style.width = "min(640px, 94vw)";
+
+    const curZone = detectRoomZone(this.localX, this.localZ);
+    const wings = [
+      { id: "kutuphane", pos: "Kuzeybatı Kulesi", name: "📚 Şato Kütüphanesi & Arşiv", info: "Fısıltı şeceresi okuma, Kâhya defteri ve Başbüyücü başlığı." },
+      { id: "saat_kulesi", pos: "Kuzey Merkez", name: "🕰️ Saat Kulesi", info: "Dev Romen rakamlı saat çarkları ve kuzey gözetleme noktası." },
+      { id: "zindan", pos: "Kuzeydoğu Kulesi", name: "⛓️ Zindan & Sorgu Mahzeni", info: "Hayatta kalan Hain sayısını öğrenme, zincir çınlatma ve Demir Maske." },
+      { id: "toplanti_salonu", pos: "Batı Kuzey Kanadı", name: "📋 Konsey & Harita Salonu", info: "Şüphe Tahtasına tebeşirle isim yazma ve savaş haritası masası." },
+      { id: "yemek_salonu", pos: "Şato Merkezi", name: "🍷 Büyük Şölen Salonu", info: "12 kişilik Yuvarlak Sofra, Kâhya Tahtı (#11) ve Hükmün Şöminesi." },
+      { id: "etkinlik_salonu", pos: "Doğu Kuzey Kanadı", name: "🔮 Rün & Bulmaca Salonu", info: "3 kadim bulmaca kürsüsü, Altın Kolye ve Paslı Kâhya Anahtarı." },
+      { id: "bati_koridor", pos: "Batı Kanadı", name: "🗝️ Özel Yatak Odaları (#1 - #6)", info: "Kişisel anahtarlı Orta Çağ yatak odaları (Kapını kapatıp gizli konuş!)." },
+      { id: "antre", pos: "Güney Merkez", name: "🏰 Şato Antresi & Muhafız Holü", info: "Şövalye zırhları, avize ve ortak altın sandığı." },
+      { id: "dogu_koridor", pos: "Doğu Kanadı", name: "🗝️ Özel Yatak Odaları (#7 - #12)", info: "Kişisel odalar ve #11 Kâhya'nın Mühürlü Odası." },
+      { id: "simya_odasi", pos: "Güneybatı Mahzeni", name: "⚗️ Simya & İksir Mahzeni", info: "Doğruluk buharı, kurşunu altına çevirme (+15🪙) ve iksir rafları." },
+      { id: "avlu", pos: "Güney Surları", name: "⛲ Kargalı Avlu & Dilek Kuyusu", info: "Dilek kuyusuna altın atma (+25🪙 Hazine) ve nöbetçi kuzgun gözcüsü." },
+      { id: "cephanelik", pos: "Güneydoğu Burcu", name: "⚔️ Şövalye Cephaneliği", info: "Eksik hançer izi sürme, Şövalye Miğferi kuşanma ve kalkan bakımı." }
+    ];
+
+    card.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--gold-soft); padding-bottom:6px;">
+        <div>
+          <div style="font-size:0.68rem; color:var(--gold); letter-spacing:1.4px;">◆ ORTA ÇAĞ ŞATO KROKİSİ (21 ODA & SALON) ◆</div>
+          <strong style="color:var(--parchment); font-size:0.95rem;">📍 Şu Anki Konumun: ${curZone.name}</strong>
+        </div>
+        <button class="btn" id="btn-close-castle-map" style="padding:3px 9px;">✕</button>
+      </div>
+      <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:6px; max-height:58dvh; overflow-y:auto;">
+        ${wings
+          .map((w) => {
+            const isHere =
+              curZone.id === w.id ||
+              (w.id === "bati_koridor" && curZone.id.startsWith("yatak_") && Number(curZone.id.split("_")[1]) <= 6) ||
+              (w.id === "dogu_koridor" && curZone.id.startsWith("yatak_") && Number(curZone.id.split("_")[1]) >= 7);
+            return `
+              <div style="padding:7px 8px; border-radius:8px; background:${
+                isHere ? "rgba(180, 32, 45, 0.34)" : "rgba(24, 17, 14, 0.88)"
+              }; border:1px solid ${isHere ? "#ffd166" : "rgba(212,175,55,0.28)"}; font-size:0.72rem; line-height:1.35;">
+                <div style="font-size:0.64rem; color:var(--gold);">${w.pos} ${isHere ? "· 📍 BURADASIN" : ""}</div>
+                <strong style="color:var(--parchment); display:block; margin:2px 0;">${w.name}</strong>
+                <span style="color:var(--text-muted); font-size:0.67rem;">${w.info}</span>
+              </div>
+            `;
+          })
+          .join("")}
+      </div>
+    `;
+    modal.classList.remove("hidden");
+
+    document.getElementById("btn-close-castle-map")?.addEventListener("click", () => {
+      card.style.width = "";
+      modal.classList.add("hidden");
+    });
   }
 
   private openCouncilBoardModal(): void {
@@ -2183,7 +2343,7 @@ class SofraGameApp {
     const picksKey = Array.from(this.traitorNightPicks.entries())
       .map(([k, v]) => `${k}>${v.targetSeat}`)
       .join(",");
-    const hash = `${phase}|${state.round}|${this.myRole?.role || ""}|${state.fastMode}|${state.autoStart}|${state.pot}|${state.lastBurnedId}|${state.lastBurnedFlame}|${state.winReason}|${this.lastVoteReveal.length}|${this.mobileLobbyTab}|${this.vault.gold}|${this.vault.selectedSeat}|${this.vault.coatColor}|${this.vault.hat}|${this.vault.mask}|${this.selectedVoteTargetId}|${this.selectedNightTargetId}|${this.selectedFinalChoice}|${trialKey}|${picksKey}|${this.nightConclaveLogs.length}|${this.nightWatchNote}|${Boolean(this.gameOverSummary)}|${playerSummary}`;
+    const hash = `${phase}|${state.round}|${this.myRole?.role || ""}|${state.fastMode}|${state.paceMode || "normal"}|${state.targetPlayerCount || 10}|${state.atmosphereTheme || "torch"}|${state.autoStart}|${state.pot}|${state.lastBurnedId}|${state.lastBurnedFlame}|${state.winReason}|${this.lastVoteReveal.length}|${this.mobileLobbyTab}|${this.vault.gold}|${this.vault.selectedSeat}|${this.vault.coatColor}|${this.vault.hat}|${this.vault.mask}|${this.selectedVoteTargetId}|${this.selectedNightTargetId}|${this.selectedFinalChoice}|${trialKey}|${picksKey}|${this.nightConclaveLogs.length}|${this.nightWatchNote}|${Boolean(this.gameOverSummary)}|${playerSummary}`;
 
     if (hash === this.lastCenterRenderHash) return;
     this.lastCenterRenderHash = hash;
@@ -2222,28 +2382,78 @@ class SofraGameApp {
     const selectableChars = CHARACTERS.filter((c) => c.selectable);
     const playerCount = state.players?.size || 1;
     const isHost = state.hostId === this.room?.sessionId;
+    const targetCount = state.targetPlayerCount || 10;
+    const paceMode = state.paceMode || (state.fastMode ? "fast" : "normal");
+    const atmo = state.atmosphereTheme || "torch";
 
     panel.innerHTML = `
       <div class="panel-header">
         <div>
-          <h2>🕯️ ${state.hasPassword ? "🔒" : "🔓"} ${state.roomTitle || "SOFRA LOBİSİ"} (${playerCount}/12)</h2>
+          <h2>🏰 ${state.hasPassword ? "🔒" : "🔓"} ${state.roomTitle || "ORTA ÇAĞ SOFRA LOBİSİ"} (${playerCount}/${targetCount})</h2>
           <span style="font-size:0.75rem; color:var(--text-muted);">
-            Arkadaşlarını davet et — Oda Kodu: <strong style="color:var(--gold);">${state.code}</strong>
+            Oda Kodu: <strong style="color:var(--gold);">${state.code}</strong> · 21 Odalı Orta Çağ Kargalı Şatosu
           </span>
         </div>
         <div style="display:flex; gap:6px; flex-wrap:wrap;">
-          <button class="btn" id="btn-lobby-inspect-self">🔍 360° Karakterimi İncele</button>
+          <button class="btn" id="btn-lobby-inspect-self">🔍 360° Karakterim</button>
           <button class="btn" id="btn-share-room">🔗 Davet Kopyala</button>
           ${
             isHost
               ? `
             <button class="btn" id="btn-add-bots">🤖 Bot Doldur</button>
             <button class="btn" id="btn-auto-start">⏱️ Oto: ${state.autoStart ? "AÇIK" : "KAPALI"}</button>
-            <button class="btn" id="btn-fast-mode">⚡ Hızlı: ${state.fastMode ? "AÇIK" : "KAPALI"}</button>
             <button class="btn btn-crimson" id="btn-start-game">🔥 SOFRAYI BAŞLAT</button>
           `
               : `<span style="font-size:0.8rem; color:var(--gold);">Kurucunun başlatması bekleniyor...</span>`
           }
+        </div>
+      </div>
+
+      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; justify-content:space-between; background:rgba(28,18,12,0.75); border:1px solid var(--gold-soft); border-radius:10px; padding:7px 10px; margin-bottom:8px; font-size:0.75rem;">
+        <div style="display:flex; gap:5px; align-items:center; flex-wrap:wrap;">
+          <strong style="color:var(--gold);">👥 Sofra Kadrosu:</strong>
+          ${[
+            { n: 8, lbl: "8 Kişi (1 Hain)" },
+            { n: 10, lbl: "10 Kişi (2 Hain)" },
+            { n: 12, lbl: "12 Kişi (Tam Şölen)" }
+          ]
+            .map(
+              (o) =>
+                `<button class="btn ${targetCount === o.n ? "btn-crimson" : ""}" data-opt-count="${o.n}" ${
+                  !isHost ? "disabled" : ""
+                } style="padding:3px 8px; font-size:0.71rem;">${o.lbl}</button>`
+            )
+            .join("")}
+        </div>
+        <div style="display:flex; gap:5px; align-items:center; flex-wrap:wrap;">
+          <strong style="color:var(--gold);">⏳ Tempo:</strong>
+          ${[
+            { k: "normal", lbl: "⚖️ Klasik" },
+            { k: "long", lbl: "📜 Uzun Stratejik" },
+            { k: "fast", lbl: "⚡ Hızlı" }
+          ]
+            .map(
+              (p) =>
+                `<button class="btn ${paceMode === p.k ? "btn-crimson" : ""}" data-opt-pace="${p.k}" ${
+                  !isHost ? "disabled" : ""
+                } style="padding:3px 8px; font-size:0.71rem;">${p.lbl}</button>`
+            )
+            .join("")}
+        </div>
+        <div style="display:flex; gap:5px; align-items:center; flex-wrap:wrap;">
+          <strong style="color:var(--gold);">🕯️ Şato Havası:</strong>
+          ${[
+            { k: "torch", lbl: "🔥 Meşale & Taş" },
+            { k: "crimson", lbl: "🩸 Kızıl Ay" },
+            { k: "mist", lbl: "🌫️ Sisli Fırtına" }
+          ]
+            .map(
+              (a) =>
+                `<button class="btn ${atmo === a.k ? "btn-crimson" : ""}" data-opt-atmo="${a.k}" ${
+                  !isHost ? "disabled" : ""
+                } style="padding:3px 8px; font-size:0.71rem;">${a.lbl}</button>`
+            )
+            .join("")}
         </div>
       </div>
 
@@ -2252,7 +2462,7 @@ class SofraGameApp {
           🎭 Dizi Karakterleri
         </button>
         <button class="btn ${this.mobileLobbyTab === "custom" ? "btn-crimson" : ""}" id="tab-btn-custom">
-          🎨 Kendi Karakterin & Kasa
+          🛡️ Orta Çağ Zırh, Miğfer & Kasa
         </button>
       </div>
 
@@ -2274,13 +2484,13 @@ class SofraGameApp {
         </div>
 
         <div class="customizer-box studio-col-custom">
-          <h3 style="color:var(--gold); font-size:0.92rem;">🎨 Kendi Karakterini Yarat & Kasa</h3>
+          <h3 style="color:var(--gold); font-size:0.92rem;">🛡️ Orta Çağ Karakterini & Zırhını Seç</h3>
           <div class="field-row">
-            <label>Görünecek Oyuncu Adın:</label>
-            <input type="text" id="input-custom-name" maxlength="18" value="${this.vault.customName}" placeholder="Örn: Kont Cenker..." />
+            <label>Görünecek Ünvan / Adın:</label>
+            <input type="text" id="input-custom-name" maxlength="18" value="${this.vault.customName}" placeholder="Örn: Şövalye Cenker..." />
           </div>
           <div class="field-row">
-            <label>Pelerin / Ceket Rengi:</label>
+            <label>Orta Çağ Pelerin & Zırh Rengi:</label>
             <div class="color-swatches">
               ${COAT_PALETTE.map(
                 (col) => `
@@ -2290,37 +2500,63 @@ class SofraGameApp {
             </div>
           </div>
           <div class="field-row">
-            <label>Başlık / Taç (Kasa):</label>
+            <label>Orta Çağ Miğfer / Başlık / Taç:</label>
             <select id="select-hat">
               <option value="none" ${this.vault.hat === "none" ? "selected" : ""}>Başlık Yok</option>
-              <option value="fedora" ${this.vault.hat === "fedora" ? "selected" : ""}>Dedektif Şapkası (Ücretsiz)</option>
-              <option value="hood" ${this.vault.hat === "hood" ? "selected" : ""}>Gizemli Kapüşon (Ücretsiz)</option>
-              <option value="bun" ${this.vault.hat === "bun" ? "selected" : ""}>Aristokrat Topuz (Ücretsiz)</option>
+              <option value="knight" ${this.vault.hat === "knight" ? "selected" : ""}>🪖 Şövalye Miğferi (Ücretsiz)</option>
+              <option value="wizard" ${this.vault.hat === "wizard" ? "selected" : ""}>🧙 Simyacı / Alim Külahı (Ücretsiz)</option>
+              <option value="noble" ${this.vault.hat === "noble" ? "selected" : ""}>🎩 Asilzade Tüylü Beresi (Ücretsiz)</option>
+              <option value="hood" ${this.vault.hat === "hood" ? "selected" : ""}>🦅 Kuzgun Pelerin Kapüşonu (Ücretsiz)</option>
+              <option value="fedora" ${this.vault.hat === "fedora" ? "selected" : ""}>🕵️ Gece Gezgini Şapkası (Ücretsiz)</option>
+              <option value="bun" ${this.vault.hat === "bun" ? "selected" : ""}>💠 Hanedan Topuzu (Ücretsiz)</option>
               <option value="crown" ${this.vault.hat === "crown" ? "selected" : ""}>
-                ${this.vault.unlockedItems.includes("crown") ? "👑 Altın Şato Tacı (Açık)" : "🔒 Altın Şato Tacı (50 🪙)"}
+                ${this.vault.unlockedItems.includes("crown") ? "👑 Kraliyet Tacı (Açık)" : "🔒 Kraliyet Tacı (50 🪙)"}
               </option>
             </select>
           </div>
           <div class="field-row">
-            <label>Maske & Aksesuar (Kasa):</label>
+            <label>Orta Çağ Maske & Sakal:</label>
             <select id="select-mask">
               <option value="none" ${this.vault.mask === "none" ? "selected" : ""}>Maske Yok</option>
-              <option value="glasses" ${this.vault.mask === "glasses" ? "selected" : ""}>Altın Gözlük (Ücretsiz)</option>
-              <option value="beard" ${this.vault.mask === "beard" ? "selected" : ""}>Bilge Sakalı (Ücretsiz)</option>
+              <option value="ironmask" ${this.vault.mask === "ironmask" ? "selected" : ""}>⛓️ Demir Şövalye Maskesi (Ücretsiz)</option>
+              <option value="beard" ${this.vault.mask === "beard" ? "selected" : ""}>🧔 Uzun Orta Çağ Sakalı (Ücretsiz)</option>
+              <option value="glasses" ${this.vault.mask === "glasses" ? "selected" : ""}>⚜️ Simyacı Gözlüğü (Ücretsiz)</option>
+              <option value="royalvisor" ${this.vault.mask === "royalvisor" ? "selected" : ""}>
+                ${this.vault.unlockedItems.includes("royalvisor") ? "⚜️ Altın Hanedan Maskesi (Açık)" : "🔒 Altın Hanedan Maskesi (50 🪙)"}
+              </option>
               <option value="domino" ${this.vault.mask === "domino" ? "selected" : ""}>
-                ${this.vault.unlockedItems.includes("domino") ? "🎭 Balo Maskesi (Açık)" : "🔒 Balo Maskesi (50 🪙)"}
+                ${this.vault.unlockedItems.includes("domino") ? "🎭 Saray Balo Maskesi (Açık)" : "🔒 Saray Balo Maskesi (50 🪙)"}
               </option>
               <option value="plague" ${this.vault.mask === "plague" ? "selected" : ""}>
-                ${this.vault.unlockedItems.includes("plague") ? "🦅 Veba Maskesi (Açık)" : "🔒 Veba Maskesi (50 🪙)"}
+                ${this.vault.unlockedItems.includes("plague") ? "🦅 Orta Çağ Veba Maskesi (Açık)" : "🔒 Orta Çağ Veba Maskesi (50 🪙)"}
               </option>
             </select>
           </div>
           <button class="btn btn-crimson" id="btn-apply-custom" style="padding:10px;">
-            ✨ Görünümü Kaydet & Uygula
+            ✨ Zırh & Görünümü Kaydet
           </button>
         </div>
       </div>
     `;
+
+    panel.querySelectorAll("[data-opt-count]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const count = Number((btn as HTMLElement).dataset.optCount);
+        this.room?.send("set_lobby_options", { targetPlayerCount: count });
+      });
+    });
+    panel.querySelectorAll("[data-opt-pace]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const pm = (btn as HTMLElement).dataset.optPace!;
+        this.room?.send("set_lobby_options", { paceMode: pm });
+      });
+    });
+    panel.querySelectorAll("[data-opt-atmo]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const at = (btn as HTMLElement).dataset.optAtmo!;
+        this.room?.send("set_lobby_options", { atmosphereTheme: at });
+      });
+    });
 
     document.getElementById("btn-lobby-inspect-self")?.addEventListener("click", () => {
       if (this.room) {
@@ -2394,7 +2630,12 @@ class SofraGameApp {
       const chosenHat = hatSelect.value;
       const chosenMask = maskSelect.value;
       if (chosenHat === "crown" && !tryUnlockCosmetic("crown")) return;
-      if ((chosenMask === "domino" || chosenMask === "plague") && !tryUnlockCosmetic(chosenMask)) return;
+      if (
+        (chosenMask === "domino" || chosenMask === "plague" || chosenMask === "royalvisor") &&
+        !tryUnlockCosmetic(chosenMask)
+      ) {
+        return;
+      }
       this.vault.hat = chosenHat;
       this.vault.mask = chosenMask;
       this.saveVault();
@@ -2403,7 +2644,7 @@ class SofraGameApp {
     });
 
     document.getElementById("btn-add-bots")?.addEventListener("click", () => {
-      this.room?.send("add_bots", { count: 9 });
+      this.room?.send("add_bots", { count: 11 });
     });
     document.getElementById("btn-auto-start")?.addEventListener("click", () => {
       this.room?.send("toggle_auto_start");
@@ -3604,12 +3845,15 @@ class SofraGameApp {
       );
       document.getElementById("btn-wheel-door")?.classList.toggle("ready-glow", nearDoor && isDay);
 
-      // Bağlamsal Sağ Üst Çark Uydusu: Kürsü / Konsey Tahtası yakınına gelince parlar!
+      this.scene.setAtmosphereTheme(state.atmosphereTheme || "torch");
+
+      // Bağlamsal Sağ Üst Çark Uydusu: Kürsü / Konsey Tahtası / Orta Çağ İstasyonu yakınına gelince parlar!
       const nearAltar =
         isDay && PUZZLE_ALTARS.some((a) => Math.hypot(this.localX - a.x, this.localZ - a.z) <= 4.3);
       const nearBoard =
         isDay &&
         Math.hypot(this.localX - COUNCIL_BOARD_POS.x, this.localZ - COUNCIL_BOARD_POS.z) <= 4.5;
+      const nearStation = isDay ? this.getActiveMedievalStation() : undefined;
       const ctxIcon = document.getElementById("wheel-context-icon");
       const ctxLabel = document.getElementById("wheel-context-label");
       if (ctxIcon && ctxLabel) {
@@ -3619,6 +3863,9 @@ class SofraGameApp {
         } else if (nearBoard) {
           ctxIcon.textContent = "📋";
           ctxLabel.textContent = "TAHTA";
+        } else if (nearStation) {
+          ctxIcon.textContent = nearStation.icon;
+          ctxLabel.textContent = nearStation.shortLabel;
         } else {
           ctxIcon.textContent = "💡";
           ctxLabel.textContent = "IŞIK";
@@ -3626,7 +3873,7 @@ class SofraGameApp {
       }
       document
         .getElementById("btn-wheel-light")
-        ?.classList.toggle("ready-glow", Boolean(nearAltar || nearBoard));
+        ?.classList.toggle("ready-glow", Boolean(nearAltar || nearBoard || nearStation));
 
       this.scene.syncDoorStates(this.getOpenDoorsMap(state));
 

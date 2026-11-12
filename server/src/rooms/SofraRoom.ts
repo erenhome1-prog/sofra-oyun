@@ -5,6 +5,7 @@ import {
   COUNCIL_BOARD_POS,
   DOORS,
   GamePhase,
+  MEDIEVAL_STATIONS,
   PUZZLE_ALTARS,
   PlayerRole,
   SOFRA_CONFIG,
@@ -143,6 +144,7 @@ export class SofraRoom extends Room<SofraState> {
   private kahyaBellUsedRound = 0;
   private lastLightSabotageAt = 0;
   private noteSabotageUsedRound = new Map<string, number>();
+  private medievalStationUses = new Map<string, string[]>();
   private ghostHauntCooldown = new Map<string, number>();
   private finalAskedForRound = 0;
   private voteLockdownPending = false;
@@ -257,12 +259,13 @@ export class SofraRoom extends Room<SofraState> {
       this.autoLobbyTimer.clear();
     }
     const waitSec = this.state.hasPassword ? 60 : 45;
+    const targetCount = Math.max(6, Math.min(12, this.state.targetPlayerCount || SOFRA_CONFIG.DEFAULT_MATCH_CLIENTS));
     this.state.phaseEndsAt = Date.now() + waitSec * 1000;
-    this.state.announcement = `🕯️ Kâhya sofrayı hazırlıyor... ${waitSec} sn içinde eksik koltuklar 10 kişiye tamamlanıp başlayacak (İstediğin an 'Oto' kapatabilirsin)!`;
+    this.state.announcement = `🕯️ Kâhya sofrayı hazırlıyor... ${waitSec} sn içinde eksik koltuklar ${targetCount} kişiye tamamlanıp başlayacak (İstediğin an 'Oto' kapatabilirsin)!`;
 
     this.autoLobbyTimer = this.clock.setTimeout(() => {
       if (this.state.phase !== "LOBBY" || !this.state.autoStart || this.clients.length === 0) return;
-      while (this.state.players.size < SOFRA_CONFIG.DEFAULT_MATCH_CLIENTS) {
+      while (this.state.players.size < targetCount) {
         this.spawnBot();
       }
       this.startGameLoop();
@@ -857,9 +860,10 @@ export class SofraRoom extends Room<SofraState> {
 
     this.onMessage("add_bots", (client, data?: { count?: number }) => {
       if (this.state.phase !== "LOBBY" || this.state.hostId !== client.sessionId) return;
-      const want = Math.min(9, Math.max(1, Number(data?.count || 1)));
+      const cap = Math.max(6, Math.min(SOFRA_CONFIG.MAX_CLIENTS, this.state.targetPlayerCount || SOFRA_CONFIG.DEFAULT_MATCH_CLIENTS));
+      const want = Math.min(11, Math.max(1, Number(data?.count || 1)));
       for (let i = 0; i < want; i++) {
-        if (this.state.players.size >= SOFRA_CONFIG.MAX_CLIENTS) break;
+        if (this.state.players.size >= cap) break;
         this.spawnBot();
       }
     });
@@ -867,7 +871,42 @@ export class SofraRoom extends Room<SofraState> {
     this.onMessage("toggle_fast_mode", (client) => {
       if (this.state.hostId !== client.sessionId || this.state.phase !== "LOBBY") return;
       this.state.fastMode = !this.state.fastMode;
+      this.state.paceMode = this.state.fastMode ? "fast" : "normal";
     });
+
+    this.onMessage(
+      "set_lobby_options",
+      (
+        client,
+        data: { targetPlayerCount?: number; paceMode?: string; atmosphereTheme?: string }
+      ) => {
+        if (this.state.hostId !== client.sessionId || this.state.phase !== "LOBBY") return;
+        if (data?.targetPlayerCount && [8, 10, 12].includes(Number(data.targetPlayerCount))) {
+          const nextTarget = Number(data.targetPlayerCount);
+          this.state.targetPlayerCount = nextTarget;
+          // Lobide fazla bot varsa yeni hedef sayıya indir
+          if (this.state.players.size > nextTarget) {
+            const botIds = Array.from(this.state.players.values())
+              .filter((pl) => pl.isBot)
+              .map((pl) => pl.id);
+            while (this.state.players.size > nextTarget && botIds.length > 0) {
+              const remId = botIds.pop()!;
+              this.state.players.delete(remId);
+              this.aiControlledIds.delete(remId);
+              this.botBrains.delete(remId);
+              this.botMemories.delete(remId);
+            }
+          }
+        }
+        if (data?.paceMode && ["normal", "long", "fast"].includes(data.paceMode)) {
+          this.state.paceMode = data.paceMode;
+          this.state.fastMode = data.paceMode === "fast";
+        }
+        if (data?.atmosphereTheme && ["torch", "crimson", "mist"].includes(data.atmosphereTheme)) {
+          this.state.atmosphereTheme = data.atmosphereTheme;
+        }
+      }
+    );
 
     this.onMessage("toggle_auto_start", (client) => {
       if (this.state.hostId !== client.sessionId || this.state.phase !== "LOBBY") return;
@@ -884,8 +923,8 @@ export class SofraRoom extends Room<SofraState> {
     this.onMessage("start_game", (client) => {
       if (this.state.hostId !== client.sessionId || this.state.phase !== "LOBBY") return;
       if (this.autoLobbyTimer) this.autoLobbyTimer.clear();
-      // 6 kişiyle (tek Hain) başlayınca ilk oylamada oyun hemen bitebildiği için varsayılan 10 kişilik (2 Hain + 8 Misafir) tam kadro tamamlanır!
-      while (this.state.players.size < SOFRA_CONFIG.DEFAULT_MATCH_CLIENTS) {
+      const targetCount = Math.max(6, Math.min(SOFRA_CONFIG.MAX_CLIENTS, this.state.targetPlayerCount || SOFRA_CONFIG.DEFAULT_MATCH_CLIENTS));
+      while (this.state.players.size < targetCount) {
         this.spawnBot();
       }
       this.startGameLoop();
@@ -1501,6 +1540,223 @@ export class SofraRoom extends Room<SofraState> {
         channel: "ETKİ"
       });
     });
+
+    // 18. YENİ ORTA ÇAĞ ODALARI ETKİLEŞİMLERİ (Simya, Cephanelik, Kütüphane, Zindan, Avlu Kuyusu)
+    this.onMessage("use_medieval_station", (client, data: { stationId: string; optionId: string }) => {
+      if (this.state.phase !== "DAY") return;
+      const p = this.state.players.get(client.sessionId);
+      if (!p || !p.alive || p.ghost) return;
+
+      const station = MEDIEVAL_STATIONS.find((s) => s.id === data?.stationId);
+      if (!station) return;
+      const opt = station.options.find((o) => o.id === data?.optionId);
+      if (!opt) return;
+
+      const dist = Math.hypot(p.x - station.x, p.z - station.z);
+      if (dist > 8.5 && p.roomId !== station.roomId) {
+        client.send("puzzle_feedback", {
+          ok: false,
+          text: `⚠️ ${station.title} etkileşimi için önce o odaya yaklaşmalısın!`
+        });
+        return;
+      }
+
+      const useKey = `${this.state.round}:${p.id}`;
+      const usedList = this.medievalStationUses.get(useKey) || [];
+      if (usedList.includes(station.id)) {
+        client.send("puzzle_feedback", {
+          ok: false,
+          text: `⏳ ${station.title} hakkını bu gündüz turunda zaten kullandın! Başka bir Orta Çağ odasını keşfet.`
+        });
+        return;
+      }
+      if (usedList.length >= 2) {
+        client.send("puzzle_feedback", {
+          ok: false,
+          text: "⏳ Bir gündüz turunda en fazla 2 Orta Çağ istasyonu kullanabilirsin! Yeni günde tekrar gel."
+        });
+        return;
+      }
+
+      usedList.push(station.id);
+      this.medievalStationUses.set(useKey, usedList);
+      this.completeQuestByKind(p.id, "DETECTIVE");
+
+      const aliveTraitors = this.getAlivePlayerIds()
+        .filter((id) => this.secretRoles.get(id) === "HAIN")
+        .map((id) => this.state.players.get(id)!)
+        .filter(Boolean);
+      const aliveOthers = this.getAlivePlayerIds()
+        .filter((id) => id !== p.id)
+        .map((id) => this.state.players.get(id)!)
+        .filter(Boolean);
+
+      let bonusGold = 0;
+      let feedbackText = "";
+
+      switch (opt.id) {
+        case "truth_vapor": {
+          const sample = aliveOthers[Math.floor(Math.random() * aliveOthers.length)];
+          if (sample) {
+            const isSampleHain = this.secretRoles.get(sample.id) === "HAIN";
+            feedbackText = isSampleHain
+              ? `⚗️ Zümrüt Simya Buharı Kızıla Döndü! Koltuk #${sample.seat} (${sample.nick}) çevresinde yoğun bir barut ve ihanet kokusu seziliyor!`
+              : `⚗️ Zümrüt Simya Buharı Berraklaştı: Koltuk #${sample.seat} (${sample.nick}) üzerinde masum bir davetli aurası görünüyor.`;
+          } else {
+            feedbackText = "⚗️ Kazanın buharında şatonun gölgeleri dalgalandı.";
+          }
+          break;
+        }
+        case "transmute_gold": {
+          bonusGold = 15;
+          this.state.pot += 15;
+          feedbackText = "✨ Simya Taşı parladı! Kurşunu altına dönüştürdün: Kişisel kasana +15🪙 ve Ortak Şato Hazinesine +15🪙 eklendi!";
+          break;
+        }
+        case "shadow_draught": {
+          const myRole = this.secretRoles.get(p.id) || "MISAFIR";
+          if (myRole === "HAIN") {
+            const decoy = aliveOthers.find((o) => this.secretRoles.get(o.id) !== "HAIN") || aliveOthers[0];
+            if (decoy) {
+              this.broadcast("chat_msg", {
+                senderId: "",
+                senderNick: "SİMYA MAHZENİ",
+                seat: 11,
+                text: `⚗️ Simya mahzeninden yükselen dumanlarda Koltuk #${decoy.seat} civarında şüpheli bir gölge görüldüğü fısıldanıyor...`,
+                channel: "ETKİ"
+              });
+            }
+            feedbackText = "🌑 Gölge İksiri etkisini gösterdi: Şatoya dikkat dağıtıcı bir şüphe fısıltısı yayıldı!";
+          } else {
+            let bestPeer: Player | undefined;
+            let bestVal = -1;
+            for (const o of aliveOthers) {
+              const sc = this.affinities.get(pairKey(p.id, o.id)) || 0;
+              if (sc > bestVal) {
+                bestVal = sc;
+                bestPeer = o;
+              }
+            }
+            if (bestPeer) {
+              this.addAffinity(p.id, bestPeer.id, 12);
+              this.syncSocialQuestProgress(p.id);
+              feedbackText = `🧪 Dostluk İksiri: #${bestPeer.seat} ${bestPeer.nick} ile arandaki güven ve yakınlık bağı +12 güçlendi!`;
+            } else {
+              bonusGold = 10;
+              feedbackText = "🧪 İksir sana zihin açıklığı verdi (+10🪙)!";
+            }
+          }
+          break;
+        }
+        case "inspect_blades": {
+          const t = aliveTraitors[Math.floor(Math.random() * aliveTraitors.length)];
+          if (t) {
+            const corridor = t.seat <= 6 ? "Batı Yatak Koridoru (#1 - #6)" : "Doğu Yatak Koridoru (#7 - #12)";
+            feedbackText = `⚔️ Cephanelik Kaydı: Silah rafından eksilen zehirli hançerin izi ${corridor} tarafına uzanıyor!`;
+          } else {
+            feedbackText = "⚔️ Silah rafları tam görünüyor; şatoda gizli hançer izi kalmamış.";
+          }
+          break;
+        }
+        case "equip_helm": {
+          p.hat = "knight";
+          p.accentColor = "#d8e2ef";
+          feedbackText = "🪖 Orta Çağ Şövalye Miğferi ve gümüş omuz zırhı kuşandın! Herkes yeni zırhını görüyor.";
+          break;
+        }
+        case "polish_shields": {
+          bonusGold = 10;
+          this.state.pot += 20;
+          feedbackText = "🛡️ Hanedan kalkanlarını parlattın! Muhafız sandığından Ortak Hazineye +20🪙 ve kasana +10🪙 eklendi!";
+          break;
+        }
+        case "read_lineage": {
+          const top = this.getTopBondHighlight();
+          if (top) {
+            feedbackText = `📚 Vakayiname Şeceresi: Şu an şatodaki en güçlü gizli ittifak/fısıltı bağı #${top.seatA} ${top.nickA} ile #${top.seatB} ${top.nickB} arasında (%${Math.round(top.score)})!`;
+          } else {
+            feedbackText = "📚 Vakayiname Şeceresi: Henüz şatoda derin bir gizli ittifak kayda geçmemiş; koridorları izlemeye devam et!";
+          }
+          break;
+        }
+        case "kahya_ledger": {
+          bonusGold = 10;
+          const neckOwner = this.state.necklaceHolder ? this.state.players.get(this.state.necklaceHolder) : undefined;
+          feedbackText = `🕯️ Kâhya Kayıt Defteri (+10🪙): Ortak Sınavda toplam ${this.trialSabotageCount} Hain sabotajı saptandı. Altın Kolye şu an: ${
+            neckOwner ? `#${neckOwner.seat} ${neckOwner.nick}` : "Henüz kimsenin boynunda değil"
+          }.`;
+          break;
+        }
+        case "equip_wizard": {
+          p.hat = "wizard";
+          p.accentColor = "#ffd166";
+          feedbackText = "🧙 Başbüyücü & Alim Başlığı taktın! Bilge görünümün tüm şatoda dikkat çekiyor.";
+          break;
+        }
+        case "chain_omen": {
+          feedbackText = `⛓️ Zindan Duvarındaki Kanlı Çentikler: Şu an Yuvarlak Sofrada hayatta olan tam ${aliveTraitors.length} HAİN bulunuyor!`;
+          break;
+        }
+        case "rattle_chains": {
+          this.broadcast("chat_msg", {
+            senderId: "",
+            senderNick: "ZİNDAN MAHZENİ",
+            seat: 11,
+            text: "⛓️ Kuzeydoğu Zindanından dondurucu zincir ve demir parmaklık sesleri tüm şatoda yankılandı!",
+            channel: "ETKİ"
+          });
+          bonusGold = 10;
+          feedbackText = "🔔 Zindan zincirlerini çınlatarak tüm şatoya ürperti saldın (+10🪙 Cesaret Ödülü)!";
+          break;
+        }
+        case "equip_ironmask": {
+          p.mask = "ironmask";
+          feedbackText = "🎭 Orta Çağ Çelik Sorgu Maskesini yüzüne taktın!";
+          break;
+        }
+        case "wish_coin": {
+          this.state.pot += 25;
+          this.broadcast("chat_msg", {
+            senderId: p.id,
+            senderNick: "DİLEK KUYUSU",
+            seat: p.seat,
+            text: `⛲ Bir davetli Kargalı Avlu Kuyusuna bereket mührü attı — Ortak Şato Hazinesi +25🪙 büyüdü! (Toplam: ${this.state.pot}🪙)`,
+            channel: "ETKİ"
+          });
+          feedbackText = `⛲ Kuyunun suları altın ışıkla parladı! Ortak Şato Hazinesine +25🪙 eklendi (Toplam Hazine: ${this.state.pot}🪙).`;
+          break;
+        }
+        case "feed_raven": {
+          const roomCounts = new Map<string, string[]>();
+          this.state.players.forEach((pl) => {
+            if (!pl.alive || pl.ghost || pl.id === p.id) return;
+            const rName = detectRoomZone(pl.x, pl.z).name;
+            const arr = roomCounts.get(rName) || [];
+            arr.push(`#${pl.seat} ${pl.nick}`);
+            roomCounts.set(rName, arr);
+          });
+          let busiestRoom = "Büyük Şölen Salonu";
+          let busiestList: string[] = [];
+          roomCounts.forEach((arr, rName) => {
+            if (arr.length > busiestList.length) {
+              busiestRoom = rName;
+              busiestList = arr;
+            }
+          });
+          feedbackText =
+            busiestList.length > 0
+              ? `🐦‍⬛ Nöbetçi Kuzgun Fısıldadı: Şu an en kalabalık bölge "${busiestRoom}" (${busiestList.slice(0, 3).join(", ")})!`
+              : "🐦‍⬛ Nöbetçi Kuzgun: Davetliler koridorlara dağılmış durumda.";
+          break;
+        }
+      }
+
+      client.send("puzzle_feedback", {
+        ok: true,
+        bonusGold: bonusGold > 0 ? bonusGold : undefined,
+        text: feedbackText
+      });
+    });
   }
 
   private getOpenDoorsRecord(): Record<string, boolean> {
@@ -1823,7 +2079,12 @@ export class SofraRoom extends Room<SofraState> {
   // OYUN DÖNGÜSÜ (KENDİ KENDİNE AKAN EVRE MAKİNESİ)
   // ============================================================================
   private getDurationMs(baseSeconds: number, phase?: GamePhase): number {
-    if (!this.state.fastMode) return baseSeconds * 1000;
+    if (this.state.paceMode === "long" && !this.state.fastMode) {
+      return Math.round(baseSeconds * 1.35) * 1000;
+    }
+    if (!this.state.fastMode && this.state.paceMode !== "fast") {
+      return baseSeconds * 1000;
+    }
     const raw = Math.round(baseSeconds / SOFRA_CONFIG.FAST_DIVISOR);
     let minSec = 12;
     if (phase === "VOTE") minSec = this.tieCandidates.length > 0 ? 25 : 45;
@@ -1862,6 +2123,7 @@ export class SofraRoom extends Room<SofraState> {
     this.kahyaBellUsedRound = 0;
     this.lastLightSabotageAt = 0;
     this.noteSabotageUsedRound.clear();
+    this.medievalStationUses.clear();
     this.ghostHauntCooldown.clear();
     this.finalAskedForRound = 0;
     this.voteLockdownPending = false;

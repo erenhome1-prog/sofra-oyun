@@ -49,8 +49,11 @@ export type GamePhase =
 
 export type PlayerRole = "MISAFIR" | "HAIN";
 
-export type HatStyle = "none" | "fedora" | "hood" | "bun" | "crown";
-export type MaskStyle = "none" | "glasses" | "domino" | "plague" | "beard";
+export type HatStyle = "none" | "fedora" | "hood" | "bun" | "crown" | "knight" | "wizard" | "noble";
+export type MaskStyle = "none" | "glasses" | "domino" | "plague" | "beard" | "ironmask" | "royalvisor";
+
+export type CastleAtmosphere = "torch" | "crimson" | "mist";
+export type MatchPace = "normal" | "long" | "fast";
 
 export interface CharacterDef {
   seat: number;

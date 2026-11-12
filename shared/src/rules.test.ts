@@ -11,7 +11,7 @@ import {
   sanitizeNickname,
   tallyVotes
 } from "./rules.js";
-import { resolveCastleCollision } from "./map.js";
+import { MEDIEVAL_STATIONS, detectRoomZone, resolveCastleCollision } from "./map.js";
 
 describe("SOFRA Oyun Kuralları ve Fizik Testleri", () => {
   it("SOFRA-XXXX formatında 4 rakamlı oda kodu üretir ve normalize eder", () => {
@@ -100,5 +100,19 @@ describe("SOFRA Oyun Kuralları ve Fizik Testleri", () => {
       { seat: 1, lockedDoors: { door_yatak_1: true } }
     );
     expect(ownerAllowed.hit).toBe(false);
+  });
+
+  it("yeni Orta Çağ odalarını (Simya, Cephanelik, Kütüphane, Zindan) ve etkileşim istasyonlarını doğru tanımlar", () => {
+    expect(detectRoomZone(-20, 27).id).toBe("simya_odasi");
+    expect(detectRoomZone(20, 27).id).toBe("cephanelik");
+    expect(detectRoomZone(-20, -28).id).toBe("kutuphane");
+    expect(detectRoomZone(20, -28).id).toBe("zindan");
+    expect(MEDIEVAL_STATIONS.length).toBeGreaterThanOrEqual(5);
+
+    // Kemerli geçiş noktaları duvarla tıkalı olmamalı
+    expect(resolveCastleCollision(-12, 27, {}).hit).toBe(false);
+    expect(resolveCastleCollision(12, 27, {}).hit).toBe(false);
+    expect(resolveCastleCollision(-19, -24, {}).hit).toBe(false);
+    expect(resolveCastleCollision(19, -24, {}).hit).toBe(false);
   });
 });

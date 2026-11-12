@@ -47,6 +47,9 @@ export class SofraState extends Schema {
   @type("string") hostId: string = "";
   @type("boolean") fastMode: boolean = false;
   @type("boolean") autoStart: boolean = false;
+  @type("number") targetPlayerCount: number = 10;
+  @type("string") paceMode: string = "normal";
+  @type("string") atmosphereTheme: string = "torch";
   @type("string") announcement: string = "Şato lobisinde davetliler bekleniyor... Hazır olduğunda '🔥 SOFRAYI BAŞLAT'a bas!";
   @type("string") councilBoardNote: string = "Henüz Konsey Tahtasına şüpheli yazılmadı.";
   @type({ map: Player }) players = new MapSchema<Player>();
