@@ -1,0 +1,16 @@
+{
+  "name": "sofra-oyun",
+  "version": "0.1.0",
+  "private": true,
+  "description": "SOFRA: Kargalı Şato — Çevrim İçi Çok Oyunculu 3D Hain Bulma Oyunu",
+  "scripts": {
+    "dev": "concurrently -n SERVER,CLIENT -c red,yellow \"pnpm --filter @sofra/server dev\" \"pnpm --filter @sofra/client dev\"",
+    "build": "pnpm --filter @sofra/shared build && pnpm --filter @sofra/server build && pnpm --filter @sofra/client build",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "concurrently": "^9.0.1",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.4"
+  }
+}

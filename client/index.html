@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="tr">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <title>SOFRA: Kargalı Şato</title>
+    <link rel="icon" type="image/png" href="/marka/muhur.png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700;800&family=Cormorant+Garamond:ital,wght@0,500;0,600;0,700;1,500&display=swap" rel="stylesheet" />
+    <style>
+      :root {
+        --sofra-red: #B2161E;
+        --sofra-gold: #C9A24E;
+        --sofra-bg: #070608;
+        --sofra-panel: rgba(14, 11, 15, 0.88);
+      }
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+      html, body {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: var(--sofra-bg);
+        color: #f4ece1;
+        font-family: "Cormorant Garamond", Georgia, serif;
+        user-select: none;
+      }
+      #scene-canvas {
+        position: fixed;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        display: block;
+        z-index: 1;
+      }
+      #ui-layer {
+        position: fixed;
+        inset: 0;
+        z-index: 10;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 16px;
+        pointer-events: none;
+      }
+      .card {
+        pointer-events: auto;
+        width: 100%;
+        max-width: 460px;
+        background: var(--sofra-panel);
+        border: 1px solid rgba(201, 162, 78, 0.45);
+        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.85), 0 0 32px rgba(178, 22, 30, 0.22);
+        border-radius: 12px;
+        padding: 28px 26px;
+        backdrop-filter: blur(10px);
+        text-align: center;
+      }
+      .logo-img {
+        width: 118px;
+        height: 118px;
+        object-fit: contain;
+        margin: 0 auto 10px;
+        display: block;
+        filter: drop-shadow(0 0 14px rgba(178, 22, 30, 0.55));
+      }
+      h1 {
+        font-family: "Cinzel", serif;
+        font-size: 1.75rem;
+        letter-spacing: 0.14em;
+        color: var(--sofra-gold);
+        margin-bottom: 4px;
+      }
+      .subtitle {
+        font-size: 1.05rem;
+        color: #cbbba0;
+        margin-bottom: 20px;
+      }
+      .field-group {
+        text-align: left;
+        margin-bottom: 14px;
+      }
+      label {
+        display: block;
+        font-family: "Cinzel", serif;
+        font-size: 0.8rem;
+        letter-spacing: 0.08em;
+        color: var(--sofra-gold);
+        margin-bottom: 6px;
+      }
+      input[type="text"] {
+        width: 100%;
+        padding: 11px 14px;
+        background: rgba(5, 4, 6, 0.9);
+        border: 1px solid rgba(201, 162, 78, 0.4);
+        border-radius: 7px;
+        color: #fff8ee;
+        font-family: "Cormorant Garamond", Georgia, serif;
+        font-size: 1.15rem;
+        font-weight: 600;
+        outline: none;
+        transition: border-color 0.2s;
+      }
+      input[type="text"]:focus {
+        border-color: var(--sofra-red);
+      }
+      .btn {
+        width: 100%;
+        padding: 12px 16px;
+        border-radius: 7px;
+        border: 1px solid var(--sofra-gold);
+        font-family: "Cinzel", serif;
+        font-size: 0.95rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        cursor: pointer;
+        transition: transform 0.12s, box-shadow 0.2s, background 0.2s;
+      }
+      .btn:active {
+        transform: scale(0.98);
+      }
+      .btn-primary {
+        background: linear-gradient(135deg, #b2161e 0%, #6e0b11 100%);
+        color: #fff6e8;
+        box-shadow: 0 4px 18px rgba(178, 22, 30, 0.45);
+        margin-bottom: 14px;
+      }
+      .btn-secondary {
+        background: rgba(201, 162, 78, 0.14);
+        color: var(--sofra-gold);
+      }
+      .btn-secondary:hover {
+        background: rgba(201, 162, 78, 0.25);
+      }
+      .join-row {
+        display: flex;
+        gap: 8px;
+      }
+      .join-row input {
+        flex: 1;
+        text-transform: uppercase;
+      }
+      .join-row .btn {
+        width: auto;
+        white-space: nowrap;
+        padding: 11px 18px;
+      }
+      .divider {
+        margin: 14px 0;
+        font-size: 0.85rem;
+        color: #9e8f77;
+        letter-spacing: 0.15em;
+      }
+      .error-msg {
+        margin-top: 12px;
+        color: #ff6b72;
+        font-size: 1rem;
+        min-height: 1.2em;
+      }
+      /* Lobi görünümü */
+      .room-code-badge {
+        display: inline-block;
+        font-family: "Cinzel", serif;
+        font-size: 1.45rem;
+        font-weight: 800;
+        letter-spacing: 0.14em;
+        color: var(--sofra-gold);
+        background: rgba(178, 22, 30, 0.22);
+        border: 1px solid var(--sofra-gold);
+        padding: 8px 20px;
+        border-radius: 8px;
+        margin: 8px 0 16px;
+        cursor: pointer;
+      }
+      .player-list {
+        list-style: none;
+        text-align: left;
+        max-height: 240px;
+        overflow-y: auto;
+        margin-bottom: 16px;
+        border: 1px solid rgba(201, 162, 78, 0.25);
+        border-radius: 8px;
+        padding: 8px 12px;
+        background: rgba(6, 5, 8, 0.75);
+      }
+      .player-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 8px 6px;
+        border-bottom: 1px solid rgba(201, 162, 78, 0.14);
+        font-size: 1.15rem;
+      }
+      .player-item:last-child {
+        border-bottom: none;
+      }
+      .seat-badge {
+        font-family: "Cinzel", serif;
+        font-size: 0.8rem;
+        color: var(--sofra-gold);
+        border: 1px solid rgba(201, 162, 78, 0.45);
+        padding: 2px 8px;
+        border-radius: 4px;
+      }
+      .hidden {
+        display: none !important;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="scene-canvas"></canvas>
+
+    <div id="ui-layer">
+      <!-- GİRİŞ EKRANI -->
+      <div id="entry-view" class="card">
+        <img src="/marka/logo.png" alt="SOFRA Logo" class="logo-img" />
+        <h1>SOFRA</h1>
+        <p class="subtitle">◆ Kargalı Şato · Davetli Girişi ◆</p>
+
+        <div class="field-group">
+          <label for="nick-input">TAKMA ADINIZ</label>
+          <input id="nick-input" type="text" maxlength="18" placeholder="Örn: Çağrı, Defne, Hüsnü..." autocomplete="off" />
+        </div>
+
+        <button id="create-btn" class="btn btn-primary">◆ YENİ ODA KUR ◆</button>
+
+        <div class="divider">◆ VEYA KOD İLE KATIL ◆</div>
+
+        <div class="join-row">
+          <input id="code-input" type="text" maxlength="12" placeholder="SOFRA-4821" autocomplete="off" />
+          <button id="join-btn" class="btn btn-secondary">KATIL</button>
+        </div>
+
+        <div id="error-box" class="error-msg"></div>
+      </div>
+
+      <!-- LOBİ EKRANI -->
+      <div id="lobby-view" class="card hidden">
+        <img src="/marka/muhur.png" alt="SOFRA Mühür" class="logo-img" style="width: 78px; height: 78px;" />
+        <h1>ŞATO LOBİSİ</h1>
+        <p class="subtitle" style="margin-bottom: 6px;">Davet Kodu (kopyalamak için dokun):</p>
+        <div id="room-code-display" class="room-code-badge" title="Kodu Kopyala">SOFRA-0000</div>
+
+        <div class="field-group">
+          <label>ŞATODAKİ DAVETLİLER (<span id="player-count">0</span>/12)</label>
+          <ul id="player-list" class="player-list"></ul>
+        </div>
+
+        <button id="leave-btn" class="btn btn-secondary">ODADAN AYRIL</button>
+      </div>
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
