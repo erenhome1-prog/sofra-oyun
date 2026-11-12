@@ -931,6 +931,14 @@ class SofraGameApp {
       }
     });
 
+    // Bağlanır bağlanmaz (veya yeniden bağlanmada) gizli rolümüzü ve aktif seçim ekranı verisini kesin olarak iste!
+    room.send("request_my_state");
+    setTimeout(() => {
+      if (this.room === room) {
+        room.send("request_my_state");
+      }
+    }, 450);
+
     room.onLeave((code) => {
       // Kendi isteği dışında koptuysa otomatik yeniden bağlanmayı dene!
       if (code !== 1000 && code !== 4000) {
@@ -1763,7 +1771,15 @@ class SofraGameApp {
             ${data.nick} <span style="font-size:0.78rem; color:var(--text-muted);">(${data.charName})</span>
           </h3>
         </div>
-        <button class="btn btn-crimson" id="btn-close-inspect" style="padding:4px 10px;">✕ Kapat</button>
+        <button class="btn btn-crimson" id="btn-close-inspect" style="padding:5px 11px; font-weight:bold;">
+          ${
+            (this.room?.state as any)?.phase === "VOTE"
+              ? "🗳️ Oylamaya Dön"
+              : (this.room?.state as any)?.phase === "NIGHT"
+              ? "🌑 Gece Ekranına Dön"
+              : "✕ Kapat"
+          }
+        </button>
       </div>
 
       <div style="display:flex; gap:6px; flex-wrap:wrap;">
@@ -2167,7 +2183,7 @@ class SofraGameApp {
     const picksKey = Array.from(this.traitorNightPicks.entries())
       .map(([k, v]) => `${k}>${v.targetSeat}`)
       .join(",");
-    const hash = `${phase}|${state.round}|${state.fastMode}|${state.autoStart}|${state.pot}|${state.lastBurnedId}|${state.lastBurnedFlame}|${state.winReason}|${this.lastVoteReveal.length}|${this.mobileLobbyTab}|${this.vault.gold}|${this.vault.selectedSeat}|${this.vault.coatColor}|${this.vault.hat}|${this.vault.mask}|${this.selectedVoteTargetId}|${this.selectedNightTargetId}|${this.selectedFinalChoice}|${trialKey}|${picksKey}|${this.nightConclaveLogs.length}|${this.nightWatchNote}|${Boolean(this.gameOverSummary)}|${playerSummary}`;
+    const hash = `${phase}|${state.round}|${this.myRole?.role || ""}|${state.fastMode}|${state.autoStart}|${state.pot}|${state.lastBurnedId}|${state.lastBurnedFlame}|${state.winReason}|${this.lastVoteReveal.length}|${this.mobileLobbyTab}|${this.vault.gold}|${this.vault.selectedSeat}|${this.vault.coatColor}|${this.vault.hat}|${this.vault.mask}|${this.selectedVoteTargetId}|${this.selectedNightTargetId}|${this.selectedFinalChoice}|${trialKey}|${picksKey}|${this.nightConclaveLogs.length}|${this.nightWatchNote}|${Boolean(this.gameOverSummary)}|${playerSummary}`;
 
     if (hash === this.lastCenterRenderHash) return;
     this.lastCenterRenderHash = hash;
@@ -2185,8 +2201,10 @@ class SofraGameApp {
       this.renderArrivalEnvelope(panel);
     } else if (phase === "TRIAL") {
       this.renderTrialPanel(panel, state);
-    } else if (phase === "TABLE" || phase === "VOTE") {
+    } else if (phase === "TABLE") {
       this.renderTableVotePanel(panel, state);
+    } else if (phase === "VOTE") {
+      this.renderVoteSelectionPanel(panel, state);
     } else if (phase === "FIRE") {
       this.renderFireRevealPanel(panel, state);
     } else if (phase === "NIGHT") {
@@ -2419,13 +2437,23 @@ class SofraGameApp {
         </p>
         ${
           isHain && fellows.length > 0
-            ? `<div style="background:rgba(155,18,32,0.25); border:1px solid #ff4d5e; border-radius:10px; padding:8px 12px; display:inline-block; font-size:0.85rem;">
-                <strong>Suç Ortakların:</strong> ${fellows.map((f) => `#${f.seat} ${f.nick}`).join(", ")}
+            ? `<div style="background:rgba(155,18,32,0.25); border:1px solid #ff4d5e; border-radius:10px; padding:8px 12px; display:inline-block; font-size:0.85rem; margin-bottom:10px;">
+                <strong>🗡️ Gizli Suç Ortağın:</strong> ${fellows.map((f) => `#${f.seat} ${f.nick}`).join(", ")}
               </div>`
             : ""
         }
+        <div style="margin-top:8px;">
+          <button class="btn btn-crimson" id="btn-arrival-ready" style="padding:9px 18px; font-size:0.9rem;">
+            🔥 ZARFI ALDIM — ŞATO KEŞFİNE BAŞLA
+          </button>
+        </div>
       </div>
     `;
+
+    document.getElementById("btn-arrival-ready")?.addEventListener("click", () => {
+      this.room?.send("ready_next_phase");
+      sfx.playSealBreak();
+    });
   }
 
   private renderTrialPanel(panel: HTMLElement, state: any): void {
@@ -2689,6 +2717,130 @@ class SofraGameApp {
     }
   }
 
+  private renderVoteSelectionPanel(panel: HTMLElement, state: any): void {
+    const players = Array.from(state.players?.values() || []).filter((p: any) => p.alive);
+    const myId = this.room?.sessionId;
+    const me = myId ? state.players?.get(myId) : null;
+    const canVote = Boolean(me && me.alive && !me.ghost);
+    const chosenPlayer = this.selectedVoteTargetId
+      ? state.players?.get(this.selectedVoteTargetId)
+      : null;
+
+    const statusBanner = !canVote
+      ? `<div style="margin-bottom:10px; padding:9px 12px; border-radius:10px; background:rgba(70,85,120,0.25); border:1px solid #7ab8ff; font-size:0.84rem; color:#cfe5ff;">
+           👻 Elenerek Hayalet oldun — yaşayan davetlilerin şömine oylamasını izliyorsun.
+         </div>`
+      : this.selectedVoteTargetId === "ABSTAIN"
+      ? `<div style="margin-bottom:10px; padding:9px 12px; border-radius:10px; background:rgba(212,175,55,0.18); border:1px solid var(--gold); font-size:0.86rem; color:var(--gold);">
+           🏳️ <strong>Çekimser kaldın!</strong> İstersen süre bitmeden aşağıdaki kartlardan birine <strong>🔥 OY AT</strong> diyebilirsin.
+         </div>`
+      : chosenPlayer
+      ? `<div style="margin-bottom:10px; padding:9px 12px; border-radius:10px; background:rgba(40,120,75,0.32); border:2px solid #6ef2b1; font-size:0.88rem; color:#d8ffeb;">
+           ✅ <strong>OYUN MÜHÜRLENDİ:</strong> Koltuk #${chosenPlayer.seat} (${chosenPlayer.nick}) seçildi! Herkes oy verdiğinde zarflar şömineye atılacak.
+         </div>`
+      : `<div style="margin-bottom:10px; padding:10px 14px; border-radius:10px; background:rgba(178,22,30,0.34); border:2px solid #ff5768; font-size:0.9rem; color:#ffe5e8; font-weight:bold;">
+           🗳️ SIRA SENDE — OYUNU AT! Şömineye göndermek istediğin şüphelinin kartındaki "🔥 OY AT" butonuna bas!
+         </div>`;
+
+    panel.innerHTML = `
+      <div class="panel-header">
+        <div>
+          <h2 style="color:#ff5768; font-size:1.08rem;">🗳️ ŞÖMİNE OYLAMASI SEÇİM EKRANI — KİM ELENSİN?</h2>
+          <span style="font-size:0.75rem; color:var(--text-muted);">
+            En çok oyu alan kişinin zarfı şömineye atılır: <strong>Kırmızı Alev = Hain</strong>, <strong>Beyaz Alev = Masum Misafir</strong>!
+          </span>
+        </div>
+        ${
+          canVote
+            ? `<button class="btn" id="btn-vote-abstain" style="padding:6px 10px; font-size:0.74rem;">
+                 🏳️ Çekimser Kal
+               </button>`
+            : ""
+        }
+      </div>
+
+      ${statusBanner}
+
+      <div class="seat-grid">
+        ${players
+          .map((p: any) => {
+            const isMe = p.id === myId;
+            const isPicked = this.selectedVoteTargetId === p.id;
+            return `
+              <div class="seat-card ${isPicked ? "active" : ""}" data-vote-card="${p.id}" style="border-width:${
+              isPicked ? "2px" : "1px"
+            }; display:flex; flex-direction:column; justify-content:space-between;">
+                <div>
+                  <div class="seat-num">SANDALYE #${p.seat}</div>
+                  <div class="seat-name">${p.nick} ${isMe ? "(Sen)" : ""}</div>
+                  <div class="seat-title" style="color:${p.votedForId ? "#ffd700" : "var(--text-muted)"};">
+                    ${
+                      state.necklaceHolder === p.id
+                        ? "📿 Altın Kolye · "
+                        : ""
+                    }${p.votedForId ? "✉️ Oyunu Verdi" : "⏳ Düşünüyor..."}
+                  </div>
+                </div>
+                <div style="display:flex; flex-direction:column; gap:5px; margin-top:8px;">
+                  ${
+                    canVote && !isMe
+                      ? `<button class="btn ${isPicked ? "" : "btn-crimson"}" data-cast-vote="${p.id}" style="width:100%; padding:7px 8px; font-weight:bold; ${
+                          isPicked ? "border-color:#6ef2b1; color:#6ef2b1;" : ""
+                        }">
+                          ${isPicked ? "✅ OYUN BU KİŞİDE" : "🔥 BU KİŞİYE OY AT"}
+                        </button>`
+                      : isMe
+                      ? `<div style="font-size:0.7rem; color:var(--text-muted); text-align:center; padding:5px 0;">Kendi Koltuğun</div>`
+                      : ""
+                  }
+                  <button class="btn" data-vote-inspect="${p.id}" style="width:100%; padding:3px 5px; font-size:0.68rem;">
+                    🔍 Yakınlık Barı
+                  </button>
+                </div>
+              </div>
+            `;
+          })
+          .join("")}
+      </div>
+    `;
+
+    const castVoteFor = (targetId: string) => {
+      if (!canVote || targetId === myId) return;
+      this.selectedVoteTargetId = targetId;
+      this.room?.send("vote", { targetId });
+      sfx.playSealBreak();
+      this.lastCenterRenderHash = "";
+    };
+
+    document.getElementById("btn-vote-abstain")?.addEventListener("click", () => {
+      if (!canVote) return;
+      this.selectedVoteTargetId = "ABSTAIN";
+      this.room?.send("vote", { targetId: "ABSTAIN" });
+      sfx.playSealBreak();
+      this.lastCenterRenderHash = "";
+    });
+
+    panel.querySelectorAll("[data-cast-vote]").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        castVoteFor((btn as HTMLElement).dataset.castVote!);
+      });
+    });
+
+    panel.querySelectorAll("[data-vote-card]").forEach((cardEl) => {
+      cardEl.addEventListener("click", () => {
+        castVoteFor((cardEl as HTMLElement).dataset.voteCard!);
+      });
+    });
+
+    panel.querySelectorAll("[data-vote-inspect]").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        this.room?.send("request_inspect", { targetId: (btn as HTMLElement).dataset.voteInspect! });
+      });
+    });
+  }
+
   private renderFireRevealPanel(panel: HTMLElement, state: any): void {
     const flame = state.lastBurnedFlame;
     const isRed = flame === "RED";
@@ -2794,41 +2946,73 @@ class SofraGameApp {
     const livePicksSummary = Array.from(this.traitorNightPicks.values())
       .map((pk) => `#${pk.traitorSeat} ${pk.traitorNick} ➔ 🩸 #${pk.targetSeat} ${pk.targetNick}`)
       .join(" · ");
+    const pickedVictim = this.selectedNightTargetId
+      ? state.players?.get(this.selectedNightTargetId)
+      : null;
 
     panel.innerHTML = `
       <div class="panel-header">
         <div>
-          <h2 style="color:#ff4d5e;">🗡️ HAİNLER MECLİSİ — GİZLİ İNFAZ TOPLANTISI (2 DK)</h2>
+          <h2 style="color:#ff4d5e; font-size:1.08rem;">🩸 HAİN GECE İNFAZ SEÇİM EKRANI — KİM ÖLECEK?</h2>
           <span style="font-size:0.75rem; color:var(--text-muted);">
-            Misafirler "2 Dakika Mola: Hainler Toplantı Yapıyor" ekranında bekliyor. Ortağınla konuş, hedefi seç ve İnfaz Mührünü bas!
+            Misafirler "2 Dakika Mola" ekranında bekliyor. Bu gece şatodan kimi sileceğini seç ve İnfaz Mührünü bas!
           </span>
         </div>
-        <button class="btn btn-crimson" id="btn-seal-execution" style="padding:8px 12px;">
-          🩸 İNFAZ KARARINI MÜHÜRLE
+        <button class="btn btn-crimson" id="btn-seal-execution" style="padding:8px 14px; font-weight:bold;">
+          ${
+            pickedVictim
+              ? `🩸 #${pickedVictim.seat} ${pickedVictim.nick} İNFAZINI ONAYLA!`
+              : "🩸 Önce Kurban Seç"
+          }
         </button>
       </div>
 
       ${
+        pickedVictim
+          ? `<div style="margin-bottom:8px; padding:9px 12px; border-radius:10px; background:rgba(40,120,75,0.3); border:2px solid #6ef2b1; font-size:0.86rem; color:#d8ffeb;">
+               🎯 <strong>SEÇİLEN İNFAZ KURBANI:</strong> Koltuk #${pickedVictim.seat} (${pickedVictim.nick})! Hazırsan sağ üstteki veya karttaki <strong>🗡️ İNFAZ ET</strong> butonuna bas!
+             </div>`
+          : `<div style="margin-bottom:8px; padding:10px 14px; border-radius:10px; background:rgba(178,22,30,0.36); border:2px solid #ff5768; font-size:0.9rem; color:#ffe5e8; font-weight:bold;">
+               🗡️ SEN HAİNSİN! Bu gece infaz edilecek masum Misafiri aşağıdan seç ("🗡️ HEMEN İNFAZ ET" ile tek tıkta infaz edebilirsin)!
+             </div>`
+      }
+
+      ${
         livePicksSummary
           ? `<div style="margin-bottom:8px; padding:6px 10px; border-radius:8px; background:rgba(165,20,35,0.28); border:1px solid #ff5768; font-size:0.8rem; color:#ffd6da;">
-              <strong>Canlı İnfaz Oyları:</strong> ${livePicksSummary}
+              <strong>Canlı Hain Meclisi Seçimleri:</strong> ${livePicksSummary}
             </div>`
           : ""
       }
 
       <div class="seat-grid" style="margin-bottom:10px;">
         ${innocentTargets
-          .map(
-            (p: any) => `
-          <div class="seat-card ${this.selectedNightTargetId === p.id ? "active" : ""}" data-night-id="${p.id}">
-            <div class="seat-num">KURBAN ADAYI #${p.seat}</div>
-            <div class="seat-name">${p.nick}</div>
-            <div class="seat-title">${
-              state.necklaceHolder === p.id ? "⚠️ 📿 Altın Kolye (Korumalı!)" : "🩸 İnfaz Hedefi Seç"
-            }</div>
-          </div>
-        `
-          )
+          .map((p: any) => {
+            const isPicked = this.selectedNightTargetId === p.id;
+            return `
+              <div class="seat-card ${isPicked ? "active" : ""}" data-night-id="${p.id}" style="display:flex; flex-direction:column; justify-content:space-between;">
+                <div>
+                  <div class="seat-num">KURBAN ADAYI #${p.seat}</div>
+                  <div class="seat-name">${p.nick}</div>
+                  <div class="seat-title">${
+                    state.necklaceHolder === p.id
+                      ? "⚠️ 📿 Altın Kolye (Gece Korumalı!)"
+                      : isPicked
+                      ? "🎯 Hedef Seçildi"
+                      : "Masum Misafir"
+                  }</div>
+                </div>
+                <div style="display:flex; flex-direction:column; gap:5px; margin-top:8px;">
+                  <button class="btn btn-crimson" data-night-instant="${p.id}" style="width:100%; padding:7px 8px; font-weight:bold;">
+                    🗡️ HEMEN İNFAZ ET!
+                  </button>
+                  <button class="btn" data-night-pick-only="${p.id}" style="width:100%; padding:4px 6px; font-size:0.7rem;">
+                    ${isPicked ? "✅ Seçili Hedef" : "🎯 Sadece Hedef Göster"}
+                  </button>
+                </div>
+              </div>
+            `;
+          })
           .join("")}
       </div>
 
@@ -2849,6 +3033,28 @@ class SofraGameApp {
         </form>
       </div>
     `;
+
+    panel.querySelectorAll("[data-night-instant]").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const targetId = (btn as HTMLElement).dataset.nightInstant!;
+        this.selectedNightTargetId = targetId;
+        this.room?.send("night_pick", { targetId, instantSeal: true });
+        sfx.playCastleBell();
+        this.lastCenterRenderHash = "";
+      });
+    });
+
+    panel.querySelectorAll("[data-night-pick-only]").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const targetId = (btn as HTMLElement).dataset.nightPickOnly!;
+        this.selectedNightTargetId = targetId;
+        this.room?.send("night_pick", { targetId });
+        sfx.playHeartbeat();
+        this.lastCenterRenderHash = "";
+      });
+    });
 
     panel.querySelectorAll("[data-night-id]").forEach((el) => {
       el.addEventListener("click", () => {
@@ -3286,16 +3492,32 @@ class SofraGameApp {
         const pCard = document.getElementById("puzzle-card-content");
         if (pCard) pCard.style.width = "";
         document.getElementById("puzzle-modal")?.classList.add("hidden");
+        document.getElementById("dm-picker-modal")?.classList.add("hidden");
 
-        if (state.phase === "DAY" && this.scene.inspectTargetId) {
+        // ÇOK ÖNEMLİ: Evre her değiştiğinde açık kalan 360° İncele kartını kapat ki Oylama / Gece İnfazı seçim ekranı ASLA gizli kalmasın!
+        if (this.scene.inspectTargetId) {
           this.scene.inspectTargetId = null;
           document.getElementById("inspect-overlay")?.classList.add("hidden");
-        } else if (state.phase === "TRIAL") {
+        }
+
+        // Oylama, Gece İnfazı ve Final seçim ekranlarına girerken soldaki PM pencerelerini küçült ki seçim ekranı tam odakta açılsın!
+        if (state.phase === "VOTE" || state.phase === "NIGHT" || state.phase === "FINAL") {
+          this.pmThreads.forEach((t) => {
+            t.minimized = true;
+          });
+          this.renderPMWindows();
+        }
+
+        if (state.phase === "TRIAL") {
           sfx.playSealBreak();
+          this.room.send("request_my_state");
         } else if (state.phase === "TABLE") {
           sfx.playCastleBell();
           this.selectedVoteTargetId = "";
           this.lastVoteReveal = [];
+        } else if (state.phase === "VOTE") {
+          this.selectedVoteTargetId = "";
+          sfx.playCastleBell();
         } else if (state.phase === "FIRE") {
           if (state.lastBurnedFlame === "RED") {
             this.scene.triggerFireplaceFlame("red");
@@ -3309,6 +3531,7 @@ class SofraGameApp {
           this.traitorNightPicks.clear();
           this.nightConclaveLogs = [];
           this.nightWatchNote = "";
+          this.room.send("request_my_state");
           sfx.playHeartbeat();
         } else if (state.phase === "LOBBY") {
           this.gameOverSummary = null;

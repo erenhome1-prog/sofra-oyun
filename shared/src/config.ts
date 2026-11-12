@@ -15,18 +15,18 @@ export const SOFRA_CONFIG = {
   DOOR_INTERACT_DIST: 3.4,
   RECONNECT_TIMEOUT_SEC: 60,
   DURATIONS: {
-    ARRIVAL: 14,
+    ARRIVAL: 16,
     DAY: 300,
     TRIAL: 75,
     TABLE: 120,
-    VOTE: 45,
-    TIE_VOTE: 25,
-    FIRE: 15,
+    VOTE: 90,
+    TIE_VOTE: 40,
+    FIRE: 16,
     NIGHT: 120,
-    MORNING: 15,
-    FINAL: 45
+    MORNING: 16,
+    FINAL: 60
   },
-  FAST_DIVISOR: 3.0,
+  FAST_DIVISOR: 1.75,
   COLORS: {
     SOFRA_RED: "#B2161E",
     GOLD: "#C9A24E",
