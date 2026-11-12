@@ -2,266 +2,299 @@
 <html lang="tr">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
     <title>SOFRA: Kargalı Şato — 3D Çok Oyunculu Sosyal Çıkarım</title>
     <link rel="icon" type="image/png" href="/marka/muhur.png" />
     <style>
       :root {
         --bg-dark: #07050a;
-        --bg-panel: rgba(14, 11, 19, 0.92);
+        --bg-panel: rgba(14, 11, 19, 0.93);
         --gold: #d4af37;
         --gold-soft: rgba(212, 175, 55, 0.35);
         --crimson: #8f1420;
         --crimson-bright: #e02438;
         --parchment: #f3e6cc;
-        --parchment-dark: #cfb891;
         --text-light: #f4ebd9;
-        --text-muted: #a69984;
+        --text-muted: #aba08d;
       }
 
       * {
         box-sizing: border-box;
         margin: 0;
         padding: 0;
-        user-select: none;
-        -webkit-user-select: none;
+        -webkit-tap-highlight-color: transparent;
       }
 
       html,
       body {
         width: 100%;
-        height: 100%;
+        height: 100vh;
+        height: 100dvh;
         overflow: hidden;
         background: var(--bg-dark);
         color: var(--text-light);
         font-family: "Georgia", "Times New Roman", serif;
+        user-select: none;
+        -webkit-user-select: none;
       }
 
       #canvas-container {
         position: fixed;
         inset: 0;
         z-index: 1;
+        touch-action: none;
       }
 
-      /* HUD Overlay */
+      /* =========================================================
+         ANA HUD DÜZENİ (100dvh Esnek Sütun — Asla Taşmaz)
+         ========================================================= */
       #hud {
         position: fixed;
         inset: 0;
+        height: 100vh;
+        height: 100dvh;
         z-index: 10;
         pointer-events: none;
         display: flex;
         flex-direction: column;
-        justify-content: space-between;
-        padding: 14px 18px;
+        gap: 8px;
+        padding: max(10px, env(safe-area-inset-top))
+          max(12px, env(safe-area-inset-right))
+          max(10px, env(safe-area-inset-bottom))
+          max(12px, env(safe-area-inset-left));
       }
 
       .interactive {
         pointer-events: auto;
       }
 
-      /* Top Bar */
+      /* Üst Çubuk */
       .top-bar {
+        flex-shrink: 0;
         display: flex;
         justify-content: space-between;
-        align-items: flex-start;
-        gap: 12px;
+        align-items: center;
+        gap: 8px;
         flex-wrap: wrap;
       }
 
       .brand-pill {
         display: flex;
         align-items: center;
-        gap: 10px;
+        gap: 8px;
         background: var(--bg-panel);
         border: 1px solid var(--gold-soft);
         border-radius: 12px;
-        padding: 8px 14px;
-        box-shadow: 0 8px 28px rgba(0, 0, 0, 0.65);
+        padding: 6px 12px;
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.6);
       }
 
       .brand-pill img {
-        width: 34px;
-        height: 34px;
+        width: 28px;
+        height: 28px;
         object-fit: contain;
+        flex-shrink: 0;
       }
 
       .brand-title {
-        font-size: 0.95rem;
+        font-size: 0.9rem;
         font-weight: bold;
-        letter-spacing: 1.5px;
+        letter-spacing: 1px;
         color: var(--gold);
       }
 
       .brand-sub {
-        font-size: 0.75rem;
+        font-size: 0.72rem;
         color: var(--text-muted);
       }
 
       .phase-banner {
         background: linear-gradient(180deg, rgba(24, 16, 28, 0.95), rgba(11, 8, 15, 0.95));
         border: 1px solid var(--gold);
-        border-radius: 14px;
-        padding: 8px 20px;
+        border-radius: 12px;
+        padding: 6px 16px;
         text-align: center;
-        min-width: 240px;
-        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.75);
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.7);
       }
 
       .phase-name {
-        font-size: 1.05rem;
+        font-size: 0.92rem;
         font-weight: bold;
         color: var(--gold);
-        letter-spacing: 2px;
+        letter-spacing: 1.2px;
       }
 
       .phase-timer {
-        font-size: 0.85rem;
+        font-size: 0.78rem;
         color: var(--text-light);
-        margin-top: 2px;
       }
 
       .vault-pill {
         display: flex;
         align-items: center;
-        gap: 10px;
+        gap: 6px;
         background: var(--bg-panel);
         border: 1px solid var(--gold-soft);
         border-radius: 12px;
-        padding: 8px 14px;
+        padding: 6px 10px;
       }
 
       .gold-badge {
         color: #ffd700;
         font-weight: bold;
-        font-size: 0.95rem;
+        font-size: 0.88rem;
+        white-space: nowrap;
       }
 
+      /* Düğmeler */
       .btn {
-        background: linear-gradient(180deg, #322318, #1c130d);
+        background: linear-gradient(180deg, #352519, #1c130d);
         color: var(--gold);
         border: 1px solid var(--gold);
         border-radius: 8px;
-        padding: 7px 13px;
+        padding: 7px 11px;
         font-family: inherit;
-        font-size: 0.82rem;
+        font-size: 0.8rem;
         font-weight: bold;
-        letter-spacing: 0.8px;
+        letter-spacing: 0.5px;
         cursor: pointer;
-        transition: all 0.18s ease;
+        transition: transform 0.12s ease, background 0.15s ease;
+        white-space: nowrap;
+        touch-action: manipulation;
       }
 
-      .btn:hover {
-        background: linear-gradient(180deg, #4b3422, #2b1d14);
-        transform: translateY(-1px);
-        box-shadow: 0 4px 14px rgba(212, 175, 55, 0.28);
+      .btn:active {
+        transform: scale(0.96);
       }
 
       .btn-crimson {
-        background: linear-gradient(180deg, #7d131e, #480910);
-        color: #ffe8eb;
-        border-color: #d94b5a;
+        background: linear-gradient(180deg, #8b1522, #4d0911);
+        color: #fff0f2;
+        border-color: #e25563;
       }
 
-      .btn-crimson:hover {
-        background: linear-gradient(180deg, #9e1927, #610d16);
-      }
-
-      /* Announcements & Kahya Quote */
+      /* Kâhya Duyuru Satırı */
       #announcement-box {
+        flex-shrink: 0;
         align-self: center;
-        max-width: 680px;
-        background: rgba(12, 9, 17, 0.88);
+        width: min(720px, 100%);
+        background: rgba(12, 9, 17, 0.86);
         border-left: 3px solid var(--gold);
         border-right: 3px solid var(--gold);
-        padding: 10px 22px;
-        border-radius: 10px;
+        padding: 6px 14px;
+        border-radius: 8px;
         text-align: center;
         font-style: italic;
-        font-size: 0.96rem;
+        font-size: 0.86rem;
         color: var(--parchment);
-        box-shadow: 0 8px 25px rgba(0, 0, 0, 0.7);
+        display: -webkit-box;
+        -webkit-line-clamp: 2;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
       }
 
-      /* Center Modals (Lobby Studio, Table Vote, Night, Result) */
+      /* Orta Dinamik Alan (Kalan yüksekliğe tam oturur ve kayar) */
+      .middle-slot {
+        flex: 1 1 auto;
+        min-height: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        width: 100%;
+      }
+
       .center-panel {
-        align-self: center;
-        width: min(920px, 95vw);
-        max-height: 76vh;
+        width: min(940px, 100%);
+        max-height: 100%;
         overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+        touch-action: pan-y;
+        overscroll-behavior: contain;
         background: var(--bg-panel);
         border: 1px solid var(--gold);
-        border-radius: 16px;
-        padding: 18px 22px;
-        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.85);
+        border-radius: 14px;
+        padding: 14px 16px;
+        box-shadow: 0 18px 50px rgba(0, 0, 0, 0.85);
       }
 
       .panel-header {
         display: flex;
         justify-content: space-between;
         align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
         border-bottom: 1px solid var(--gold-soft);
         padding-bottom: 10px;
-        margin-bottom: 14px;
+        margin-bottom: 12px;
       }
 
       .panel-header h2 {
         color: var(--gold);
-        font-size: 1.2rem;
-        letter-spacing: 1.5px;
+        font-size: 1.05rem;
+        letter-spacing: 1px;
       }
 
-      /* Character Grid & Customizer */
+      /* Lobi Sekmeleri (Mobilde tek tıkla geçiş, Web'de yan yana) */
+      .mobile-lobby-tabs {
+        display: none;
+        gap: 6px;
+        margin-bottom: 10px;
+      }
+
+      .mobile-lobby-tabs button {
+        flex: 1;
+        padding: 9px 8px;
+        font-size: 0.82rem;
+      }
+
       .studio-grid {
         display: grid;
         grid-template-columns: 1.35fr 1fr;
-        gap: 16px;
-      }
-
-      @media (max-width: 780px) {
-        .studio-grid {
-          grid-template-columns: 1fr;
-        }
+        gap: 14px;
       }
 
       .seat-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(135px, 1fr));
+        grid-template-columns: repeat(auto-fill, minmax(132px, 1fr));
         gap: 8px;
       }
 
       .seat-card {
-        background: rgba(25, 20, 34, 0.85);
-        border: 1px solid rgba(212, 175, 55, 0.25);
+        background: rgba(25, 20, 34, 0.9);
+        border: 1px solid rgba(212, 175, 55, 0.28);
         border-radius: 10px;
         padding: 8px 10px;
         cursor: pointer;
-        transition: all 0.15s ease;
+        touch-action: manipulation;
       }
 
-      .seat-card:hover,
       .seat-card.active {
         border-color: var(--gold);
-        background: rgba(58, 39, 24, 0.85);
+        background: rgba(68, 44, 24, 0.92);
+        box-shadow: 0 0 12px rgba(212, 175, 55, 0.25);
       }
 
       .seat-card .seat-num {
-        font-size: 0.72rem;
+        font-size: 0.7rem;
         color: var(--gold);
       }
 
       .seat-card .seat-name {
         font-weight: bold;
-        font-size: 0.9rem;
+        font-size: 0.88rem;
         margin: 2px 0;
       }
 
       .seat-card .seat-title {
-        font-size: 0.72rem;
+        font-size: 0.71rem;
         color: var(--text-muted);
       }
 
       .customizer-box {
-        background: rgba(20, 15, 28, 0.9);
+        background: rgba(20, 15, 28, 0.92);
         border: 1px solid var(--gold-soft);
         border-radius: 12px;
         padding: 12px;
@@ -277,9 +310,8 @@
       }
 
       .field-row label {
-        font-size: 0.78rem;
+        font-size: 0.76rem;
         color: var(--gold);
-        letter-spacing: 0.5px;
       }
 
       .field-row input,
@@ -287,57 +319,58 @@
         background: #120e18;
         color: var(--text-light);
         border: 1px solid var(--gold-soft);
-        border-radius: 7px;
-        padding: 7px 10px;
+        border-radius: 8px;
+        padding: 8px 10px;
         font-family: inherit;
-        font-size: 0.85rem;
+        font-size: 16px; /* iOS/Android otomatik yakınlaştırmayı engeller */
         user-select: text;
         -webkit-user-select: text;
       }
 
       .color-swatches {
         display: flex;
-        gap: 6px;
+        gap: 8px;
         flex-wrap: wrap;
       }
 
       .swatch {
-        width: 26px;
-        height: 26px;
+        width: 30px;
+        height: 30px;
         border-radius: 50%;
         border: 2px solid rgba(255, 255, 255, 0.35);
         cursor: pointer;
+        touch-action: manipulation;
       }
 
       .swatch.active {
         border-color: var(--gold);
-        transform: scale(1.15);
+        transform: scale(1.14);
       }
 
-      /* Bottom HUD (Stamina, Room, Door Action, Chat) */
+      /* Alt Çubuk (Masaüstü Durum + Sohbet) */
       .bottom-bar {
+        flex-shrink: 0;
         display: flex;
         justify-content: space-between;
         align-items: flex-end;
-        gap: 14px;
-        flex-wrap: wrap;
+        gap: 10px;
       }
 
       .status-cluster {
         background: var(--bg-panel);
         border: 1px solid var(--gold-soft);
         border-radius: 12px;
-        padding: 10px 14px;
-        min-width: 230px;
+        padding: 8px 12px;
+        min-width: 220px;
       }
 
       .stamina-track {
         width: 100%;
-        height: 8px;
+        height: 7px;
         background: #1b1522;
         border-radius: 99px;
         overflow: hidden;
-        margin-top: 6px;
+        margin-top: 5px;
         border: 1px solid rgba(212, 175, 55, 0.3);
       }
 
@@ -349,19 +382,31 @@
       }
 
       .chat-cluster {
-        width: min(400px, 92vw);
+        width: min(380px, 100%);
         background: var(--bg-panel);
         border: 1px solid var(--gold-soft);
         border-radius: 12px;
-        padding: 10px;
+        padding: 8px 10px;
         display: flex;
         flex-direction: column;
         gap: 6px;
       }
 
+      .chat-header-mobile {
+        display: none;
+        justify-content: space-between;
+        align-items: center;
+        border-bottom: 1px solid var(--gold-soft);
+        padding-bottom: 6px;
+        font-size: 0.82rem;
+        color: var(--gold);
+      }
+
       #chat-log {
-        height: 92px;
+        height: 82px;
         overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+        touch-action: pan-y;
         font-size: 0.8rem;
         display: flex;
         flex-direction: column;
@@ -375,56 +420,92 @@
 
       .chat-form input {
         flex: 1;
+        min-width: 0;
         background: #120e18;
         color: var(--text-light);
         border: 1px solid var(--gold-soft);
-        border-radius: 7px;
-        padding: 6px 10px;
+        border-radius: 8px;
+        padding: 7px 10px;
         font-family: inherit;
-        font-size: 0.82rem;
+        font-size: 16px;
         user-select: text;
         -webkit-user-select: text;
       }
 
-      /* Wax-Sealed Welcome Envelope Modal (Hoş Geldin Zarfı & Kurallar) */
+      #btn-mobile-chat-toggle {
+        display: none;
+        position: relative;
+      }
+
+      .unread-dot {
+        position: absolute;
+        top: -3px;
+        right: -3px;
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        background: #ff2e43;
+      }
+
+      /* =========================================================
+         MÜHÜRLÜ HOŞ GELDİN ZARFI (Sabit Alt Butonlu & Mobil Uyumlu)
+         ========================================================= */
       #welcome-modal {
         position: fixed;
         inset: 0;
+        height: 100vh;
+        height: 100dvh;
         z-index: 100;
-        background: radial-gradient(circle at center, rgba(25, 14, 22, 0.94), rgba(5, 4, 8, 0.98));
+        background: radial-gradient(circle at center, rgba(25, 14, 22, 0.95), rgba(5, 4, 8, 0.98));
         display: flex;
         align-items: center;
         justify-content: center;
-        padding: 18px;
+        padding: max(12px, env(safe-area-inset-top)) 14px max(12px, env(safe-area-inset-bottom)) 14px;
       }
 
       .envelope-card {
-        width: min(620px, 95vw);
+        width: min(560px, 100%);
+        max-height: 90vh;
+        max-height: 90dvh;
+        display: flex;
+        flex-direction: column;
         background: linear-gradient(165deg, #f3e4c6 0%, #dec496 100%);
         color: #23170f;
         border: 3px solid #8c6224;
         border-radius: 16px;
-        padding: 26px 28px;
-        box-shadow: 0 25px 80px rgba(0, 0, 0, 0.92), inset 0 0 40px rgba(139, 90, 28, 0.25);
+        padding: 18px 20px;
+        box-shadow: 0 24px 70px rgba(0, 0, 0, 0.92), inset 0 0 36px rgba(139, 90, 28, 0.22);
         text-align: center;
-        position: relative;
+      }
+
+      .envelope-scroll-body {
+        flex: 1 1 auto;
+        min-height: 0;
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+        touch-action: pan-y;
+        overscroll-behavior: contain;
+        padding-right: 2px;
+      }
+
+      .envelope-footer {
+        flex-shrink: 0;
+        padding-top: 12px;
+        margin-top: 8px;
+        border-top: 1px solid rgba(125, 19, 30, 0.25);
       }
 
       .seal-button {
-        width: 96px;
-        height: 96px;
+        width: 88px;
+        height: 88px;
         border-radius: 50%;
         border: none;
         background: transparent;
         cursor: pointer;
-        margin: 14px auto;
+        margin: 12px auto;
         display: block;
-        transition: transform 0.25s ease;
+        touch-action: manipulation;
         filter: drop-shadow(0 8px 18px rgba(120, 10, 20, 0.65));
-      }
-
-      .seal-button:hover {
-        transform: scale(1.08) rotate(-4deg);
       }
 
       .seal-button img {
@@ -435,13 +516,13 @@
 
       .rules-list {
         text-align: left;
-        margin: 14px 0;
-        padding: 12px 16px;
-        background: rgba(58, 36, 18, 0.08);
+        margin: 10px 0;
+        padding: 10px 12px;
+        background: rgba(58, 36, 18, 0.09);
         border-left: 3px solid #7d131e;
         border-radius: 8px;
-        font-size: 0.9rem;
-        line-height: 1.55;
+        font-size: 0.85rem;
+        line-height: 1.45;
       }
 
       .rules-list li {
@@ -449,63 +530,231 @@
         list-style: none;
       }
 
-      /* Role Envelope Popup */
+      /* Rol Rozeti */
       .role-badge {
         display: inline-block;
-        padding: 6px 14px;
+        padding: 4px 10px;
         border-radius: 8px;
         font-weight: bold;
-        letter-spacing: 1px;
-        font-size: 0.85rem;
+        font-size: 0.75rem;
       }
 
       .role-hain {
-        background: rgba(155, 18, 32, 0.9);
+        background: rgba(155, 18, 32, 0.92);
         border: 1px solid #ff4d5e;
         color: #ffe5e8;
       }
 
       .role-misafir {
-        background: rgba(24, 62, 108, 0.9);
+        background: rgba(24, 62, 108, 0.92);
         border: 1px solid #7ab8ff;
         color: #e8f3ff;
       }
 
-      /* Mobile Virtual Joystick */
+      /* =========================================================
+         MOBİL 3D DOKUNMATİK KONTROLLER (Yalnızca Gündüz Keşfinde Açılır)
+         ========================================================= */
       #mobile-controls {
         display: none;
         position: fixed;
-        bottom: 22px;
-        left: 22px;
-        z-index: 30;
-        pointer-events: auto;
+        left: 0;
+        right: 0;
+        bottom: max(14px, env(safe-area-inset-bottom));
+        z-index: 25;
+        pointer-events: none;
+        padding: 0 16px;
+        justify-content: space-between;
+        align-items: flex-end;
       }
 
-      @media (pointer: coarse), (max-width: 820px) {
-        #mobile-controls {
-          display: block;
+      #mobile-controls.day-active {
+        display: flex;
+      }
+
+      @media (pointer: fine) and (min-width: 861px) {
+        #mobile-controls.day-active {
+          display: none;
         }
       }
 
       .joystick-zone {
-        width: 118px;
-        height: 118px;
+        width: 112px;
+        height: 112px;
         border-radius: 50%;
-        background: rgba(20, 15, 28, 0.62);
+        background: rgba(18, 13, 26, 0.68);
         border: 2px solid var(--gold-soft);
         position: relative;
         touch-action: none;
+        pointer-events: auto;
       }
 
       .joystick-knob {
-        width: 46px;
-        height: 46px;
+        width: 44px;
+        height: 44px;
         border-radius: 50%;
         background: radial-gradient(circle, #ffd875, #9e731b);
         position: absolute;
-        top: 34px;
-        left: 34px;
+        top: 32px;
+        left: 32px;
         pointer-events: none;
+      }
+
+      .mobile-action-pad {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        align-items: flex-end;
+        pointer-events: auto;
+      }
+
+      .action-circle-btn {
+        min-width: 66px;
+        height: 54px;
+        border-radius: 27px;
+        padding: 0 16px;
+        background: rgba(24, 16, 32, 0.86);
+        border: 2px solid var(--gold);
+        color: var(--gold);
+        font-family: inherit;
+        font-weight: bold;
+        font-size: 0.84rem;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        touch-action: none;
+        box-shadow: 0 6px 20px rgba(0, 0, 0, 0.65);
+      }
+
+      .action-circle-btn.active-hold {
+        background: var(--crimson);
+        color: #fff;
+        border-color: #ff6b7a;
+      }
+
+      /* =========================================================
+         TELEFON & KÜÇÜK EKRAN RESPONSIVE KURALLARI (<= 860px)
+         ========================================================= */
+      @media (max-width: 860px) {
+        #hud {
+          gap: 6px;
+          padding: max(6px, env(safe-area-inset-top)) 8px max(8px, env(safe-area-inset-bottom)) 8px;
+        }
+
+        .top-bar {
+          gap: 5px;
+        }
+
+        .brand-pill {
+          padding: 5px 8px;
+          flex: 1 1 auto;
+        }
+
+        .brand-title {
+          font-size: 0.78rem;
+        }
+
+        .brand-sub {
+          font-size: 0.68rem;
+        }
+
+        .vault-pill {
+          padding: 5px 8px;
+          gap: 5px;
+        }
+
+        .phase-banner {
+          order: 3;
+          width: 100%;
+          padding: 5px 10px;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+          gap: 8px;
+        }
+
+        .phase-name {
+          font-size: 0.76rem;
+          letter-spacing: 0.5px;
+          text-align: left;
+        }
+
+        .phase-timer {
+          font-size: 0.74rem;
+          white-space: nowrap;
+        }
+
+        #announcement-box {
+          font-size: 0.76rem;
+          padding: 4px 10px;
+          -webkit-line-clamp: 1;
+        }
+
+        .center-panel {
+          padding: 10px 12px;
+          border-radius: 12px;
+        }
+
+        .mobile-lobby-tabs {
+          display: flex;
+        }
+
+        .studio-grid {
+          grid-template-columns: 1fr;
+        }
+
+        .studio-grid.mobile-tab-custom .studio-col-seats {
+          display: none;
+        }
+
+        .studio-grid.mobile-tab-seats .studio-col-custom {
+          display: none;
+        }
+
+        .seat-grid {
+          grid-template-columns: repeat(2, 1fr);
+          gap: 6px;
+        }
+
+        #btn-mobile-chat-toggle {
+          display: inline-flex;
+        }
+
+        .desktop-hint {
+          display: none;
+        }
+
+        .status-cluster {
+          min-width: 0;
+          width: 100%;
+          padding: 6px 10px;
+        }
+
+        /* Mobilde sohbet çekmecesi */
+        .chat-cluster {
+          display: none;
+          position: fixed;
+          left: 8px;
+          right: 8px;
+          bottom: max(10px, env(safe-area-inset-bottom));
+          width: auto;
+          z-index: 60;
+          padding: 12px;
+          box-shadow: 0 16px 48px rgba(0, 0, 0, 0.95);
+          border-color: var(--gold);
+        }
+
+        .chat-cluster.mobile-open {
+          display: flex;
+        }
+
+        .chat-header-mobile {
+          display: flex;
+        }
+
+        #chat-log {
+          height: 140px;
+        }
       }
 
       .hidden {
@@ -518,129 +767,161 @@
 
     <!-- Mühürlü Hoş Geldin Zarfı & Kurallar Modalı -->
     <div id="welcome-modal" class="interactive">
+      <!-- Kapalı Zarf Görünümü -->
       <div class="envelope-card" id="envelope-closed-view">
-        <p style="font-size: 0.8rem; letter-spacing: 2px; color: #7d131e; font-weight: bold;">
-          ◆ KARGALI ŞATO DAVETİYESİ ◆
-        </p>
-        <h1 style="font-size: 1.65rem; margin: 8px 0; color: #2b180d;">
-          Mühürlü Hoş Geldin Zarfınız Var
-        </h1>
-        <p style="font-size: 0.95rem; color: #4a3321; max-width: 460px; margin: 0 auto 10px;">
-          Yuvarlak Sofra'ya oturmadan önce Kâhya'nın mührünü kırın, şato kurallarını okuyun ve
-          <strong>Hoş Geldin Kasası (+100 Altın)</strong> ödülünüzü teslim alın.
-        </p>
-        <button class="seal-button" id="btn-break-seal" title="Mührü Kır ve Zarfı Aç">
-          <img src="/marka/muhur.png" alt="Kırmızı Mum Mühür" />
-        </button>
-        <p style="font-size: 0.82rem; color: #7d131e; font-weight: bold;">
-          [ Mum Mührün Üzerine Dokunarak Zarfı Açın ]
-        </p>
+        <div class="envelope-scroll-body">
+          <p style="font-size: 0.76rem; letter-spacing: 2px; color: #7d131e; font-weight: bold;">
+            ◆ KARGALI ŞATO DAVETİYESİ ◆
+          </p>
+          <h1 style="font-size: 1.4rem; margin: 8px 0; color: #2b180d;">
+            Mühürlü Hoş Geldin Zarfınız Var
+          </h1>
+          <p style="font-size: 0.9rem; color: #4a3321; max-width: 440px; margin: 0 auto 8px;">
+            Yuvarlak Sofra'ya oturmadan önce Kâhya'nın mührünü kırın, şato kurallarını okuyun ve
+            <strong>Hoş Geldin Kasası (+100 Altın)</strong> ödülünüzü alın.
+          </p>
+          <button class="seal-button" id="btn-break-seal" title="Mührü Kır ve Zarfı Aç">
+            <img src="/marka/muhur.png" alt="Kırmızı Mum Mühür" />
+          </button>
+          <p style="font-size: 0.8rem; color: #7d131e; font-weight: bold;">
+            [ Mum Mührün Üzerine Dokunarak Zarfı Açın ]
+          </p>
+        </div>
       </div>
 
+      <!-- Açık Zarf Görünümü (Sabit Alt Butonlu — Telefonda Asla Kesilmez!) -->
       <div class="envelope-card hidden" id="envelope-open-view">
-        <p style="font-size: 0.78rem; letter-spacing: 2px; color: #7d131e; font-weight: bold;">
-          ◆ KÂHYA'NIN MEKTUBU & ŞATO KURALLARI ◆
-        </p>
-        <h2 style="font-size: 1.4rem; margin: 6px 0;">
-          "Sofraya hoş geldiniz. Herkes davetli… ama herkes dost değil."
-        </h2>
-        <ul class="rules-list">
-          <li>
-            <strong>1. Gizli Zarf & Roller:</strong> Oyun başladığında yalnızca sizin gördüğünüz mühürlü rol zarfınız açılır (<em>Misafir</em> veya <em>Hain</em>).
-          </li>
-          <li>
-            <strong>2. Gündüz Keşfi & Yatak Odaları:</strong> Şatoda özgürce dolaşın (`WASD` / Dokunmatik). Yatak odalarının kapısını (`E`) kapatıp içeride baş başa gizli konuşabilirsiniz.
-          </li>
-          <li>
-            <strong>3. Yuvarlak Sofra & Şömine Alevi:</strong> Çan çaldığında herkes kendi sandalyesine döner. En çok oy alanın zarfı şömineye atılır: <strong>Kırmızı Alev = Hain</strong>, <strong>Beyaz Alev = Masum Misafir</strong>.
-          </li>
-          <li>
-            <strong>4. Gece & Altın Kolye:</strong> Gece Hainler bir kurban seçer; sabah sofrada tabağı ters çevrilir. Gündüz <strong>Altın Kolye</strong> bulan oyuncu o gece korunur!
-          </li>
-        </ul>
-        <div
-          style="
-            background: rgba(143, 20, 32, 0.12);
-            border: 1px solid #8f1420;
-            border-radius: 10px;
-            padding: 10px;
-            margin-bottom: 14px;
-            font-size: 0.92rem;
-          "
-        >
-          🎁 <strong>Kişisel Kasanıza +100 Altın Hoş Geldin Hediyesi Eklendi!</strong><br />
-          <span style="font-size: 0.8rem; color: #4e3725;">
-            Dizi karakterlerini seçebilir veya Kişisel Kasanızdan kendi pelerin, şapka ve maskenizi tasarlayabilirsiniz.
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+          <span style="font-size: 0.72rem; letter-spacing: 1.5px; color: #7d131e; font-weight: bold;">
+            ◆ KÂHYA'NIN MEKTUBU & KURALLAR ◆
           </span>
+          <button
+            id="btn-close-envelope-x"
+            style="background: none; border: none; font-size: 1.2rem; color: #7d131e; font-weight: bold; cursor: pointer; padding: 2px 6px;"
+            title="Kapat"
+          >
+            ✕
+          </button>
         </div>
-        <button class="btn btn-crimson" id="btn-enter-castle" style="font-size: 0.95rem; padding: 10px 24px;">
-          ŞATOYA GİR & KARAKTERİNİ SEÇ
-        </button>
+
+        <div class="envelope-scroll-body">
+          <h2 style="font-size: 1.12rem; margin: 4px 0 8px;">
+            "Sofraya hoş geldiniz. Herkes davetli… ama herkes dost değil."
+          </h2>
+          <ul class="rules-list">
+            <li>
+              <strong>1. Gizli Zarf:</strong> Oyun başladığında yalnızca sizin gördüğünüz rol zarfınız açılır (<em>Misafir</em> veya <em>Hain</em>).
+            </li>
+            <li>
+              <strong>2. Gündüz Keşfi:</strong> Şatoda özgürce dolaşın (Sol Joystick veya WASD). Yatak odalarının kapısını kapatıp içeride baş başa gizli konuşabilirsiniz.
+            </li>
+            <li>
+              <strong>3. Yuvarlak Sofra & Şömine:</strong> Çan çaldığında en çok oy alanın zarfı şömineye atılır: <strong>Kırmızı Alev = Hain</strong>, <strong>Beyaz Alev = Masum Misafir</strong>.
+            </li>
+            <li>
+              <strong>4. Gece & Altın Kolye:</strong> Gece Hainler bir kurban seçer; sabah tabağı ters çevrilir. <strong>Altın Kolye</strong> sahibi o gece korunur!
+            </li>
+          </ul>
+          <div
+            style="
+              background: rgba(143, 20, 32, 0.12);
+              border: 1px solid #8f1420;
+              border-radius: 10px;
+              padding: 8px 10px;
+              font-size: 0.84rem;
+            "
+          >
+            🎁 <strong>Kasanıza +100 Altın Hoş Geldin Hediyesi Eklendi!</strong>
+          </div>
+        </div>
+
+        <div class="envelope-footer">
+          <button
+            class="btn btn-crimson"
+            id="btn-enter-castle"
+            style="width: 100%; font-size: 0.95rem; padding: 12px 16px;"
+          >
+            🔥 ŞATOYA GİR & KARAKTERİNİ SEÇ
+          </button>
+        </div>
       </div>
     </div>
 
-    <!-- Main HUD -->
+    <!-- Ana HUD -->
     <div id="hud">
-      <!-- Top Bar -->
+      <!-- Üst Çubuk -->
       <div class="top-bar">
         <div class="brand-pill interactive">
           <img src="/marka/muhur.png" alt="SOFRA" />
           <div>
-            <div class="brand-title">SOFRA: KARGALI ŞATO</div>
-            <div class="brand-sub" id="room-code-label">Oda: Bağlanıyor...</div>
+            <div class="brand-title">SOFRA</div>
+            <div class="brand-sub" id="room-code-label">Bağlanıyor...</div>
           </div>
           <span id="my-role-pill" class="role-badge hidden"></span>
         </div>
 
         <div class="phase-banner">
-          <div class="phase-name" id="phase-title">LOBİ — BEKLEME SALONU</div>
-          <div class="phase-timer" id="phase-timer">Oyuncular bekleniyor...</div>
+          <div class="phase-name" id="phase-title">LOBİ — KARAKTER & KASA</div>
+          <div class="phase-timer" id="phase-timer">Hazır olduğunda başlat</div>
         </div>
 
         <div class="vault-pill interactive">
-          <span class="gold-badge" id="gold-balance-label">🪙 100 Altın</span>
-          <button class="btn" id="btn-watch-ad" title="15 sn Ödüllü Reklam Simülasyonu">
-            🎬 Reklam İzle (+50 🪙)
+          <span class="gold-badge" id="gold-balance-label">🪙 100</span>
+          <button class="btn" id="btn-watch-ad" title="Ödüllü Reklam Simülasyonu">
+            🎬 +50🪙
           </button>
-          <button class="btn" id="btn-open-rules" title="Kurallar Zarfını Tekrar Oku">
-            📜 Zarf
+          <button class="btn" id="btn-open-rules" title="Kurallar Zarfı">
+            📜
+          </button>
+          <button class="btn" id="btn-mobile-chat-toggle" title="Sohbeti Aç">
+            💬
+            <span id="chat-unread-dot" class="unread-dot hidden"></span>
           </button>
         </div>
       </div>
 
-      <!-- Kâhya Announcement -->
+      <!-- Kâhya Duyuru -->
       <div id="announcement-box">
         "Kargalı Şato'nun kapıları açıldı. Sandalyenizi seçin veya kendi karakterinizi yaratın."
       </div>
 
-      <!-- Center Dynamic Panel (Lobby Character Studio / Voting / Night / Final / Result) -->
-      <div id="center-panel" class="center-panel interactive"></div>
+      <!-- Orta Dinamik Panel Yuvası -->
+      <div class="middle-slot">
+        <div id="center-panel" class="center-panel interactive"></div>
+      </div>
 
-      <!-- Bottom Bar -->
+      <!-- Alt Çubuk -->
       <div class="bottom-bar">
-        <div class="status-cluster interactive">
-          <div style="display: flex; justify-content: space-between; font-size: 0.82rem;">
+        <div class="status-cluster interactive" id="status-cluster">
+          <div style="display: flex; justify-content: space-between; font-size: 0.78rem;">
             <span id="zone-label">📍 Antre</span>
             <span id="fps-label" style="color: var(--text-muted);">60 FPS</span>
           </div>
           <div class="stamina-track">
             <div class="stamina-fill" id="stamina-bar"></div>
           </div>
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 8px; gap: 8px;">
-            <span style="font-size: 0.74rem; color: var(--text-muted);">
-              Hareket: WASD | Koş: Shift | Kapı: E
+          <div
+            class="desktop-hint"
+            style="display: flex; justify-content: space-between; align-items: center; margin-top: 6px; gap: 8px;"
+          >
+            <span style="font-size: 0.72rem; color: var(--text-muted);">
+              WASD: Yürü | Shift: Koş | E: Kapı
             </span>
-            <button class="btn hidden" id="btn-door-interact">🚪 Kapıyı Aç/Kapat (E)</button>
+            <button class="btn hidden" id="btn-door-interact">🚪 Kapı (E)</button>
           </div>
         </div>
 
-        <div class="chat-cluster interactive">
+        <div class="chat-cluster interactive" id="chat-cluster">
+          <div class="chat-header-mobile">
+            <span>💬 Şato Fısıltı & Sohbet</span>
+            <button class="btn" id="btn-close-mobile-chat" style="padding: 3px 9px;">✕ Kapat</button>
+          </div>
           <div id="chat-log"></div>
           <form class="chat-form" id="chat-form">
             <input
               type="text"
               id="chat-input"
-              placeholder="Yakındakilere veya kapalı odadakilere fısılda..."
+              placeholder="Yakındakilere fısılda..."
               maxlength="140"
               autocomplete="off"
             />
@@ -650,10 +931,19 @@
       </div>
     </div>
 
-    <!-- Mobile Touch Joystick -->
+    <!-- Mobil 3D Dokunmatik Kontroller (Yalnızca Gündüz Keşfinde Görünür) -->
     <div id="mobile-controls">
       <div class="joystick-zone" id="joystick-zone">
         <div class="joystick-knob" id="joystick-knob"></div>
+      </div>
+
+      <div class="mobile-action-pad">
+        <button class="action-circle-btn hidden" id="btn-mobile-door">
+          🚪 KAPI
+        </button>
+        <button class="action-circle-btn" id="btn-mobile-sprint">
+          🏃 KOŞ
+        </button>
       </div>
     </div>
 

@@ -108,12 +108,15 @@ export class CastleScene {
     this.buildRoundTableAndChairs();
     this.buildFireplaceAndEmbers();
     this.buildAtmosphereDust();
+    this.onResize();
 
     window.addEventListener("resize", () => this.onResize());
   }
 
   private onResize(): void {
-    this.camera.aspect = window.innerWidth / window.innerHeight;
+    const aspect = window.innerWidth / Math.max(1, window.innerHeight);
+    this.camera.aspect = aspect;
+    this.camera.fov = aspect < 1 ? 76 : 62;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(window.innerWidth, window.innerHeight);
   }
@@ -851,7 +854,8 @@ export class CastleScene {
     const target = new THREE.Vector3(playerX, 1.55, playerZ);
     this.cameraTarget.lerp(target, Math.min(1, dt * 14));
 
-    const distance = 4.6;
+    const isPortrait = window.innerWidth < window.innerHeight;
+    const distance = isPortrait ? 5.3 : 4.6;
     const horizDist = distance * Math.cos(this.cameraPitch);
     const vertDist = distance * Math.sin(this.cameraPitch);
 
