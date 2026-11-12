@@ -85,6 +85,28 @@ function createGuestToken(): string {
   return `gst_${Math.random().toString(36).slice(2, 10)}_${Date.now().toString(36)}`;
 }
 
+type SuspectStamp = "unknown" | "trust" | "suspect" | "traitor";
+type ClueCategory = "clue" | "fire" | "note";
+
+interface ClueEntry {
+  id: string;
+  round: number;
+  category: ClueCategory;
+  icon: string;
+  source: string;
+  text: string;
+  time: string;
+  personal?: boolean;
+}
+
+function escapeHtml(raw: string): string {
+  return raw
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
 class SofraGameApp {
   private scene: CastleScene;
   private client: Client;
@@ -161,6 +183,19 @@ class SofraGameApp {
     chronicle: string[];
     topMatchBond?: { seatA: number; nickA: string; seatB: number; nickB: string; score: number } | null;
   } | null = null;
+
+  // 📖 Orta Çağ Dedektif & Taktik El Kitapçığı (Otomatik İpucu Kaydı + Hibrit Seçim Kontrolü)
+  private handbookOpen = false;
+  private handbookViewMode: "book" | "clues" | "suspects" | "actions" = "book";
+  private clueFilter: "all" | ClueCategory = "all";
+  private clueJournal: ClueEntry[] = [];
+  private recordedClueKeys = new Set<string>();
+  private unreadClueCount = 0;
+  private suspectTags: Record<number, SuspectStamp> = {};
+  private confirmedSeatFlames: Record<number, "RED" | "WHITE" | "EXEC"> = {};
+  private preTargetSeat = 0;
+  private lastRecordedBoardNote = "";
+  private lastHandbookRenderHash = "";
 
   // Menu idle rotation, PC zero-click mouse edge pan & FPS
   private pcEdgePanDir = 0;
@@ -694,6 +729,8 @@ class SofraGameApp {
     document.getElementById("main-menu-overlay")?.classList.add("hidden");
     document.getElementById("inspect-overlay")?.classList.add("hidden");
     document.getElementById("puzzle-modal")?.classList.add("hidden");
+    this.closeHandbookModal();
+    this.loadHandbookFromSession();
     document.getElementById("hud")?.classList.remove("hidden");
     document.getElementById("chat-log")!.innerHTML = "";
     this.pmThreads.clear();
@@ -712,6 +749,22 @@ class SofraGameApp {
         pill.classList.add("role-misafir");
         pill.textContent = "🕯️ MİSAFİR";
       }
+      const matesText =
+        payload.role === "HAIN" && payload.traitorMates?.length
+          ? ` Gizli suç ortağın: ${payload.traitorMates.map((m) => `#${m.seat} ${m.nick}`).join(", ")}.`
+          : "";
+      this.addClueEntry({
+        category: "note",
+        icon: payload.role === "HAIN" ? "🗡️" : "🕯️",
+        source: "Gizli Rol Zarfın",
+        text: escapeHtml(
+          payload.role === "HAIN"
+            ? `Rolün: HAİN! Gündüz şüpheleri dağıt, gece mecliste infaz kararı ver.${matesText}`
+            : "Rolün: MİSAFİR! Şatodaki ipuçlarını topla, fısıltı barlarını incele ve Hainleri şömineye gönder."
+        ),
+        dedupeKey: "role_envelope_match",
+        silent: true
+      });
       this.lastCenterRenderHash = "";
     });
 
@@ -781,9 +834,19 @@ class SofraGameApp {
       "farewell_letter",
       (data: { seat: number; nick: string; flame: string; roleLabel: string; note: string }) => {
         const isRed = data.flame === "RED";
+        this.confirmedSeatFlames[data.seat] = isRed ? "RED" : "WHITE";
         this.scene.triggerFireplaceFlame(isRed ? "red" : "white");
         sfx.playFireWhoosh(isRed);
         this.showFarewellToast(data);
+        this.addClueEntry({
+          category: "fire",
+          icon: isRed ? "🔥" : "❄️",
+          source: "Veda Mektubu & Şömine",
+          text: escapeHtml(
+            `Koltuk #${data.seat} ${data.nick} ayrıldı (${isRed ? "KIRMIZI ALEV = HAİN!" : "BEYAZ ALEV = MASUM"}): "${data.note}"`
+          ),
+          dedupeKey: `farewell_${data.seat}`
+        });
       }
     );
 
@@ -800,12 +863,27 @@ class SofraGameApp {
     // 🔍 KARAKTER İNCELE & ARKADAŞLIK / FISILTI YAKINLIK BARI SONUCU
     room.onMessage("inspect_result", (data: any) => {
       this.renderInspectOverlay(data);
+      if (data?.topBonds?.length > 0 && data.topBonds[0].score >= 25) {
+        const top = data.topBonds[0];
+        const rnd = (this.room?.state as any)?.round || 1;
+        this.addClueEntry({
+          category: "clue",
+          icon: "🔍",
+          source: `Yakınlık Raporu (#${data.seat} ${escapeHtml(String(data.nick || ""))})`,
+          text: escapeHtml(
+            `En güçlü fısıltı bağı: #${top.seat} ${top.nick} ile %${top.score} (${top.tier}) · Konum: ${data.roomName}`
+          ),
+          dedupeKey: `insp_${rnd}_${data.seat}_${top.seat}`,
+          silent: true
+        });
+      }
     });
 
     // 📜 KİŞİSEL GİZLİ GÖREVLER ("Bunla Yakınlaş, Bunla Konuş" + Şato Görevleri)
     room.onMessage("quests_update", (data: { round: number; quests: any[] }) => {
       this.myQuests = data.quests || [];
       this.renderDayQuests();
+      if (this.handbookOpen) this.renderHandbookModal();
     });
 
     room.onMessage("quest_completed", (data: { title: string; rewardGold: number }) => {
@@ -832,6 +910,16 @@ class SofraGameApp {
         this.saveVault(false);
         sfx.playGoldChime();
       }
+      if (fb.ok && fb.text) {
+        const rnd = (this.room?.state as any)?.round || 1;
+        this.addClueEntry({
+          category: "clue",
+          icon: "🔮",
+          source: "Şato Keşif & Kürsü İpucu",
+          text: escapeHtml(fb.text),
+          dedupeKey: `puz_${rnd}_${fb.text}`
+        });
+      }
       this.showPuzzleFeedbackModal(fb.text, fb.ok);
     });
 
@@ -847,6 +935,14 @@ class SofraGameApp {
         this.activeTrial.stage = 4;
         this.activeTrial.completedClue = `${res.wonNecklace ? "📿 ALTIN KOLYE KAZANDIN! | " : ""}${res.clueText}`;
       }
+      const rnd = (this.room?.state as any)?.round || 1;
+      this.addClueEntry({
+        category: "clue",
+        icon: res.wonNecklace ? "📿" : "🧩",
+        source: "1 Dk Bulmaca Sınavı Kanıtı",
+        text: escapeHtml(`${res.wonNecklace ? "[Altın Kolye Kazanıldı] " : ""}${res.clueText}`),
+        dedupeKey: `trial_${rnd}_${res.clueText}`
+      });
       this.lastCenterRenderHash = "";
     });
 
@@ -866,6 +962,14 @@ class SofraGameApp {
     room.onMessage("night_watch_result", (d: { text: string }) => {
       this.nightWatchNote = d.text;
       sfx.playSealBreak();
+      const rnd = (this.room?.state as any)?.round || 1;
+      this.addClueEntry({
+        category: "clue",
+        icon: "🕯️",
+        source: "Gece Kapı Deliği Gözlemi",
+        text: escapeHtml(d.text),
+        dedupeKey: `watch_${rnd}_${d.text}`
+      });
       this.lastCenterRenderHash = "";
     });
 
@@ -874,13 +978,22 @@ class SofraGameApp {
       "night_execution_event",
       (ev: { protectedByNecklace: boolean; victimId: string; victimSeat: number; victimNick: string }) => {
         sfx.playCastleBell();
+        const rnd = (this.room?.state as any)?.round || 1;
         if (ev.protectedByNecklace) {
           this.showExecutionToast(
             "📿 ALTIN KOLYE İNFAZI DURDURDU!",
             "Gece Hainler Meclisi infaz mührünü bastı ancak Altın Kolye parlayarak sahibini ölümden kurtardı!",
             false
           );
+          this.addClueEntry({
+            category: "fire",
+            icon: "📿",
+            source: "Gece İnfazı Engellendi",
+            text: "Gece Hainler Meclisi infaz mührü bastı fakat Altın Kolye hedef alınan kişiyi ölümden kurtardı!",
+            dedupeKey: `night_save_${rnd}`
+          });
         } else if (ev.victimId) {
+          this.confirmedSeatFlames[ev.victimSeat] = "EXEC";
           const isMe = ev.victimId === this.room?.sessionId;
           this.showExecutionToast(
             isMe ? "💀 HAİNLER TOPLANTISINDA İNFAZ EDİLDİN!" : `🩸 GECE İNFAZI: KOLTUK #${ev.victimSeat}`,
@@ -889,6 +1002,15 @@ class SofraGameApp {
               : `Hainler gece toplantısında Koltuk #${ev.victimSeat} (${ev.victimNick}) için İNFAZ mührü bastı!`,
             true
           );
+          this.addClueEntry({
+            category: "fire",
+            icon: "🩸",
+            source: "Gece Hainler Meclisi İnfazı",
+            text: escapeHtml(
+              `Koltuk #${ev.victimSeat} (${ev.victimNick}) gece Hainler toplantısında infaz edildi (Masum Misafirdi)!`
+            ),
+            dedupeKey: `night_exec_${ev.victimSeat}`
+          });
         }
       }
     );
@@ -905,6 +1027,19 @@ class SofraGameApp {
         votes: Array<{ voterSeat: number; voterNick: string; targetSeat: number; targetNick: string }>;
       }) => {
         this.lastVoteReveal = d.votes || [];
+        if (this.lastVoteReveal.length > 0) {
+          const rnd = (this.room?.state as any)?.round || 1;
+          const summary = this.lastVoteReveal
+            .map((v) => `#${v.voterSeat} ${v.voterNick} ➔ #${v.targetSeat} ${v.targetNick}`)
+            .join(" · ");
+          this.addClueEntry({
+            category: "fire",
+            icon: "🗳️",
+            source: "Yuvarlak Sofra Açık Oy Dökümü",
+            text: escapeHtml(summary),
+            dedupeKey: `votes_${rnd}_${summary}`
+          });
+        }
         this.lastCenterRenderHash = "";
       }
     );
@@ -923,12 +1058,28 @@ class SofraGameApp {
     // 📜 GÜNDÜZ HAİN SABOTAJI: İSİMSİZ SAHTE NOT
     room.onMessage("anonymous_note", (d: { text: string }) => {
       sfx.playSealBreak();
+      const rnd = (this.room?.state as any)?.round || 1;
+      this.addClueEntry({
+        category: "clue",
+        icon: "📜",
+        source: "Cebe Bırakılan İsimsiz Not (⚠️ Sahte Olabilir)",
+        text: escapeHtml(`"${d.text}"`),
+        dedupeKey: `anon_${rnd}_${d.text}`
+      });
       this.showExecutionToast("📜 CEBİNE İSİMSİZ BİR NOT BIRAKILDI!", `"${d.text}"`, true);
     });
 
     // 🔔 KÂHYA ZİLİ GİZLİ TAKIM YANITI
     room.onMessage("kahya_answer", (d: { sameTeam: boolean; text: string }) => {
       sfx.playGoldChime();
+      const rnd = (this.room?.state as any)?.round || 1;
+      this.addClueEntry({
+        category: "clue",
+        icon: "🔔",
+        source: "Kâhya Zili Takım Sorgusu (50🪙)",
+        text: escapeHtml(d.text),
+        dedupeKey: `kahya_${rnd}_${d.text}`
+      });
       this.showPuzzleFeedbackModal(d.text, true);
     });
 
@@ -1025,6 +1176,7 @@ class SofraGameApp {
     document.getElementById("my-role-pill")?.classList.add("hidden");
     document.getElementById("inspect-overlay")?.classList.add("hidden");
     document.getElementById("puzzle-modal")?.classList.add("hidden");
+    this.closeHandbookModal();
     document.getElementById("main-menu-overlay")?.classList.remove("hidden");
     this.scene.syncCharacters([], 0);
     this.refreshLiveRooms();
@@ -1238,6 +1390,12 @@ class SofraGameApp {
     const cycleLight = () => {
       this.scene.cycleBrightnessBoost();
     };
+    document.getElementById("btn-open-handbook")?.addEventListener("click", () => this.toggleHandbookModal());
+    document.getElementById("handbook-modal")?.addEventListener("click", (e) => {
+      if ((e.target as HTMLElement)?.id === "handbook-modal") {
+        this.closeHandbookModal();
+      }
+    });
     document.getElementById("btn-hud-brightness")?.addEventListener("click", cycleLight);
     document.getElementById("btn-force-landscape")?.addEventListener("click", () => this.enterLandscapeFullscreen());
     document.getElementById("btn-menu-landscape")?.addEventListener("click", () => this.enterLandscapeFullscreen());
@@ -1330,6 +1488,19 @@ class SofraGameApp {
         return;
       }
       const k = e.key.toLowerCase();
+      if (k === "escape" && this.handbookOpen) {
+        e.preventDefault();
+        this.closeHandbookModal();
+        return;
+      }
+      if ((k === "b" || k === "j") && this.room) {
+        e.preventDefault();
+        if (document.pointerLockElement) {
+          document.exitPointerLock?.();
+        }
+        this.toggleHandbookModal();
+        return;
+      }
       if (k === "enter" && this.room) {
         e.preventDefault();
         if (document.pointerLockElement) {
@@ -1416,7 +1587,7 @@ class SofraGameApp {
       const targetEl = e.target as HTMLElement | null;
       const overInteractiveUI = Boolean(
         targetEl?.closest(
-          ".interactive, .ko-pm-window, .day-quest-box, .lol-wheel-cluster, .left-control-cluster, #puzzle-modal, #dm-picker-modal, #inspect-overlay"
+          ".interactive, .ko-pm-window, .day-quest-box, .lol-wheel-cluster, .left-control-cluster, #puzzle-modal, #dm-picker-modal, #inspect-overlay, #handbook-modal"
         )
       );
       if (overInteractiveUI) {
@@ -1904,11 +2075,13 @@ class SofraGameApp {
     const canAskKahya = !isGhost && (state.pot || 0) >= 50;
     const activeStation = !isGhost ? this.getActiveMedievalStation() : undefined;
 
-    const key = `${state.round}|${isHain}|${isGhost}|${canAskKahya}|${state.pot || 0}|${activeStation?.id || ""}`;
+    const key = `${state.round}|${isHain}|${isGhost}|${canAskKahya}|${state.pot || 0}|${activeStation?.id || ""}|${this.clueJournal.length}|${this.unreadClueCount}`;
     if (key === this.lastDayExtraKey) return;
     this.lastDayExtraKey = key;
 
+    const unreadTag = this.unreadClueCount > 0 ? ` (+${this.unreadClueCount} Yeni!)` : ` (${this.clueJournal.length})`;
     const btns: string[] = [
+      `<button class="btn" id="btn-day-handbook" style="flex:1 1 100%; padding:5px 8px; font-size:0.72rem; border-color:#ffd166; color:#ffe9a8; background:linear-gradient(180deg,#54371d,#2b1b0f);">📖 El Kitapçığı & İpuçlarım${unreadTag}</button>`,
       `<button class="btn" id="btn-day-castle-map" style="flex:1; padding:4px 7px; font-size:0.7rem; border-color:var(--gold); color:var(--gold);">🗺️ Şato Odaları</button>`
     ];
     if (activeStation) {
@@ -1934,6 +2107,9 @@ class SofraGameApp {
 
     box.innerHTML = btns.join("");
 
+    document.getElementById("btn-day-handbook")?.addEventListener("click", () => {
+      this.openHandbookModal();
+    });
     document.getElementById("btn-day-castle-map")?.addEventListener("click", () => {
       this.openCastleRoomsGuideModal();
     });
@@ -2322,6 +2498,914 @@ class SofraGameApp {
   }
 
   // ==========================================================================
+  // 📖 ORTA ÇAĞ DEDEKTİF & TAKTİK EL KİTAPÇIĞI (İPUCU KAYDI + HİBRİT SEÇİM)
+  // ==========================================================================
+  private getHandbookStorageKey(): string {
+    return `sofra_handbook_${this.room?.roomId || "local"}`;
+  }
+
+  private saveHandbookToSession(): void {
+    try {
+      const payload = {
+        clueJournal: this.clueJournal,
+        recordedKeys: Array.from(this.recordedClueKeys),
+        suspectTags: this.suspectTags,
+        confirmedSeatFlames: this.confirmedSeatFlames,
+        preTargetSeat: this.preTargetSeat
+      };
+      sessionStorage.setItem(this.getHandbookStorageKey(), JSON.stringify(payload));
+    } catch {
+      // ignore storage quota errors
+    }
+    this.updateHandbookHudBadge();
+  }
+
+  private loadHandbookFromSession(): void {
+    this.clueJournal = [];
+    this.recordedClueKeys.clear();
+    this.suspectTags = {};
+    this.confirmedSeatFlames = {};
+    this.preTargetSeat = 0;
+    this.unreadClueCount = 0;
+    this.lastRecordedBoardNote = "";
+    try {
+      const raw = sessionStorage.getItem(this.getHandbookStorageKey());
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed.clueJournal)) this.clueJournal = parsed.clueJournal;
+        if (Array.isArray(parsed.recordedKeys)) {
+          this.recordedClueKeys = new Set<string>(parsed.recordedKeys);
+        }
+        if (parsed.suspectTags && typeof parsed.suspectTags === "object") {
+          this.suspectTags = parsed.suspectTags;
+        }
+        if (parsed.confirmedSeatFlames && typeof parsed.confirmedSeatFlames === "object") {
+          this.confirmedSeatFlames = parsed.confirmedSeatFlames;
+        }
+        if (typeof parsed.preTargetSeat === "number") {
+          this.preTargetSeat = parsed.preTargetSeat;
+        }
+      }
+    } catch {
+      // ignore parse errors
+    }
+    this.updateHandbookHudBadge();
+  }
+
+  private resetHandbookForNewMatch(): void {
+    this.clueJournal = [];
+    this.recordedClueKeys.clear();
+    this.suspectTags = {};
+    this.confirmedSeatFlames = {};
+    this.preTargetSeat = 0;
+    this.unreadClueCount = 0;
+    this.lastRecordedBoardNote = "";
+    try {
+      sessionStorage.removeItem(this.getHandbookStorageKey());
+    } catch {
+      // ignore
+    }
+    this.updateHandbookHudBadge();
+    if (this.handbookOpen) {
+      this.renderHandbookModal();
+    }
+  }
+
+  private updateHandbookHudBadge(): void {
+    const btn = document.getElementById("btn-open-handbook");
+    const badge = document.getElementById("handbook-badge");
+    if (badge) {
+      badge.textContent =
+        this.unreadClueCount > 0 ? `+${this.unreadClueCount}` : `${this.clueJournal.length}`;
+    }
+    if (btn) {
+      btn.classList.toggle("has-unread", this.unreadClueCount > 0);
+    }
+  }
+
+  private addClueEntry(opts: {
+    category: ClueCategory;
+    icon: string;
+    source: string;
+    text: string;
+    dedupeKey?: string;
+    personal?: boolean;
+    silent?: boolean;
+  }): void {
+    if (opts.dedupeKey && this.recordedClueKeys.has(opts.dedupeKey)) {
+      return;
+    }
+    if (opts.dedupeKey) {
+      this.recordedClueKeys.add(opts.dedupeKey);
+    }
+    const round = Math.max(1, Number((this.room?.state as any)?.round) || 1);
+    const time = new Date().toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" });
+    this.clueJournal.unshift({
+      id: `cl_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      round,
+      category: opts.category,
+      icon: opts.icon,
+      source: opts.source,
+      text: opts.text,
+      time,
+      personal: opts.personal
+    });
+    if (this.clueJournal.length > 80) {
+      this.clueJournal.length = 80;
+    }
+    if (!this.handbookOpen && !opts.silent) {
+      this.unreadClueCount += 1;
+    }
+    this.saveHandbookToSession();
+    this.lastCenterRenderHash = "";
+    if (this.handbookOpen) {
+      this.renderHandbookModal();
+    }
+  }
+
+  private cycleSuspectStamp(seat: number): void {
+    const order: SuspectStamp[] = ["unknown", "trust", "suspect", "traitor"];
+    const cur = this.suspectTags[seat] || "unknown";
+    const next = order[(order.indexOf(cur) + 1) % order.length];
+    this.suspectTags[seat] = next;
+    this.saveHandbookToSession();
+    this.lastCenterRenderHash = "";
+    sfx.playSealBreak();
+  }
+
+  private renderSeatSuspectBadge(seat: number): string {
+    const stamp = this.suspectTags[seat] || "unknown";
+    const isPre = this.preTargetSeat === seat;
+    const parts: string[] = [];
+    if (stamp === "trust") {
+      parts.push(
+        `<span style="background:rgba(27,94,67,0.55); border:1px solid #52b788; color:#b7f7d4; border-radius:99px; padding:1px 6px; font-size:0.64rem; font-weight:bold;">🟢 Güvenilir</span>`
+      );
+    } else if (stamp === "suspect") {
+      parts.push(
+        `<span style="background:rgba(168,112,18,0.52); border:1px solid #ffd166; color:#ffeaa7; border-radius:99px; padding:1px 6px; font-size:0.64rem; font-weight:bold;">🟡 Şüpheli</span>`
+      );
+    } else if (stamp === "traitor") {
+      parts.push(
+        `<span style="background:rgba(165,20,36,0.68); border:1px solid #ff5768; color:#ffd6dc; border-radius:99px; padding:1px 6px; font-size:0.64rem; font-weight:bold;">🔴 KESİN HAİN!</span>`
+      );
+    }
+    if (isPre) {
+      parts.push(
+        `<span style="background:rgba(255,209,102,0.22); border:1px solid #ffd166; color:#ffe699; border-radius:99px; padding:1px 6px; font-size:0.64rem; font-weight:bold;">🎯 Ön-Hedefin</span>`
+      );
+    }
+    if (parts.length === 0) return "";
+    return `<div style="display:flex; gap:4px; flex-wrap:wrap; margin-top:4px;">${parts.join("")}</div>`;
+  }
+
+  public toggleHandbookModal(): void {
+    if (this.handbookOpen) {
+      this.closeHandbookModal();
+    } else {
+      this.openHandbookModal();
+    }
+  }
+
+  public openHandbookModal(mode?: "book" | "clues" | "suspects" | "actions"): void {
+    if (!this.room) return;
+    if (document.pointerLockElement) {
+      document.exitPointerLock?.();
+    }
+    if (mode) this.handbookViewMode = mode;
+    this.handbookOpen = true;
+    this.unreadClueCount = 0;
+    this.updateHandbookHudBadge();
+    this.lastDayExtraKey = "";
+    sfx.playSealBreak();
+    const modal = document.getElementById("handbook-modal");
+    modal?.classList.remove("hidden");
+    this.renderHandbookModal();
+  }
+
+  public closeHandbookModal(): void {
+    this.handbookOpen = false;
+    document.getElementById("handbook-modal")?.classList.add("hidden");
+  }
+
+  private renderHandbookModal(): void {
+    const shell = document.getElementById("handbook-shell-content");
+    if (!shell || !this.room) return;
+
+    // Kullanıcı o an kişisel not kutusuna yazı yazıyorsa metni ve odak durumunu koru
+    const prevInput = document.getElementById("handbook-note-input") as HTMLInputElement | null;
+    const savedNoteDraft = prevInput ? prevInput.value : "";
+    const wasInputFocused = document.activeElement?.id === "handbook-note-input";
+
+    const state: any = this.room.state || {};
+    const phase: string = state.phase || "LOBBY";
+    const round: number = state.round || 1;
+    const myId = this.room.sessionId;
+    const me = myId ? state.players?.get(myId) : null;
+    const isAlive = Boolean(me && me.alive && !me.ghost);
+    const isHain = this.myRole?.role === "HAIN";
+    const mateIds = new Set((this.myRole?.traitorMates || []).map((m) => m.id));
+    const curZone = detectRoomZone(this.localX, this.localZ);
+    const remSec = Math.max(0, Math.ceil(((state.phaseEndsAt || 0) - Date.now()) / 1000));
+
+    const rolePillHtml = this.myRole
+      ? isHain
+        ? `<span style="background:#8f1422; border:1px solid #ff6b7a; color:#fff; border-radius:99px; padding:2px 8px; font-size:0.7rem; font-weight:bold;">🗡️ Gizli Rolün: HAİN</span>`
+        : `<span style="background:#1c3d5e; border:1px solid #7ab8ff; color:#e6f3ff; border-radius:99px; padding:2px 8px; font-size:0.7rem; font-weight:bold;">🕯️ Gizli Rolün: MİSAFİR</span>`
+      : `<span style="color:var(--text-muted); font-size:0.7rem;">Lobi Hazırlığı</span>`;
+
+    // Üst Canlı Evre Taktik Şeridi
+    let phaseActionHtml = "";
+    if (phase === "VOTE") {
+      const votedPlayer =
+        this.selectedVoteTargetId && this.selectedVoteTargetId !== "ABSTAIN"
+          ? state.players?.get(this.selectedVoteTargetId)
+          : null;
+      phaseActionHtml = `
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <strong style="color:#ff6b7a;">🗳️ ŞÖMİNE OYLAMASI AKTİF:</strong>
+          <span>${
+            !isAlive
+              ? "👻 Hayalet olarak izliyorsun"
+              : this.selectedVoteTargetId === "ABSTAIN"
+              ? "🏳️ Çekimser kaldın"
+              : votedPlayer
+              ? `✅ Oyun Mühürlendi: #${votedPlayer.seat} ${escapeHtml(votedPlayer.nick)}`
+              : "Sağ sayfadan kime oy atacağını tek tıkla seç!"
+          }</span>
+        </div>
+        <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+          ${
+            isAlive
+              ? `<button class="btn" id="hb-btn-abstain" style="padding:4px 9px; font-size:0.72rem;">🏳️ Çekimser Kal</button>`
+              : ""
+          }
+          <button class="btn btn-crimson" id="hb-btn-focus-main" style="padding:4px 9px; font-size:0.72rem;">🗳️ Ana Seçim Ekranı</button>
+        </div>
+      `;
+    } else if (phase === "NIGHT") {
+      if (isHain && isAlive) {
+        const picked = this.selectedNightTargetId ? state.players?.get(this.selectedNightTargetId) : null;
+        phaseActionHtml = `
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <strong style="color:#ff5768;">🩸 HAİNLER TOPLANTISI AKTİF:</strong>
+            <span>${
+              picked
+                ? `🎯 Seçili Kurban: #${picked.seat} ${escapeHtml(picked.nick)}`
+                : "Sağ sayfadan bu gece infaz edilecek Misafiri seç!"
+            }</span>
+          </div>
+          <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+            ${
+              picked
+                ? `<button class="btn btn-crimson" id="hb-btn-seal-night" style="padding:4px 10px; font-size:0.73rem;">🩸 #${picked.seat} İnfazını Mühürle!</button>`
+                : ""
+            }
+            <button class="btn" id="hb-btn-focus-main" style="padding:4px 9px; font-size:0.72rem;">🌑 Meclis Sohbeti</button>
+          </div>
+        `;
+      } else {
+        phaseActionHtml = `
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <strong style="color:var(--gold);">🌑 2 DK GECE MOLASI (Hainler Toplantıda):</strong>
+            <span>${
+              this.nightWatchNote
+                ? "✅ Bu gece koridoru dinledin."
+                : isAlive
+                ? "Kapı deliğinden koridoru dinleyerek ipucu yakala!"
+                : "Sabah çanı bekleniyor..."
+            }</span>
+          </div>
+          <div style="display:flex; gap:6px; align-items:center;">
+            ${
+              isAlive && !this.nightWatchNote
+                ? `<button class="btn btn-crimson" id="hb-btn-night-watch" style="padding:4px 10px; font-size:0.73rem;">🕯️ Kapı Deliğinden Dinle (+10🪙)</button>`
+                : ""
+            }
+          </div>
+        `;
+      }
+    } else if (phase === "TRIAL") {
+      phaseActionHtml = `
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <strong style="color:#8ce99a;">🧩 1 DK ORTAK ŞATO BULMACA SINAVI AKTİF!</strong>
+          <span>3 aşamayı çözüp 📿 Altın Kolye ve Dedektif İpucu kazan!</span>
+        </div>
+        <div style="display:flex; gap:6px; align-items:center;">
+          ${
+            isHain && isAlive && this.activeTrial?.canSabotage
+              ? `<button class="btn btn-crimson" id="hb-btn-trial-sabotage" style="padding:4px 9px; font-size:0.72rem;">🗡️ Sınavı Sabote Et (+25🪙)</button>`
+              : ""
+          }
+          <button class="btn btn-emerald" id="hb-btn-focus-main" style="padding:4px 10px; font-size:0.73rem;">🧩 Bulmacayı Çözmeye Geç</button>
+        </div>
+      `;
+    } else if (phase === "FINAL") {
+      phaseActionHtml = `
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <strong style="color:var(--gold);">⚖️ SON KİŞİLER FİNAL KARARI:</strong>
+          <span>İpuçlarına göre son hükmünü buradan mühürleyebilirsin:</span>
+        </div>
+        <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+          <button class="btn ${this.selectedFinalChoice === "TRUST" ? "btn-emerald" : ""}" id="hb-btn-final-trust" style="padding:4px 10px; font-size:0.73rem;">🤝 Hepimiz Misafiriz</button>
+          <button class="btn ${this.selectedFinalChoice === "DOUBT" ? "btn-crimson" : ""}" id="hb-btn-final-doubt" style="padding:4px 10px; font-size:0.73rem;">🔥 Aramızda Hain Var</button>
+        </div>
+      `;
+    } else if (phase === "TABLE") {
+      phaseActionHtml = `
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <strong style="color:var(--gold);">🗣️ YUVARLAK SOFRA TARTIŞMASI:</strong>
+          <span>İpuçlarına bakarak sağ sayfadan <strong>👉 Suçla</strong> veya <strong>🎯 Oylama Ön-Hedefi</strong> kilitle!</span>
+        </div>
+        <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+          ${
+            isAlive && (state.pot || 0) >= 50
+              ? `<button class="btn" id="hb-btn-kahya" style="padding:4px 9px; font-size:0.72rem;">🔔 Kâhya'ya Sor (50🪙)</button>`
+              : ""
+          }
+          <button class="btn" id="hb-btn-ready" style="padding:4px 9px; font-size:0.72rem;">⏩ Hazırım ${this.readyStatusText}</button>
+        </div>
+      `;
+    } else if (phase === "DAY") {
+      const st = isAlive ? this.getActiveMedievalStation() : undefined;
+      phaseActionHtml = `
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <strong style="color:var(--gold);">📍 ${escapeHtml(curZone.name)} (Gün ${round}):</strong>
+          <span>${
+            st
+              ? `${st.icon} Bu odada <strong>${escapeHtml(st.shortLabel)}</strong> etkileşimi hazır!`
+              : "Odaları gez, fısıldaş ve yakaladığın ipuçlarını takip et."
+          }</span>
+        </div>
+        <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+          ${
+            st
+              ? `<button class="btn btn-emerald" id="hb-btn-open-station" style="padding:4px 9px; font-size:0.72rem;">${st.icon} ${escapeHtml(st.shortLabel)} Seçenekleri</button>`
+              : ""
+          }
+          <button class="btn" id="hb-btn-ready" style="padding:4px 9px; font-size:0.72rem;">⏩ Hazırım ${this.readyStatusText}</button>
+        </div>
+      `;
+    } else {
+      phaseActionHtml = `
+        <div>
+          <strong style="color:var(--gold);">📜 Durum:</strong> ${escapeHtml(state.announcement || "Şato kayıtları hazır.")}
+        </div>
+        <span style="color:var(--gold); font-size:0.74rem;">🪙 Ortak Hazine: ${state.pot || 0}</span>
+      `;
+    }
+
+    // SOL SAYFA: YAKALANAN İPUÇLARI & KANITLAR
+    const clueCount = this.clueJournal.filter((c) => c.category === "clue").length;
+    const fireCount = this.clueJournal.filter((c) => c.category === "fire").length;
+    const noteCount = this.clueJournal.filter((c) => c.category === "note").length;
+    const filteredClues =
+      this.clueFilter === "all"
+        ? this.clueJournal
+        : this.clueJournal.filter((c) => c.category === this.clueFilter);
+
+    const cluesListHtml =
+      filteredClues.length === 0
+        ? `<div style="padding:14px 10px; text-align:center; color:var(--text-muted); font-size:0.78rem; line-height:1.5; border:1px dashed rgba(226,189,83,0.3); border-radius:10px;">
+             🕯️ <strong>Henüz bu kategoride kayıtlı ipucu yok.</strong><br/>
+             Şatoda <em>Rün Kürsüsü, Simya Mahzeni, Cephanelik, Kütüphane, Zindan, 1 Dk Bulmaca Sınavı, Kâhya Zili, Kapı Dinleme, Şömine Alevleri</em> ve <em>Açık Oylamalar</em> gerçekleştiğinde tüm kanıtlar buraya <strong>otomatik kaydedilir!</strong>
+           </div>`
+        : filteredClues
+            .map(
+              (c) => `
+              <div class="clue-entry ${c.category === "fire" ? "cat-fire" : c.category === "note" ? "cat-note" : ""}">
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:6px; margin-bottom:2px;">
+                  <span style="font-size:0.68rem; color:var(--gold); font-weight:bold;">
+                    GÜN ${c.round} · ${c.icon} ${c.source}
+                  </span>
+                  <span style="font-size:0.65rem; color:var(--text-muted); display:flex; align-items:center; gap:5px;">
+                    ${c.time}
+                    ${
+                      c.personal
+                        ? `<button class="btn" data-del-note="${c.id}" title="Notu Sil" style="padding:0 5px; font-size:0.62rem;">✕</button>`
+                        : ""
+                    }
+                  </span>
+                </div>
+                <div>${c.text}</div>
+              </div>
+            `
+            )
+            .join("");
+
+    const leftCluesPageHtml = `
+      <div class="handbook-page">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:6px; flex-wrap:wrap;">
+          <strong style="color:var(--gold); font-size:0.86rem;">🕵️ YAKALANAN İPUÇLARI & KANITLAR (${this.clueJournal.length})</strong>
+          <div style="display:flex; gap:4px; flex-wrap:wrap;">
+            ${[
+              { k: "all", lbl: `Tümü (${this.clueJournal.length})` },
+              { k: "clue", lbl: `🔍 İpucu (${clueCount})` },
+              { k: "fire", lbl: `🔥 Oylar (${fireCount})` },
+              { k: "note", lbl: `✍️ Not (${noteCount})` }
+            ]
+              .map(
+                (f) => `
+                <button class="handbook-tab-btn ${this.clueFilter === f.k ? "active" : ""}" data-clue-filter="${f.k}" style="padding:2px 7px; font-size:0.68rem;">
+                  ${f.lbl}
+                </button>
+              `
+              )
+              .join("")}
+          </div>
+        </div>
+
+        <form id="handbook-note-form" style="display:flex; gap:5px;">
+          <input
+            type="text"
+            id="handbook-note-input"
+            maxlength="110"
+            placeholder="✍️ Kendi dedektif notunu yaz (Örn: #4 Kütüphanede kaçtı)..."
+            style="flex:1; padding:6px 9px; font-size:0.76rem;"
+          />
+          <button type="submit" class="btn" style="padding:6px 10px; font-size:0.74rem;">+ Not Al</button>
+        </form>
+
+        <div style="display:flex; flex-direction:column; gap:6px;">
+          ${cluesListHtml}
+        </div>
+      </div>
+    `;
+
+    // SAĞ SAYFA: ŞÜPHELİ MATRİSİ, ÖN-HEDEF KİLİDİ & CANLI SEÇİM KONTROLÜ
+    const allSeats: any[] = Array.from(state.players?.values() || []).sort(
+      (a: any, b: any) => a.seat - b.seat
+    );
+    const stampCounts = { traitor: 0, suspect: 0, trust: 0 };
+    allSeats.forEach((p) => {
+      const st = this.suspectTags[p.seat];
+      if (st === "traitor") stampCounts.traitor += 1;
+      else if (st === "suspect") stampCounts.suspect += 1;
+      else if (st === "trust") stampCounts.trust += 1;
+    });
+
+    const suspectRowsHtml =
+      allSeats.length === 0
+        ? `<div style="font-size:0.78rem; color:var(--text-muted); padding:10px;">Oyuncular yükleniyor...</div>`
+        : allSeats
+            .map((p: any) => {
+              const isSelf = p.id === myId;
+              const isMate = isHain && mateIds.has(p.id);
+              const stamp: SuspectStamp = this.suspectTags[p.seat] || "unknown";
+              const isPre = this.preTargetSeat === p.seat;
+              const confirmed = this.confirmedSeatFlames[p.seat];
+              const stampLabel =
+                stamp === "trust"
+                  ? "🟢 Güvenilir"
+                  : stamp === "suspect"
+                  ? "🟡 Şüpheli"
+                  : stamp === "traitor"
+                  ? "🔴 KESİN HAİN!"
+                  : "❓ Damgala";
+              const stampClass =
+                stamp === "trust"
+                  ? "stamp-trust"
+                  : stamp === "suspect"
+                  ? "stamp-suspect"
+                  : stamp === "traitor"
+                  ? "stamp-traitor"
+                  : "";
+
+              let subStatus = "";
+              if (!p.alive) {
+                if (confirmed === "RED") subStatus = "💀 Elendi · 🔥 Kırmızı Alev (HAİN)";
+                else if (confirmed === "WHITE") subStatus = "💀 Elendi · ❄️ Beyaz Alev (MASUM)";
+                else if (confirmed === "EXEC") subStatus = "💀 Gece İnfazında Öldü (MASUM)";
+                else subStatus = "💀 Elendi (Hayalet)";
+              } else {
+                const flags: string[] = [];
+                if (state.necklaceHolder === p.id) flags.push("📿 Altın Kolye");
+                if (phase === "VOTE" && p.votedForId) flags.push("✉️ Oy Verdi");
+                if (isPre) flags.push("🎯 Ön-Hedefin");
+                if (isMate) flags.push("🗡️ Suç Ortağın");
+                subStatus = flags.length > 0 ? flags.join(" · ") : "Hayatta";
+              }
+
+              // Evreye göre doğrudan Kitapçık İçi Seçim Düğmeleri!
+              let phaseBtnHtml = "";
+              if (p.alive && !isSelf) {
+                if (phase === "VOTE" && isAlive) {
+                  const picked = this.selectedVoteTargetId === p.id;
+                  phaseBtnHtml = `<button class="btn ${picked ? "btn-emerald" : "btn-crimson"}" data-hb-vote="${p.id}" style="padding:4px 8px; font-size:0.7rem;">${
+                    picked ? "✅ Oyun Bunda" : "🔥 Oy Ver"
+                  }</button>`;
+                } else if (phase === "NIGHT" && isHain && isAlive && !isMate) {
+                  const picked = this.selectedNightTargetId === p.id;
+                  phaseBtnHtml = `
+                    <button class="btn btn-crimson" data-hb-night-kill="${p.id}" style="padding:4px 8px; font-size:0.7rem;">🗡️ İnfaz Et</button>
+                    <button class="btn ${picked ? "btn-emerald" : ""}" data-hb-night-pick="${p.id}" style="padding:4px 7px; font-size:0.68rem;">${
+                    picked ? "✅ Hedef" : "🎯"
+                  }</button>
+                  `;
+                } else if (phase === "TABLE") {
+                  phaseBtnHtml = `
+                    <button class="btn btn-crimson" data-hb-accuse="${p.id}" data-seat="${p.seat}" data-nick="${escapeHtml(p.nick)}" style="padding:3px 7px; font-size:0.68rem;">👉 Suçla</button>
+                    <button class="btn ${isPre ? "btn-emerald" : ""}" data-hb-pretarget="${p.seat}" title="Oylama/Gece için Ön-Hedef Kilitle" style="padding:3px 7px; font-size:0.68rem;">${
+                    isPre ? "🎯 Kilitli" : "🎯 Hedef"
+                  }</button>
+                  `;
+                } else {
+                  phaseBtnHtml = `
+                    <button class="btn ${isPre ? "btn-emerald" : ""}" data-hb-pretarget="${p.seat}" title="Oylama veya Gece İnfazı için Ön-Hedef Kilitle" style="padding:3px 7px; font-size:0.68rem;">${
+                    isPre ? "🎯 Kilitli" : "🎯 Hedef"
+                  }</button>
+                  `;
+                }
+              }
+
+              return `
+                <div class="suspect-row ${isPre ? "pre-targeted" : ""} ${!p.alive ? "dead-seat" : ""}">
+                  <div style="min-width:135px; flex:1;">
+                    <div style="font-size:0.79rem; font-weight:bold; color:${
+                      isMate ? "#ff8593" : isSelf ? "var(--gold)" : "var(--parchment)"
+                    };">
+                      #${p.seat} ${escapeHtml(p.nick)} ${isSelf ? "(Sen)" : ""}
+                    </div>
+                    <div style="font-size:0.67rem; color:${
+                      confirmed === "RED" ? "#ff6b7a" : confirmed === "WHITE" ? "#9ed4ff" : "var(--text-muted)"
+                    };">
+                      ${subStatus}
+                    </div>
+                  </div>
+                  <div style="display:flex; gap:4px; align-items:center; flex-wrap:wrap;">
+                    ${
+                      !isSelf
+                        ? `<button class="stamp-btn ${stampClass}" data-stamp-seat="${p.seat}" title="Şüphe Damgasını Değiştir">
+                            ${stampLabel}
+                          </button>`
+                        : ""
+                    }
+                    ${phaseBtnHtml}
+                    ${
+                      !isSelf
+                        ? `<button class="btn" data-hb-dm="${p.id}" data-seat="${p.seat}" data-nick="${escapeHtml(p.nick)}" title="Özel DM Fısılda" style="padding:3px 6px; font-size:0.68rem; border-color:rgba(201,139,255,0.45);">🤫</button>`
+                        : ""
+                    }
+                    <button class="btn" data-hb-inspect="${p.id}" title="360° İncele & Yakınlık Barı" style="padding:3px 6px; font-size:0.68rem;">🔍</button>
+                  </div>
+                </div>
+              `;
+            })
+            .join("");
+
+    const rightSuspectsPageHtml = `
+      <div class="handbook-page">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:6px; flex-wrap:wrap;">
+          <strong style="color:var(--gold); font-size:0.86rem;">⚖️ ŞÜPHELİLER & TAKTİK SEÇİM KONTROLÜ</strong>
+          <div style="font-size:0.68rem; color:var(--text-muted);">
+            🔴 ${stampCounts.traitor} · 🟡 ${stampCounts.suspect} · 🟢 ${stampCounts.trust}
+          </div>
+        </div>
+        <div style="font-size:0.71rem; color:var(--parchment); background:rgba(226,189,83,0.09); border:1px solid rgba(226,189,83,0.25); border-radius:7px; padding:5px 8px;">
+          💡 <strong>Hibrit Kontrol:</strong> İpuçlarını okurken koltukları damgala (<em>Damgala</em>), oylama öncesi <strong>🎯 Hedef</strong> kilitle; Oylama veya Gece başladığında seçimini ister ana ekrandan ister doğrudan bu sayfadan mühürle!
+        </div>
+        <div style="display:flex; flex-direction:column; gap:5px;">
+          ${suspectRowsHtml}
+        </div>
+      </div>
+    `;
+
+    // 3. SEKME: ŞATO ODA EYLEMLERİ, GİZLİ GÖREVLER & REHBER
+    const activeStation = phase === "DAY" && isAlive ? this.getActiveMedievalStation() : undefined;
+    const nearAltar =
+      phase === "DAY" &&
+      isAlive &&
+      PUZZLE_ALTARS.find((a) => Math.hypot(this.localX - a.x, this.localZ - a.z) <= 4.3);
+
+    const actionsPageHtml = `
+      <div class="handbook-page">
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(260px, 1fr)); gap:10px;">
+          <div style="display:flex; flex-direction:column; gap:7px; background:rgba(16,12,20,0.72); border:1px solid var(--gold-soft); border-radius:10px; padding:9px;">
+            <strong style="color:var(--gold); font-size:0.82rem;">🏰 Bulunduğun Oda & Şato Eylemleri</strong>
+            <div style="font-size:0.74rem; color:var(--parchment);">
+              📍 Konumun: <strong>${escapeHtml(curZone.name)}</strong> · Ortak Hazine: <strong style="color:var(--gold);">🪙 ${state.pot || 0}</strong>
+            </div>
+
+            ${
+              activeStation
+                ? `<div style="display:flex; flex-direction:column; gap:5px; margin-top:2px;">
+                     <div style="font-size:0.72rem; color:#8ce99a; font-weight:bold;">${activeStation.title} (Buradan Kullan):</div>
+                     ${activeStation.options
+                       .map(
+                         (opt) => `
+                         <button class="btn" data-hb-station="${activeStation.id}" data-hb-opt="${opt.id}" style="text-align:left; padding:6px 9px; font-size:0.73rem; display:flex; justify-content:space-between; align-items:center;">
+                           <span>${opt.label}</span>
+                           <span style="color:var(--gold); font-size:0.66rem;">${opt.badge}</span>
+                         </button>
+                       `
+                       )
+                       .join("")}
+                   </div>`
+                : nearAltar
+                ? `<button class="btn btn-emerald" data-hb-altar="${nearAltar.id}" style="width:100%;">🔮 ${nearAltar.label} Bulmacasını Aç</button>`
+                : `<div style="font-size:0.72rem; color:var(--text-muted); line-height:1.4;">
+                     Gündüz keşfinde <strong>📚 Kütüphane, ⚗️ Simya Mahzeni, ⚔️ Cephanelik, ⛓️ Zindan, ⛲ Kargalı Avlu</strong> veya <strong>🔮 Bulmaca Salonu</strong>'na gittiğinde oda seçenekleri burada aktifleşir!
+                   </div>`
+            }
+
+            <div style="display:flex; flex-wrap:wrap; gap:6px; margin-top:4px;">
+              <button class="btn" id="hb-act-castle-map" style="flex:1; font-size:0.72rem;">🗺️ 21 Oda Krokisi</button>
+              ${
+                (phase === "DAY" || phase === "TABLE") && isAlive && (state.pot || 0) >= 50
+                  ? `<button class="btn btn-emerald" id="hb-act-kahya" style="flex:1; font-size:0.72rem;">🔔 Kâhya Zili (50🪙)</button>`
+                  : ""
+              }
+              ${
+                phase === "DAY" && isAlive && isHain
+                  ? `<button class="btn btn-crimson" id="hb-act-sabotage" style="flex:1; font-size:0.72rem;">🗡️ Hain Sabotajı</button>`
+                  : ""
+              }
+            </div>
+          </div>
+
+          <div style="display:flex; flex-direction:column; gap:7px; background:rgba(16,12,20,0.72); border:1px solid var(--gold-soft); border-radius:10px; padding:9px;">
+            <strong style="color:var(--gold); font-size:0.82rem;">📜 Günlük Gizli Görevlerin & Dedektif Rehberi</strong>
+            ${
+              this.myQuests.length === 0
+                ? `<div style="font-size:0.73rem; color:var(--text-muted);">Oyun başladığında kişisel görevlerin burada listelenir.</div>`
+                : this.myQuests
+                    .map(
+                      (q) => `
+                      <div style="font-size:0.73rem; padding:5px 7px; border-radius:6px; background:rgba(255,255,255,0.04); border-left:3px solid ${
+                        q.done ? "#52b788" : "var(--gold)"
+                      };">
+                        <strong>${q.done ? "✅" : "🎯"} ${escapeHtml(q.title)} (+${q.rewardGold}🪙)</strong>
+                        <div style="color:var(--text-muted); font-size:0.68rem;">${escapeHtml(q.description)} ${
+                        q.goal > 1 ? `(${q.progress}/${q.goal})` : ""
+                      }</div>
+                      </div>
+                    `
+                    )
+                    .join("")
+            }
+            <div style="margin-top:auto; padding-top:6px; border-top:1px solid rgba(226,189,83,0.22); font-size:0.7rem; color:var(--parchment); line-height:1.45;">
+              🔥 <strong>Şömine Kırmızı Alev:</strong> Yanan kişi <strong>HAİN</strong> idi.<br/>
+              ❄️ <strong>Şömine Beyaz Alev:</strong> Yanan kişi <strong>MASUM MİSAFİR</strong> idi.<br/>
+              📿 <strong>Altın Kolye:</strong> Sahibini o gece Hainlerin infazından korur.<br/>
+              🔔 <strong>Kâhya Zili (50🪙):</strong> Seçilen 2 koltuğun aynı/farklı takımda olduğunu söyler.
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    const bodyGridClass =
+      this.handbookViewMode === "book" ? "handbook-open-book" : "handbook-open-book single-col";
+    const bodyInnerHtml =
+      this.handbookViewMode === "book"
+        ? `${leftCluesPageHtml}${rightSuspectsPageHtml}`
+        : this.handbookViewMode === "clues"
+        ? leftCluesPageHtml
+        : this.handbookViewMode === "suspects"
+        ? rightSuspectsPageHtml
+        : actionsPageHtml;
+
+    shell.innerHTML = `
+      <div class="handbook-header">
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <strong style="color:var(--gold); font-size:1rem; letter-spacing:0.8px;">📖 KARGALI ŞATO EL KİTAPÇIĞI</strong>
+          ${rolePillHtml}
+          <span id="handbook-live-timer" style="font-size:0.73rem; color:#ffd166; font-weight:bold;">
+            ${phase === "LOBBY" ? "Hazır" : `⏳ ${remSec} sn`}
+          </span>
+        </div>
+
+        <div class="handbook-tabs">
+          <button class="handbook-tab-btn ${this.handbookViewMode === "book" ? "active" : ""}" data-hb-tab="book">
+            📖 Çift Sayfa (İpucu + Seçim)
+          </button>
+          <button class="handbook-tab-btn ${this.handbookViewMode === "clues" ? "active" : ""}" data-hb-tab="clues">
+            🕵️ İpuçları (${this.clueJournal.length})
+          </button>
+          <button class="handbook-tab-btn ${this.handbookViewMode === "suspects" ? "active" : ""}" data-hb-tab="suspects">
+            ⚖️ Şüpheliler
+          </button>
+          <button class="handbook-tab-btn ${this.handbookViewMode === "actions" ? "active" : ""}" data-hb-tab="actions">
+            🏰 Eylemler & Rehber
+          </button>
+          <button class="btn btn-crimson" id="btn-close-handbook" style="padding:4px 10px; font-size:0.75rem;">
+            ✕ Kapat
+          </button>
+        </div>
+      </div>
+
+      <div class="handbook-phase-strip">
+        ${phaseActionHtml}
+      </div>
+
+      <div class="${bodyGridClass}">
+        ${bodyInnerHtml}
+      </div>
+    `;
+
+    // Yazılmakta olan taslak notu geri yükle
+    const nextInput = document.getElementById("handbook-note-input") as HTMLInputElement | null;
+    if (nextInput && savedNoteDraft) {
+      nextInput.value = savedNoteDraft;
+    }
+    if (nextInput && wasInputFocused) {
+      nextInput.focus();
+    }
+
+    // Sekme & Kapatma Olayları
+    document.getElementById("btn-close-handbook")?.addEventListener("click", () => {
+      this.closeHandbookModal();
+    });
+    shell.querySelectorAll("[data-hb-tab]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        this.handbookViewMode = (btn as HTMLElement).dataset.hbTab as any;
+        this.renderHandbookModal();
+      });
+    });
+    shell.querySelectorAll("[data-clue-filter]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        this.clueFilter = (btn as HTMLElement).dataset.clueFilter as any;
+        this.renderHandbookModal();
+      });
+    });
+
+    // Kişisel Dedektif Notu Ekleme / Silme
+    document.getElementById("handbook-note-form")?.addEventListener("submit", (e) => {
+      e.preventDefault();
+      const inp = document.getElementById("handbook-note-input") as HTMLInputElement | null;
+      const val = inp?.value.trim() || "";
+      if (!val) return;
+      if (inp) inp.value = "";
+      this.addClueEntry({
+        category: "note",
+        icon: "✍️",
+        source: "Kişisel Dedektif Notum",
+        text: escapeHtml(val),
+        personal: true,
+        silent: true
+      });
+      sfx.playSealBreak();
+    });
+    shell.querySelectorAll("[data-del-note]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const id = (btn as HTMLElement).dataset.delNote!;
+        this.clueJournal = this.clueJournal.filter((c) => c.id !== id);
+        this.saveHandbookToSession();
+        this.renderHandbookModal();
+      });
+    });
+
+    // Şüphe Damgası & Ön-Hedef Kilidi
+    shell.querySelectorAll("[data-stamp-seat]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const seat = Number((btn as HTMLElement).dataset.stampSeat);
+        this.cycleSuspectStamp(seat);
+        this.renderHandbookModal();
+      });
+    });
+    shell.querySelectorAll("[data-hb-pretarget]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const seat = Number((btn as HTMLElement).dataset.hbPretarget);
+        this.preTargetSeat = this.preTargetSeat === seat ? 0 : seat;
+        this.saveHandbookToSession();
+        this.lastCenterRenderHash = "";
+        sfx.playSealBreak();
+        this.renderHandbookModal();
+      });
+    });
+
+    // Doğrudan Kitapçıktan Canlı Oylama / Gece İnfazı / Suçlama / Final Seçimleri
+    shell.querySelectorAll("[data-hb-vote]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const targetId = (btn as HTMLElement).dataset.hbVote!;
+        if (!isAlive || targetId === myId) return;
+        this.selectedVoteTargetId = targetId;
+        this.room?.send("vote", { targetId });
+        sfx.playSealBreak();
+        this.lastCenterRenderHash = "";
+        this.renderHandbookModal();
+      });
+    });
+    document.getElementById("hb-btn-abstain")?.addEventListener("click", () => {
+      if (!isAlive) return;
+      this.selectedVoteTargetId = "ABSTAIN";
+      this.room?.send("vote", { targetId: "ABSTAIN" });
+      sfx.playSealBreak();
+      this.lastCenterRenderHash = "";
+      this.renderHandbookModal();
+    });
+    shell.querySelectorAll("[data-hb-night-kill]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const targetId = (btn as HTMLElement).dataset.hbNightKill!;
+        this.selectedNightTargetId = targetId;
+        this.room?.send("night_pick", { targetId, instantSeal: true });
+        sfx.playCastleBell();
+        this.lastCenterRenderHash = "";
+        this.renderHandbookModal();
+      });
+    });
+    shell.querySelectorAll("[data-hb-night-pick]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const targetId = (btn as HTMLElement).dataset.hbNightPick!;
+        this.selectedNightTargetId = targetId;
+        this.room?.send("night_pick", { targetId });
+        sfx.playHeartbeat();
+        this.lastCenterRenderHash = "";
+        this.renderHandbookModal();
+      });
+    });
+    document.getElementById("hb-btn-seal-night")?.addEventListener("click", () => {
+      if (!this.selectedNightTargetId) return;
+      this.room?.send("seal_night_execution");
+      sfx.playCastleBell();
+    });
+    document.getElementById("hb-btn-night-watch")?.addEventListener("click", () => {
+      this.room?.send("night_watch");
+    });
+    document.getElementById("hb-btn-trial-sabotage")?.addEventListener("click", () => {
+      if (this.activeTrial) this.activeTrial.canSabotage = false;
+      this.room?.send("sabotage_trial");
+      this.lastCenterRenderHash = "";
+      this.renderHandbookModal();
+    });
+    document.getElementById("hb-btn-final-trust")?.addEventListener("click", () => {
+      this.selectedFinalChoice = "TRUST";
+      this.room?.send("final_decision", { decision: "TRUST" });
+      sfx.playSealBreak();
+      this.lastCenterRenderHash = "";
+      this.renderHandbookModal();
+    });
+    document.getElementById("hb-btn-final-doubt")?.addEventListener("click", () => {
+      this.selectedFinalChoice = "DOUBT";
+      this.room?.send("final_decision", { decision: "DOUBT" });
+      sfx.playSealBreak();
+      this.lastCenterRenderHash = "";
+      this.renderHandbookModal();
+    });
+    document.getElementById("hb-btn-focus-main")?.addEventListener("click", () => {
+      this.closeHandbookModal();
+    });
+    document.getElementById("hb-btn-ready")?.addEventListener("click", () => {
+      this.room?.send("ready_next_phase");
+      sfx.playSealBreak();
+    });
+    document.getElementById("hb-btn-kahya")?.addEventListener("click", () => {
+      this.openKahyaAskModal();
+    });
+    document.getElementById("hb-btn-open-station")?.addEventListener("click", () => {
+      const st = this.getActiveMedievalStation();
+      if (st) this.openMedievalStationModal(st);
+    });
+
+    shell.querySelectorAll("[data-hb-accuse]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const el = btn as HTMLElement;
+        this.openAccuseModal(el.dataset.hbAccuse!, Number(el.dataset.seat), el.dataset.nick!);
+      });
+    });
+    shell.querySelectorAll("[data-hb-dm]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const el = btn as HTMLElement;
+        this.closeHandbookModal();
+        this.openPMThread(el.dataset.hbDm!, el.dataset.nick!, Number(el.dataset.seat));
+      });
+    });
+    shell.querySelectorAll("[data-hb-inspect]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const targetId = (btn as HTMLElement).dataset.hbInspect!;
+        this.closeHandbookModal();
+        this.room?.send("request_inspect", { targetId });
+      });
+    });
+
+    // 3. Sekme Oda Etkileşimleri
+    shell.querySelectorAll("[data-hb-station]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const el = btn as HTMLElement;
+        this.room?.send("use_medieval_station", {
+          stationId: el.dataset.hbStation!,
+          optionId: el.dataset.hbOpt!
+        });
+      });
+    });
+    shell.querySelectorAll("[data-hb-altar]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const altarId = (btn as HTMLElement).dataset.hbAltar!;
+        this.room?.send("request_puzzle", { altarId });
+      });
+    });
+    document.getElementById("hb-act-castle-map")?.addEventListener("click", () => {
+      this.openCastleRoomsGuideModal();
+    });
+    document.getElementById("hb-act-kahya")?.addEventListener("click", () => {
+      this.openKahyaAskModal();
+    });
+    document.getElementById("hb-act-sabotage")?.addEventListener("click", () => {
+      this.openSabotageModal();
+    });
+  }
+
+  // ==========================================================================
   // OYUN EVRELERİ ARAYÜZLERİ (LOBİ, ROL ZARFI, SINAV, SOFRA, GECE, FİNAL, SONUÇ)
   // ==========================================================================
   private renderCenterPanel(state: any): void {
@@ -2343,10 +3427,17 @@ class SofraGameApp {
     const picksKey = Array.from(this.traitorNightPicks.entries())
       .map(([k, v]) => `${k}>${v.targetSeat}`)
       .join(",");
-    const hash = `${phase}|${state.round}|${this.myRole?.role || ""}|${state.fastMode}|${state.paceMode || "normal"}|${state.targetPlayerCount || 10}|${state.atmosphereTheme || "torch"}|${state.autoStart}|${state.pot}|${state.lastBurnedId}|${state.lastBurnedFlame}|${state.winReason}|${this.lastVoteReveal.length}|${this.mobileLobbyTab}|${this.vault.gold}|${this.vault.selectedSeat}|${this.vault.coatColor}|${this.vault.hat}|${this.vault.mask}|${this.selectedVoteTargetId}|${this.selectedNightTargetId}|${this.selectedFinalChoice}|${trialKey}|${picksKey}|${this.nightConclaveLogs.length}|${this.nightWatchNote}|${Boolean(this.gameOverSummary)}|${playerSummary}`;
+    const stampsKey = Object.entries(this.suspectTags)
+      .map(([s, t]) => `${s}:${t}`)
+      .join(",");
+    const hash = `${phase}|${state.round}|${this.myRole?.role || ""}|${state.fastMode}|${state.paceMode || "normal"}|${state.targetPlayerCount || 10}|${state.atmosphereTheme || "torch"}|${state.autoStart}|${state.pot}|${state.lastBurnedId}|${state.lastBurnedFlame}|${state.winReason}|${this.lastVoteReveal.length}|${this.mobileLobbyTab}|${this.vault.gold}|${this.vault.selectedSeat}|${this.vault.coatColor}|${this.vault.hat}|${this.vault.mask}|${this.selectedVoteTargetId}|${this.selectedNightTargetId}|${this.selectedFinalChoice}|${this.preTargetSeat}|${stampsKey}|${this.clueJournal.length}|${trialKey}|${picksKey}|${this.nightConclaveLogs.length}|${this.nightWatchNote}|${Boolean(this.gameOverSummary)}|${playerSummary}`;
 
     if (hash === this.lastCenterRenderHash) return;
     this.lastCenterRenderHash = hash;
+    if (this.handbookOpen && hash !== this.lastHandbookRenderHash) {
+      this.lastHandbookRenderHash = hash;
+      this.renderHandbookModal();
+    }
 
     if (phase === "DAY") {
       panel.classList.add("hidden");
@@ -2874,6 +3965,9 @@ class SofraGameApp {
           </span>
         </div>
         <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <button class="btn" id="btn-table-open-hb" style="padding:4px 9px; font-size:0.72rem; border-color:#ffd166; color:#ffe9a8;">
+            📖 El Kitapçığı (${this.clueJournal.length})
+          </button>
           ${
             !isVotePhase && (state.pot || 0) >= 50
               ? `<button class="btn" id="btn-table-kahya-ask" style="padding:4px 9px; font-size:0.72rem;">🔔 Kâhya'ya Sor (50🪙)</button>`
@@ -2905,6 +3999,7 @@ class SofraGameApp {
                 ? "✉️ Oyunu Mühürledi"
                 : "Hayatta"
             }</div>
+            ${this.renderSeatSuspectBadge(p.seat)}
             <div style="display:flex; gap:4px; margin-top:6px;">
               <button class="btn" data-table-inspect="${p.id}" style="flex:1; padding:3px 5px; font-size:0.68rem;">
                 🔍 Bar
@@ -2924,6 +4019,9 @@ class SofraGameApp {
       </div>
     `;
 
+    document.getElementById("btn-table-open-hb")?.addEventListener("click", () => {
+      this.openHandbookModal("book");
+    });
     document.getElementById("btn-table-kahya-ask")?.addEventListener("click", () => {
       this.openKahyaAskModal();
     });
@@ -2966,6 +4064,10 @@ class SofraGameApp {
     const chosenPlayer = this.selectedVoteTargetId
       ? state.players?.get(this.selectedVoteTargetId)
       : null;
+    const preTargetPlayer: any =
+      this.preTargetSeat > 0
+        ? players.find((cand: any) => cand.seat === this.preTargetSeat && cand.id !== myId)
+        : null;
 
     const statusBanner = !canVote
       ? `<div style="margin-bottom:10px; padding:9px 12px; border-radius:10px; background:rgba(70,85,120,0.25); border:1px solid #7ab8ff; font-size:0.84rem; color:#cfe5ff;">
@@ -2979,8 +4081,15 @@ class SofraGameApp {
       ? `<div style="margin-bottom:10px; padding:9px 12px; border-radius:10px; background:rgba(40,120,75,0.32); border:2px solid #6ef2b1; font-size:0.88rem; color:#d8ffeb;">
            ✅ <strong>OYUN MÜHÜRLENDİ:</strong> Koltuk #${chosenPlayer.seat} (${chosenPlayer.nick}) seçildi! Herkes oy verdiğinde zarflar şömineye atılacak.
          </div>`
-      : `<div style="margin-bottom:10px; padding:10px 14px; border-radius:10px; background:rgba(178,22,30,0.34); border:2px solid #ff5768; font-size:0.9rem; color:#ffe5e8; font-weight:bold;">
-           🗳️ SIRA SENDE — OYUNU AT! Şömineye göndermek istediğin şüphelinin kartındaki "🔥 OY AT" butonuna bas!
+      : `<div style="margin-bottom:10px; padding:10px 14px; border-radius:10px; background:rgba(178,22,30,0.34); border:2px solid #ff5768; font-size:0.9rem; color:#ffe5e8; font-weight:bold; display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+           <span>🗳️ SIRA SENDE — OYUNU AT! Şömineye göndermek istediğin şüphelinin kartındaki "🔥 OY AT" butonuna bas!</span>
+           ${
+             preTargetPlayer
+               ? `<button class="btn btn-emerald" id="btn-vote-pretarget-fast" style="padding:6px 11px; font-size:0.76rem;">
+                    🎯 Ön-Hedefin (#${preTargetPlayer.seat} ${escapeHtml(preTargetPlayer.nick)}) İçin Oy Ver!
+                  </button>`
+               : ""
+           }
          </div>`;
 
     panel.innerHTML = `
@@ -2991,13 +4100,18 @@ class SofraGameApp {
             En çok oyu alan kişinin zarfı şömineye atılır: <strong>Kırmızı Alev = Hain</strong>, <strong>Beyaz Alev = Masum Misafir</strong>!
           </span>
         </div>
-        ${
-          canVote
-            ? `<button class="btn" id="btn-vote-abstain" style="padding:6px 10px; font-size:0.74rem;">
-                 🏳️ Çekimser Kal
-               </button>`
-            : ""
-        }
+        <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+          <button class="btn" id="btn-vote-open-hb" style="padding:6px 10px; font-size:0.74rem; border-color:#ffd166; color:#ffe9a8;">
+            📖 El Kitapçığı & İpuçları (${this.clueJournal.length})
+          </button>
+          ${
+            canVote
+              ? `<button class="btn" id="btn-vote-abstain" style="padding:6px 10px; font-size:0.74rem;">
+                   🏳️ Çekimser Kal
+                 </button>`
+              : ""
+          }
+        </div>
       </div>
 
       ${statusBanner}
@@ -3009,7 +4123,7 @@ class SofraGameApp {
             const isPicked = this.selectedVoteTargetId === p.id;
             return `
               <div class="seat-card ${isPicked ? "active" : ""}" data-vote-card="${p.id}" style="border-width:${
-              isPicked ? "2px" : "1px"
+              isPicked || this.preTargetSeat === p.seat ? "2px" : "1px"
             }; display:flex; flex-direction:column; justify-content:space-between;">
                 <div>
                   <div class="seat-num">SANDALYE #${p.seat}</div>
@@ -3021,6 +4135,7 @@ class SofraGameApp {
                         : ""
                     }${p.votedForId ? "✉️ Oyunu Verdi" : "⏳ Düşünüyor..."}
                   </div>
+                  ${this.renderSeatSuspectBadge(p.seat)}
                 </div>
                 <div style="display:flex; flex-direction:column; gap:5px; margin-top:8px;">
                   ${
@@ -3052,6 +4167,16 @@ class SofraGameApp {
       sfx.playSealBreak();
       this.lastCenterRenderHash = "";
     };
+
+    document.getElementById("btn-vote-open-hb")?.addEventListener("click", () => {
+      this.openHandbookModal("book");
+    });
+
+    document.getElementById("btn-vote-pretarget-fast")?.addEventListener("click", () => {
+      if (preTargetPlayer) {
+        castVoteFor(preTargetPlayer.id);
+      }
+    });
 
     document.getElementById("btn-vote-abstain")?.addEventListener("click", () => {
       if (!canVote) return;
@@ -3166,12 +4291,20 @@ class SofraGameApp {
               : ""
           }
 
-          <button class="btn" id="btn-night-inspect-bonds" style="padding:7px 14px;">
-            🔍 Mola Sırasında Oyuncuların Yakınlık Barlarını İncele
-          </button>
+          <div style="display:flex; gap:8px; justify-content:center; flex-wrap:wrap;">
+            <button class="btn" id="btn-night-open-hb-guest" style="padding:7px 14px; border-color:#ffd166; color:#ffe9a8;">
+              📖 El Kitapçığı & İpuçlarım (${this.clueJournal.length})
+            </button>
+            <button class="btn" id="btn-night-inspect-bonds" style="padding:7px 14px;">
+              🔍 Mola Sırasında Oyuncuların Yakınlık Barlarını İncele
+            </button>
+          </div>
         </div>
       `;
 
+      document.getElementById("btn-night-open-hb-guest")?.addEventListener("click", () => {
+        this.openHandbookModal("book");
+      });
       document.getElementById("btn-night-watch")?.addEventListener("click", () => {
         this.room?.send("night_watch");
       });
@@ -3199,13 +4332,18 @@ class SofraGameApp {
             Misafirler "2 Dakika Mola" ekranında bekliyor. Bu gece şatodan kimi sileceğini seç ve İnfaz Mührünü bas!
           </span>
         </div>
-        <button class="btn btn-crimson" id="btn-seal-execution" style="padding:8px 14px; font-weight:bold;">
-          ${
-            pickedVictim
-              ? `🩸 #${pickedVictim.seat} ${pickedVictim.nick} İNFAZINI ONAYLA!`
-              : "🩸 Önce Kurban Seç"
-          }
-        </button>
+        <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+          <button class="btn" id="btn-night-open-hb-hain" style="padding:7px 11px; font-size:0.74rem; border-color:#ffd166; color:#ffe9a8;">
+            📖 El Kitapçığı (${this.clueJournal.length})
+          </button>
+          <button class="btn btn-crimson" id="btn-seal-execution" style="padding:8px 14px; font-weight:bold;">
+            ${
+              pickedVictim
+                ? `🩸 #${pickedVictim.seat} ${pickedVictim.nick} İNFAZINI ONAYLA!`
+                : "🩸 Önce Kurban Seç"
+            }
+          </button>
+        </div>
       </div>
 
       ${
@@ -3242,6 +4380,7 @@ class SofraGameApp {
                       ? "🎯 Hedef Seçildi"
                       : "Masum Misafir"
                   }</div>
+                  ${this.renderSeatSuspectBadge(p.seat)}
                 </div>
                 <div style="display:flex; flex-direction:column; gap:5px; margin-top:8px;">
                   <button class="btn btn-crimson" data-night-instant="${p.id}" style="width:100%; padding:7px 8px; font-weight:bold;">
@@ -3305,6 +4444,10 @@ class SofraGameApp {
         sfx.playHeartbeat();
         this.lastCenterRenderHash = "";
       });
+    });
+
+    document.getElementById("btn-night-open-hb-hain")?.addEventListener("click", () => {
+      this.openHandbookModal("book");
     });
 
     document.getElementById("btn-seal-execution")?.addEventListener("click", () => {
@@ -3438,6 +4581,9 @@ class SofraGameApp {
           <button class="btn" id="btn-read-story" style="border-color:var(--gold); color:var(--gold);">
             📖 Hikayeyi Oku
           </button>
+          <button class="btn" id="btn-result-open-hb" style="border-color:#ffd166; color:#ffe9a8;">
+            🕵️ El Kitapçığı Notlarım (${this.clueJournal.length})
+          </button>
           <button class="btn btn-crimson" id="btn-back-lobby">🔄 Yeni Oyun (Lobi)</button>
         </div>
       </div>
@@ -3445,6 +4591,9 @@ class SofraGameApp {
 
     document.getElementById("btn-read-story")?.addEventListener("click", () => {
       this.openStoryReaderModal(state);
+    });
+    document.getElementById("btn-result-open-hb")?.addEventListener("click", () => {
+      this.openHandbookModal("clues");
     });
     document.getElementById("btn-back-lobby")?.addEventListener("click", () => {
       this.room?.send("back_to_lobby");
@@ -3749,6 +4898,10 @@ class SofraGameApp {
           this.renderPMWindows();
         }
 
+        if (state.phase === "ARRIVAL" || state.phase === "RESULT") {
+          this.closeHandbookModal();
+        }
+
         if (state.phase === "TRIAL") {
           sfx.playSealBreak();
           this.room.send("request_my_state");
@@ -3760,15 +4913,58 @@ class SofraGameApp {
           this.selectedVoteTargetId = "";
           sfx.playCastleBell();
         } else if (state.phase === "FIRE") {
+          const burnedP = state.lastBurnedId ? state.players?.get(state.lastBurnedId) : null;
           if (state.lastBurnedFlame === "RED") {
             this.scene.triggerFireplaceFlame("red");
             sfx.playFireWhoosh(true);
+            if (burnedP) {
+              this.confirmedSeatFlames[burnedP.seat] = "RED";
+              this.addClueEntry({
+                category: "fire",
+                icon: "🔥",
+                source: "Şömine Hükmü (Kırmızı Alev)",
+                text: escapeHtml(
+                  `Koltuk #${burnedP.seat} (${burnedP.nick}) şöminede yandı: KIRMIZI ALEV = HAİN YAKALANDI!`
+                ),
+                dedupeKey: `fire_${state.round}_${burnedP.seat}`
+              });
+            }
           } else if (state.lastBurnedFlame === "WHITE") {
             this.scene.triggerFireplaceFlame("white");
             sfx.playFireWhoosh(false);
+            if (burnedP) {
+              this.confirmedSeatFlames[burnedP.seat] = "WHITE";
+              this.addClueEntry({
+                category: "fire",
+                icon: "❄️",
+                source: "Şömine Hükmü (Beyaz Alev)",
+                text: escapeHtml(
+                  `Koltuk #${burnedP.seat} (${burnedP.nick}) şöminede yandı: BEYAZ ALEV = MASUM MİSAFİR ELENDİ!`
+                ),
+                dedupeKey: `fire_${state.round}_${burnedP.seat}`
+              });
+            }
+          } else {
+            this.addClueEntry({
+              category: "fire",
+              icon: "⚖️",
+              source: "Şömine Hükmü (Beraberlik)",
+              text: "Oylar eşit çıktı, bu akşam şömineye hiçbir zarf atılmadı.",
+              dedupeKey: `fire_${state.round}_tie`,
+              silent: true
+            });
           }
         } else if (state.phase === "NIGHT") {
           this.selectedNightTargetId = "";
+          if (this.myRole?.role === "HAIN" && this.preTargetSeat > 0) {
+            const mateIds = new Set((this.myRole?.traitorMates || []).map((m) => m.id));
+            mateIds.add(this.room.sessionId);
+            state.players?.forEach((cand: any, cid: string) => {
+              if (cand.seat === this.preTargetSeat && cand.alive && !mateIds.has(cid)) {
+                this.selectedNightTargetId = cid;
+              }
+            });
+          }
           this.traitorNightPicks.clear();
           this.nightConclaveLogs = [];
           this.nightWatchNote = "";
@@ -3776,9 +4972,21 @@ class SofraGameApp {
           sfx.playHeartbeat();
         } else if (state.phase === "LOBBY") {
           this.gameOverSummary = null;
+          this.resetHandbookForNewMatch();
         }
         this.lastPhase = state.phase;
         this.lastCenterRenderHash = "";
+      }
+
+      if (state.councilBoardNote && state.councilBoardNote !== this.lastRecordedBoardNote) {
+        this.lastRecordedBoardNote = state.councilBoardNote;
+        this.addClueEntry({
+          category: "clue",
+          icon: "📋",
+          source: "Konsey Şüphe Tahtası",
+          text: escapeHtml(state.councilBoardNote),
+          dedupeKey: `board_${state.councilBoardNote}`
+        });
       }
 
       const isDay = state.phase === "DAY";
@@ -3818,10 +5026,15 @@ class SofraGameApp {
       const timerEl = document.getElementById("phase-timer");
       if (timerEl) {
         const remSec = Math.max(0, Math.ceil(((state.phaseEndsAt || 0) - Date.now()) / 1000));
-        timerEl.textContent =
+        const tText =
           state.phase === "LOBBY" && (!state.autoStart || remSec <= 0)
             ? "Hazır"
             : `⏳ ${remSec} sn`;
+        timerEl.textContent = tText;
+        if (this.handbookOpen) {
+          const hbTimer = document.getElementById("handbook-live-timer");
+          if (hbTimer) hbTimer.textContent = tText;
+        }
       }
 
       const annEl = document.getElementById("announcement-box");

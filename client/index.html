@@ -1069,7 +1069,7 @@
       #puzzle-modal {
         position: fixed;
         inset: 0;
-        z-index: 86;
+        z-index: 92;
         background: rgba(8, 5, 15, 0.78);
         display: flex;
         align-items: center;
@@ -1089,6 +1089,239 @@
         flex-direction: column;
         gap: 10px;
         box-shadow: 0 24px 70px rgba(0, 0, 0, 0.95);
+      }
+
+      /* =========================================================
+         ORTA ÇAĞ DEDEKTİF & TAKTİK EL KİTAPÇIĞI (#handbook-modal)
+         ========================================================= */
+      .handbook-hud-btn {
+        background: linear-gradient(180deg, #54371d, #2b1b0f);
+        border-color: #f0c85e;
+        color: #ffe9a8;
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        position: relative;
+      }
+
+      @keyframes handbookPulse {
+        0%,
+        100% {
+          box-shadow: 0 0 0 0 rgba(255, 87, 104, 0.65);
+        }
+        50% {
+          box-shadow: 0 0 14px 3px rgba(255, 196, 77, 0.75);
+        }
+      }
+
+      .handbook-hud-btn.has-unread {
+        border-color: #ffd166;
+        animation: handbookPulse 1.6s infinite;
+      }
+
+      .handbook-badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 18px;
+        height: 18px;
+        padding: 0 5px;
+        border-radius: 999px;
+        font-size: 0.68rem;
+        font-weight: bold;
+        background: rgba(226, 189, 83, 0.24);
+        color: #ffe8a3;
+        border: 1px solid rgba(226, 189, 83, 0.55);
+      }
+
+      .handbook-hud-btn.has-unread .handbook-badge {
+        background: #d92638;
+        color: #fff;
+        border-color: #ff9aa5;
+      }
+
+      #handbook-modal {
+        position: fixed;
+        inset: 0;
+        z-index: 89;
+        background: rgba(7, 5, 12, 0.76);
+        backdrop-filter: blur(3px);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 12px;
+      }
+
+      .handbook-shell {
+        width: min(980px, 96vw);
+        max-height: min(670px, 91dvh);
+        background: linear-gradient(165deg, #281911 0%, #171019 52%, #23150f 100%);
+        border: 2px solid var(--gold);
+        border-radius: 18px;
+        box-shadow: 0 26px 80px rgba(0, 0, 0, 0.96), inset 0 0 0 1px rgba(255, 224, 150, 0.16);
+        padding: 12px 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 9px;
+        overflow: hidden;
+      }
+
+      .handbook-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        border-bottom: 1px solid var(--gold-soft);
+        padding-bottom: 8px;
+      }
+
+      .handbook-tabs {
+        display: flex;
+        gap: 5px;
+        flex-wrap: wrap;
+        align-items: center;
+      }
+
+      .handbook-tab-btn {
+        background: rgba(24, 16, 12, 0.9);
+        color: var(--text-muted);
+        border: 1px solid var(--gold-soft);
+        border-radius: 8px;
+        padding: 5px 10px;
+        font-family: inherit;
+        font-size: 0.75rem;
+        font-weight: bold;
+        cursor: pointer;
+      }
+
+      .handbook-tab-btn.active {
+        background: linear-gradient(180deg, #8f1d2c, #4e0d16);
+        color: #fff3d6;
+        border-color: #ffd166;
+      }
+
+      .handbook-phase-strip {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        padding: 7px 11px;
+        border-radius: 10px;
+        background: rgba(38, 25, 18, 0.9);
+        border: 1px solid rgba(226, 189, 83, 0.45);
+        font-size: 0.78rem;
+      }
+
+      .handbook-open-book {
+        display: grid;
+        grid-template-columns: 1.02fr 1.12fr;
+        gap: 10px;
+        flex: 1;
+        min-height: 0;
+        overflow: hidden;
+      }
+
+      .handbook-open-book.single-col {
+        grid-template-columns: 1fr;
+      }
+
+      .handbook-page {
+        background: linear-gradient(180deg, rgba(43, 30, 20, 0.94), rgba(24, 17, 14, 0.96));
+        border: 1px solid rgba(226, 189, 83, 0.42);
+        border-radius: 12px;
+        padding: 10px 11px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        min-height: 0;
+        overflow-y: auto;
+        touch-action: pan-y;
+        -webkit-overflow-scrolling: touch;
+        box-shadow: inset 0 0 24px rgba(0, 0, 0, 0.42);
+      }
+
+      .clue-entry {
+        background: rgba(18, 13, 12, 0.76);
+        border-left: 3px solid var(--gold);
+        border-top: 1px solid rgba(226, 189, 83, 0.18);
+        border-right: 1px solid rgba(226, 189, 83, 0.18);
+        border-bottom: 1px solid rgba(226, 189, 83, 0.18);
+        border-radius: 8px;
+        padding: 7px 9px;
+        font-size: 0.78rem;
+        line-height: 1.42;
+        color: var(--parchment);
+      }
+
+      .clue-entry.cat-fire {
+        border-left-color: #ff5768;
+      }
+
+      .clue-entry.cat-note {
+        border-left-color: #7ab8ff;
+      }
+
+      .suspect-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 6px;
+        flex-wrap: wrap;
+        padding: 6px 8px;
+        border-radius: 9px;
+        background: rgba(17, 12, 20, 0.82);
+        border: 1px solid rgba(226, 189, 83, 0.25);
+      }
+
+      .suspect-row.pre-targeted {
+        border-color: #ffd166;
+        background: rgba(68, 46, 16, 0.55);
+      }
+
+      .suspect-row.dead-seat {
+        opacity: 0.65;
+      }
+
+      .stamp-btn {
+        border-radius: 999px;
+        padding: 3px 8px;
+        font-family: inherit;
+        font-size: 0.69rem;
+        font-weight: bold;
+        cursor: pointer;
+        border: 1px solid rgba(255, 255, 255, 0.22);
+        background: rgba(255, 255, 255, 0.08);
+        color: var(--text-light);
+      }
+
+      .stamp-btn.stamp-trust {
+        background: rgba(27, 94, 67, 0.55);
+        border-color: #52b788;
+        color: #b7f7d4;
+      }
+
+      .stamp-btn.stamp-suspect {
+        background: rgba(168, 112, 18, 0.5);
+        border-color: #ffd166;
+        color: #ffeaa7;
+      }
+
+      .stamp-btn.stamp-traitor {
+        background: rgba(165, 20, 36, 0.65);
+        border-color: #ff5768;
+        color: #ffd6dc;
+      }
+
+      @media (max-width: 700px) {
+        .handbook-open-book {
+          grid-template-columns: 1fr;
+          overflow-y: auto;
+        }
+        .handbook-page {
+          overflow-y: visible;
+        }
       }
 
       /* Veda Mektubu Dramatik Bildirim Bandı */
@@ -1227,6 +1460,19 @@
         .puzzle-card {
           max-height: 92dvh;
           padding: 10px 12px;
+        }
+        .handbook-shell {
+          max-height: 94dvh;
+          padding: 8px 10px;
+          gap: 6px;
+        }
+        .handbook-page {
+          padding: 7px 9px;
+          gap: 6px;
+        }
+        .handbook-phase-strip {
+          padding: 5px 9px;
+          font-size: 0.73rem;
         }
         #hud {
           padding: 4px max(8px, env(safe-area-inset-right)) 4px max(8px, env(safe-area-inset-left));
@@ -1659,6 +1905,11 @@
       <div class="puzzle-card" id="puzzle-card-content"></div>
     </div>
 
+    <!-- Orta Çağ Dedektif & Taktik El Kitapçığı Modalı -->
+    <div id="handbook-modal" class="interactive hidden">
+      <div class="handbook-shell" id="handbook-shell-content"></div>
+    </div>
+
     <!-- =========================================================
          4. OYUN İÇİ ANA HUD (#hud)
          ========================================================= -->
@@ -1688,6 +1939,13 @@
         </div>
 
         <div class="vault-pill interactive">
+          <button
+            class="btn handbook-hud-btn"
+            id="btn-open-handbook"
+            title="Dedektif & Taktik El Kitapçığı (Kısayol: B)"
+          >
+            📖 El Kitapçığı <span id="handbook-badge" class="handbook-badge">0</span>
+          </button>
           <span class="gold-badge" id="gold-balance-label">🪙 100</span>
           <button class="btn" id="btn-watch-ad" title="Reklam İzle +50 Altın">🎬+50</button>
           <button class="btn" id="btn-hud-landscape" title="Tam Ekran & Yatay Mod">⛶</button>
@@ -1737,7 +1995,7 @@
          5. GÜNDÜZ KONTROLLERİ: SOL YÖN OKLARI + SAĞ WILD RIFT KOŞU ÇARKI
          ========================================================= -->
     <div id="day-action-hud">
-      <div id="pc-mouse-hint">🖱️ Fareyi oynatarak yön ver (Sohbet: Enter · Oyuncu & Bar: Tab · İmleç: Alt)</div>
+      <div id="pc-mouse-hint">🖱️ Fareyle yön ver (El Kitapçığı: B · Sohbet: Enter · Oyuncu & Bar: Tab · İmleç: Alt)</div>
       <div class="day-room-pill" id="zone-label">📍 Antre</div>
 
       <!-- Gündüz Kişisel Gizli Görevler Takip Kutusu -->
