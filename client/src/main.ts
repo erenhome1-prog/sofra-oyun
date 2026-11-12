@@ -179,6 +179,13 @@ class SofraGameApp {
     canSabotage: boolean;
     completedClue?: string;
   } | null = null;
+  private myHasSecretNecklace = false;
+  private activeTrialSecretResult: {
+    wonNecklace: boolean;
+    someoneWon: boolean;
+    reason?: string;
+    text: string;
+  } | null = null;
   private traitorNightPicks = new Map<
     string,
     { traitorSeat: number; traitorNick: string; targetId: string; targetSeat: number; targetNick: string }
@@ -898,6 +905,8 @@ class SofraGameApp {
     this.nightConclaveLogs = [];
     this.nightWatchNote = "";
     this.gameOverSummary = null;
+    this.myHasSecretNecklace = false;
+    this.activeTrialSecretResult = null;
     this.lastVoteReveal = [];
     this.lastDayExtraKey = "";
     this.isLocalReadyForPhase = false;
@@ -927,9 +936,13 @@ class SofraGameApp {
       tieCandidates?: string[];
       isNightSealed?: boolean;
       myFinalDecision?: "TRUST" | "DOUBT" | "";
+      hasSecretNecklace?: boolean;
     }) => {
       const roleChanged = !this.myRole || this.myRole.role !== payload.role;
       this.myRole = payload;
+      if (typeof payload.hasSecretNecklace === "boolean") {
+        this.myHasSecretNecklace = payload.hasSecretNecklace;
+      }
       if (typeof payload.myVotedTargetId === "string" && payload.myVotedTargetId) {
         this.selectedVoteTargetId = payload.myVotedTargetId;
       }
@@ -947,12 +960,13 @@ class SofraGameApp {
       }
       const pill = document.getElementById("my-role-pill")!;
       pill.classList.remove("hidden", "role-hain", "role-misafir");
+      const neckSuffix = this.myHasSecretNecklace ? " · 📿 Gizli Kolye" : "";
       if (payload.role === "HAIN") {
         pill.classList.add("role-hain");
-        pill.textContent = "🗡️ HAİN";
+        pill.textContent = `🗡️ HAİN${neckSuffix}`;
       } else {
         pill.classList.add("role-misafir");
-        pill.textContent = "🕯️ MİSAFİR";
+        pill.textContent = `🕯️ MİSAFİR${neckSuffix}`;
       }
       const matesText =
         payload.role === "HAIN" && payload.traitorMates?.length
@@ -1178,28 +1192,60 @@ class SofraGameApp {
       this.showPuzzleFeedbackModal(rawText, fb.ok, customTitle);
     });
 
-    // 🧩 1 DAKİKALIK ORTAK ŞATO BULMACA SINAVI (TRIAL)
+    // 🔔 "EVET, OYUN ZAMANI!" (1 DAKİKALIK DONDURMA & GİZLİ ALTIN KOLYE YARIŞI)
     room.onMessage("trial_challenge", (ch: any) => {
       this.activeTrial = ch;
+      this.activeTrialSecretResult = null;
       this.lastCenterRenderHash = "";
     });
 
-    room.onMessage("trial_completed", (res: { wonNecklace: boolean; clueText: string }) => {
-      sfx.playSuccessChord();
-      if (this.activeTrial) {
-        this.activeTrial.stage = 4;
-        this.activeTrial.completedClue = `${res.wonNecklace ? "📿 ALTIN KOLYE KAZANDIN! | " : ""}${res.clueText}`;
+    room.onMessage(
+      "trial_completed",
+      (res: { wonNecklace: boolean; pendingSecretResult?: boolean; clueText: string }) => {
+        sfx.playSuccessChord();
+        if (this.activeTrial) {
+          this.activeTrial.stage = 4;
+          this.activeTrial.completedClue = res.clueText;
+        }
+        const rnd = (this.room?.state as any)?.round || 1;
+        this.addClueEntry({
+          category: "clue",
+          icon: "🧩",
+          source: "Oyun Zamanı Kanıtı",
+          text: escapeHtml(res.clueText),
+          dedupeKey: `trial_${rnd}_${res.clueText}`
+        });
+        this.lastCenterRenderHash = "";
       }
-      const rnd = (this.room?.state as any)?.round || 1;
-      this.addClueEntry({
-        category: "clue",
-        icon: res.wonNecklace ? "📿" : "🧩",
-        source: "Şato Bulmaca Kanıtı",
-        text: escapeHtml(`${res.wonNecklace ? "[Altın Kolye Kazanıldı] " : ""}${res.clueText}`),
-        dedupeKey: `trial_${rnd}_${res.clueText}`
-      });
-      this.lastCenterRenderHash = "";
-    });
+    );
+
+    room.onMessage(
+      "trial_secret_result",
+      (res: { wonNecklace: boolean; someoneWon: boolean; reason?: string; text: string }) => {
+        this.activeTrialSecretResult = res;
+        this.myHasSecretNecklace = Boolean(res.wonNecklace);
+        if (res.wonNecklace) {
+          sfx.playSuccessChord();
+          sfx.playGoldChime();
+          const rnd = (this.room?.state as any)?.round || 1;
+          this.addClueEntry({
+            category: "note",
+            icon: "📿",
+            source: "Gizli Altın Kolye (Sadece Sen Biliyorsun)",
+            text: "Bu tur Altın Kolyeyi kimsenin haberi olmadan SEN kazandın! Gece Hainler seni hedef seçerse infaz başarısız olacak.",
+            dedupeKey: `secret_neck_${rnd}`
+          });
+        } else {
+          sfx.playCastleBell();
+        }
+        const pill = document.getElementById("my-role-pill");
+        if (pill && this.myRole) {
+          const neckSuffix = this.myHasSecretNecklace ? " · 📿 Gizli Kolye" : "";
+          pill.textContent = this.myRole.role === "HAIN" ? `🗡️ HAİN${neckSuffix}` : `🕯️ MİSAFİR${neckSuffix}`;
+        }
+        this.lastCenterRenderHash = "";
+      }
+    );
 
     // ⏩ ERKEN HAZIR SAYACI
     room.onMessage("ready_count_update", (d: { readyCount: number; totalHumans: number }) => {
@@ -4532,6 +4578,9 @@ class SofraGameApp {
     const playerSummary = Array.from(state.players?.values() || [])
       .map((p: any) => `${p.id}:${p.seat}:${p.nick}:${p.alive}:${p.connected}:${Boolean(p.isBot)}:${p.coatColor}:${p.hat}:${p.mask}:${p.votedForId}`)
       .join("|");
+    const trialSecretKey = this.activeTrialSecretResult
+      ? `${this.activeTrialSecretResult.wonNecklace}:${this.activeTrialSecretResult.someoneWon}:${this.activeTrialSecretResult.text}`
+      : "";
     const trialKey = this.activeTrial
       ? `${this.activeTrial.stage}:${this.activeTrial.puzzleId}:${this.activeTrial.canSabotage}:${this.activeTrial.completedClue || ""}`
       : "";
@@ -4542,7 +4591,7 @@ class SofraGameApp {
       .map(([s, t]) => `${s}:${t}`)
       .join(",");
     const tieKey = this.getActiveTieCandidateIds(state).join(",");
-    const hash = `${phase}|${state.round}|${this.myRole?.role || ""}|${state.fastMode}|${state.paceMode || "normal"}|${state.targetPlayerCount || 10}|${state.atmosphereTheme || "torch"}|${state.autoStart}|${state.pot}|${state.lastBurnedId}|${state.lastBurnedFlame}|${state.winReason}|${this.lastVoteReveal.length}|${this.mobileLobbyTab}|${this.vault.gold}|${this.vault.selectedSeat}|${this.vault.coatColor}|${this.vault.hat}|${this.vault.mask}|${this.selectedVoteTargetId}|${this.selectedNightTargetId}|${this.selectedFinalChoice}|${this.isLocalReadyForPhase}|${this.isNightSealed}|${this.readyStatusText}|${tieKey}|${this.preTargetSeat}|${stampsKey}|${this.clueJournal.length}|${trialKey}|${picksKey}|${this.nightConclaveLogs.length}|${this.nightWatchNote}|${Boolean(this.gameOverSummary)}|${playerSummary}`;
+    const hash = `${phase}|${state.round}|${this.myRole?.role || ""}|${this.myHasSecretNecklace}|${trialSecretKey}|${state.fastMode}|${state.paceMode || "normal"}|${state.targetPlayerCount || 10}|${state.atmosphereTheme || "torch"}|${state.autoStart}|${state.pot}|${state.lastBurnedId}|${state.lastBurnedFlame}|${state.winReason}|${this.lastVoteReveal.length}|${this.mobileLobbyTab}|${this.vault.gold}|${this.vault.selectedSeat}|${this.vault.coatColor}|${this.vault.hat}|${this.vault.mask}|${this.selectedVoteTargetId}|${this.selectedNightTargetId}|${this.selectedFinalChoice}|${this.isLocalReadyForPhase}|${this.isNightSealed}|${this.readyStatusText}|${tieKey}|${this.preTargetSeat}|${stampsKey}|${this.clueJournal.length}|${trialKey}|${picksKey}|${this.nightConclaveLogs.length}|${this.nightWatchNote}|${Boolean(this.gameOverSummary)}|${playerSummary}`;
 
     if (hash === this.lastCenterRenderHash) return;
     this.lastCenterRenderHash = hash;
@@ -4966,16 +5015,47 @@ class SofraGameApp {
 
   private renderTrialPanel(panel: HTMLElement, state: any): void {
     const tr = this.activeTrial;
+    const secRes = this.activeTrialSecretResult;
     const isHain = this.myRole?.role === "HAIN";
     const me = state.players?.get(this.room?.sessionId);
     const isSpectating = !me || !me.alive || me.ghost;
 
+    // 1. SÜRE BİTTİ VEYA HERKES TAMAMLADI -> GİZLİ KOLYE SONUÇ ZARFI!
+    if (secRes) {
+      const won = secRes.wonNecklace;
+      panel.innerHTML = `
+        <div style="text-align:center; padding:18px 14px;">
+          <div style="font-size:0.76rem; letter-spacing:1.6px; color:var(--gold); margin-bottom:6px;">
+            ◆ OYUN ZAMANI GİZLİ SONUÇ ZARFI ◆
+          </div>
+          <h2 style="font-size:1.35rem; color:${won ? "#ffd166" : "#f4e9d8"}; margin-bottom:10px;">
+            ${
+              won
+                ? "📿 ALTIN KOLYE SENİN OLDU! (KİMSENİN HABERİ YOK)"
+                : secRes.someoneWon
+                ? "🤫 GİZLİ ALTIN KOLYE SAHİBİNİ BULDU!"
+                : "⏳ SÜRE DOLDU — ALTIN KOLYE SAHİPSİZ KALDI"
+            }
+          </h2>
+          <div style="margin:0 auto 12px; max-width:600px; background:${
+            won ? "rgba(88, 66, 14, 0.52)" : "rgba(38, 16, 28, 0.68)"
+          }; border:2px solid ${won ? "#ffd166" : "var(--gold-soft)"}; border-radius:14px; padding:14px; font-size:0.94rem; line-height:1.5; color:var(--parchment);">
+            ${escapeHtml(secRes.text)}
+          </div>
+          <div style="font-size:0.82rem; color:var(--text-muted);">
+            🔔 Yuvarlak Sofra & Şömine Oylaması birazdan başlıyor... Ortak Hazine: <strong style="color:var(--gold);">🪙 ${state.pot}</strong>
+          </div>
+        </div>
+      `;
+      return;
+    }
+
     if (isSpectating) {
       panel.innerHTML = `
         <div style="text-align:center; padding:16px;">
-          <h2 style="color:var(--gold);">🧩 ŞATO BULMACA SINAVI (1 DAKİKA)</h2>
+          <h2 style="color:var(--gold);">🔔 EVET, OYUN ZAMANI! (1 DAKİKA)</h2>
           <p style="margin-top:8px; color:var(--text-muted);">
-            Hayatta kalan davetliler 3 aşamalı kadim düzeneği çözmeye çalışıyor... Ortak Hazine: <strong style="color:var(--gold);">🪙 ${state.pot}</strong>
+            Şatoda her şey 1 dakikalığına durdu! Hayatta kalan davetliler GİZLİ ALTIN KOLYE için yarışıyor... Ortak Hazine: <strong style="color:var(--gold);">🪙 ${state.pot}</strong>
           </p>
         </div>
       `;
@@ -4985,7 +5065,7 @@ class SofraGameApp {
     if (!tr) {
       panel.innerHTML = `
         <div style="text-align:center; padding:16px;">
-          <h2 style="color:var(--gold);">🧩 ŞATO BULMACA SINAVI HAZIRLANIYOR...</h2>
+          <h2 style="color:var(--gold);">🔔 EVET, OYUN ZAMANI! YARIŞ BAŞLIYOR...</h2>
         </div>
       `;
       return;
@@ -4994,12 +5074,12 @@ class SofraGameApp {
     if (tr.stage >= 4) {
       panel.innerHTML = `
         <div style="text-align:center; padding:14px;">
-          <h2 style="color:#8ce99a; font-size:1.25rem;">🏆 3/3 AŞAMA TAMAMLANDI!</h2>
-          <p style="margin:10px auto; max-width:560px; background:rgba(30,65,45,0.45); border:1px solid #8ce99a; border-radius:10px; padding:10px; font-size:0.9rem;">
-            ${escapeHtml(tr.completedClue || "Dedektif ipucun açıldı! Birazdan Yuvarlak Sofra başlayacak.")}
+          <h2 style="color:#8ce99a; font-size:1.25rem;">⏳ 3/3 AŞAMA MÜHÜRLENDİ — GİZLİ SONUÇ BEKLENİYOR!</h2>
+          <p style="margin:10px auto; max-width:580px; background:rgba(30,65,45,0.45); border:1px solid #8ce99a; border-radius:10px; padding:10px; font-size:0.9rem;">
+            ${escapeHtml(tr.completedClue || "Dedektif ipucun açıldı!")}
           </p>
-          <div style="font-size:0.82rem; color:var(--gold);">
-            🪙 Ortak Şato Hazinesi: ${state.pot} · İstersen üstteki <strong>⏩ Hazırım</strong> düğmesine basabilirsin!
+          <div style="font-size:0.84rem; color:#ffd166; margin-top:6px;">
+            🤫 Yarış bittiğinde ilk bitirene <strong>KİMSENİN HABERİ OLMADAN</strong> Gizli Altın Kolye verilecek! (🪙 Hazine: ${state.pot})
           </div>
         </div>
       `;
@@ -5009,9 +5089,9 @@ class SofraGameApp {
     panel.innerHTML = `
       <div class="panel-header">
         <div>
-          <h2>🧩 ŞATO BULMACA SINAVI — AŞAMA ${tr.stage}/${tr.totalStages}</h2>
+          <h2>🔔 EVET, OYUN ZAMANI! — AŞAMA ${tr.stage}/${tr.totalStages}</h2>
           <span style="font-size:0.75rem; color:var(--text-muted);">
-            3 aşamayı tamamla: Hazineyi büyüt, <strong style="color:var(--gold);">📿 Altın Kolye</strong> ve Gerçek Dedektif İpucu kazan!
+            Şatoda her şey 1 dakikalığına durdu! İlk bitiren (veya ilk doğru yapan) sonuçlarda belirlenip <strong style="color:var(--gold);">KİMSENİN HABERİ OLMADAN 📿 Altın Kolyeyi</strong> alır!
           </span>
         </div>
         <span class="gold-badge">🪙 Hazine: ${state.pot}</span>
@@ -5338,8 +5418,8 @@ class SofraGameApp {
                     ${
                       !p.connected
                         ? "⚡ Bağlantı Bekleniyor · "
-                        : state.necklaceHolder === p.id
-                        ? "📿 Altın Kolye · "
+                        : isMe && this.myHasSecretNecklace
+                        ? "📿 Gizli Kolye Sende · "
                         : ""
                     }${p.votedForId ? "✉️ Zarfını Mühürledi" : "⏳ Tartışıyor..."}
                   </div>
@@ -6239,6 +6319,12 @@ class SofraGameApp {
         if (state.phase === "DAY") {
           this.dayPhaseEnteredAt = now;
           this.tieCandidateIds = null;
+          this.myHasSecretNecklace = false;
+          this.activeTrialSecretResult = null;
+          const pill = document.getElementById("my-role-pill");
+          if (pill && this.myRole) {
+            pill.textContent = this.myRole.role === "HAIN" ? "🗡️ HAİN" : "🕯️ MİSAFİR";
+          }
           sfx.playMorningHorn();
           document.getElementById("pc-mouse-hint")?.classList.remove("hint-faded");
         }
@@ -6255,8 +6341,8 @@ class SofraGameApp {
           this.closeInspectOverlay();
         }
 
-        // Oylama, Gece İnfazı ve Final seçim ekranlarına girerken soldaki PM pencerelerini küçült ki seçim ekranı tam odakta açılsın!
-        if (state.phase === "VOTE" || state.phase === "NIGHT" || state.phase === "FINAL") {
+        // Oyun Zamanı, Oylama, Gece İnfazı ve Final seçim ekranlarına girerken soldaki PM pencerelerini küçült ki yarış/seçim ekranı tam odakta açılsın!
+        if (state.phase === "TRIAL" || state.phase === "VOTE" || state.phase === "NIGHT" || state.phase === "FINAL") {
           this.pmThreads.forEach((t) => {
             t.minimized = true;
           });
@@ -6268,6 +6354,8 @@ class SofraGameApp {
         }
 
         if (state.phase === "TRIAL") {
+          this.activeTrialSecretResult = null;
+          sfx.playCastleBell();
           sfx.playRuneChime();
           this.room.send("request_my_state");
         } else if (state.phase === "TABLE") {
@@ -6349,6 +6437,8 @@ class SofraGameApp {
           sfx.playTensionDrum();
         } else if (state.phase === "LOBBY") {
           this.myRole = null;
+          this.myHasSecretNecklace = false;
+          this.activeTrialSecretResult = null;
           document.getElementById("my-role-pill")?.classList.add("hidden");
           this.selectedVoteTargetId = "";
           this.selectedNightTargetId = "";
@@ -6394,7 +6484,7 @@ class SofraGameApp {
 
       const canEarlyReady =
         state.phase === "ARRIVAL" ||
-        ((state.phase === "DAY" || state.phase === "TRIAL" || state.phase === "TABLE") &&
+        ((state.phase === "DAY" || state.phase === "TABLE") &&
           Boolean(me && me.alive && !me.ghost));
       const readyBtnEl = document.getElementById("btn-ready-phase");
       if (readyBtnEl) {
@@ -6434,7 +6524,7 @@ class SofraGameApp {
               LOBBY: "LOBİ",
               ARRIVAL: "GİZLİ ZARF",
               DAY: `GÜN ${state.round} · KEŞİF`,
-              TRIAL: `GÜN ${state.round} · SINAV`,
+              TRIAL: `GÜN ${state.round} · OYUN ZAMANI`,
               TABLE: `GÜN ${state.round} · SOFRA`,
               VOTE: isTieVote ? `GÜN ${state.round} · EŞİTLİK` : `GÜN ${state.round} · SOFRA & OY`,
               FIRE: `GÜN ${state.round} · ŞÖMİNE`,
@@ -6447,7 +6537,7 @@ class SofraGameApp {
               LOBBY: "LOBİ — KARAKTER & SÜRE",
               ARRIVAL: "GİRİŞ — GİZLİ ZARFLAR",
               DAY: `GÜN ${state.round} — ŞATO KEŞFİ`,
-              TRIAL: `GÜN ${state.round} — BULMACA SINAVI`,
+              TRIAL: `GÜN ${state.round} — 🔔 EVET, OYUN ZAMANI! (1 DK)`,
               TABLE: `GÜN ${state.round} — SOFRA TARTIŞMASI`,
               VOTE: isTieVote
                 ? `GÜN ${state.round} — ⚖️ EŞİTLİK OYLAMASI`
@@ -6477,7 +6567,11 @@ class SofraGameApp {
             break;
           case "DAY":
             compassText =
-              "🧭 Odaları gez, 🔮 Rün Kürsüsünden 📿 Altın Kolye & ipucu kazan; karaktere tıklayıp incele!";
+              "🧭 Odaları gez, ipucu topla ve fısıldaş; keşif bitince 1 dakikalık 🔔 Oyun Zamanı başlayacak!";
+            break;
+          case "TRIAL":
+            compassText =
+              "🧭 Her şey 1 dakikalığına durdu! İlk bitiren (veya ilk doğru yapan) kimsenin haberi olmadan 📿 Gizli Kolyeyi alır!";
             break;
           case "VOTE":
             compassText = isTieVote
@@ -6646,7 +6740,7 @@ class SofraGameApp {
           rotY: isLocal && isDay ? this.localRotY : p.rotY,
           alive: p.alive,
           isGhost: p.ghost,
-          hasGoldNecklace: state.necklaceHolder === sid,
+          hasGoldNecklace: isLocal && this.myHasSecretNecklace,
           coatColor: p.coatColor,
           accentColor: p.accentColor,
           hat: p.hat,

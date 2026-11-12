@@ -144,6 +144,13 @@ export class SofraRoom extends Room<SofraState> {
   private puzzleCooldownUntil = new Map<string, number>();
   private solvedPuzzleRound = new Map<string, number>();
   private necklaceClaimedByPuzzleThisRound = false;
+  private secretNecklaceHolderId = "";
+  private trialProgress = new Map<
+    string,
+    { correctCount: number; firstCorrectAt: number; lastCorrectAt: number; finishedAt: number }
+  >();
+  private trialResultsPhaseActive = false;
+  private trialWinnerReason: "FIRST_FINISH" | "FIRST_CORRECT" | "NONE" = "NONE";
   private playerQuests = new Map<string, PersonalQuest[]>();
   private trialStageByPlayer = new Map<string, number>();
   private trialActiveChallenge = new Map<string, ActivePuzzleSession>();
@@ -583,7 +590,7 @@ export class SofraRoom extends Room<SofraState> {
         accentColor: target.accentColor,
         hat: target.hat,
         mask: target.mask,
-        hasNecklace: this.state.necklaceHolder === target.id,
+        hasNecklace: false,
         topBonds: bonds.slice(0, 4)
       });
 
@@ -596,7 +603,7 @@ export class SofraRoom extends Room<SofraState> {
       }
     });
 
-    // 4. BULMACA & ETKİNLİK SALONU (`request_puzzle` & `submit_puzzle` — Gündüz İlk Çözene 📿 Altın Kolye!)
+    // 4. BULMACA & ETKİNLİK SALONU (`request_puzzle` & `submit_puzzle` — Gündüz Dedektif İpucu & Hazine; Altın Kolye "Oyun Zamanı" yarışında gizlice verilir!)
     this.onMessage("request_puzzle", (client, data?: { altarId?: string }) => {
       const p = this.state.players.get(client.sessionId);
       if (!p || !p.alive || p.ghost || this.state.phase !== "DAY") return;
@@ -681,28 +688,11 @@ export class SofraRoom extends Room<SofraState> {
         p.hasKahyaKey = true;
       }
 
-      let wonNecklace = false;
-      if (!this.necklaceClaimedByPuzzleThisRound && !this.state.necklaceHolder) {
-        this.necklaceClaimedByPuzzleThisRound = true;
-        this.state.necklaceHolder = p.id;
-        wonNecklace = true;
-        this.chronicleLog.push(
-          `📿 Gün #${this.state.round}: Koltuk #${p.seat} (${p.nick}) Rün Kürsüsünü ilk çözüp o gecenin Altın Kolye korumasını kazandı.`
-        );
-        this.broadcast("chat_msg", {
-          senderId: p.id,
-          senderNick: "RÜN KÜRSÜSÜ",
-          seat: p.seat,
-          text: `📿 Koltuk #${p.seat} (${p.nick}) gündüz Rün Kürsüsünü İLK çözdü ve bu gecenin 📿 ALTIN KOLYE korumasını boynuna taktı!`,
-          channel: "ETKİNLİK"
-        });
-      }
-
       client.send("puzzle_feedback", {
         ok: true,
         bonusGold: 20,
-        wonNecklace,
-        text: `${wonNecklace ? "📿 ALTIN KOLYE SENİN OLDU! (+20🪙 Kasa & +25🪙 Hazine) | " : "+20🪙 Kasa & +25🪙 Ortak Hazine! | "}${clue.clueText}`
+        wonNecklace: false,
+        text: `+20🪙 Kasa & +25🪙 Ortak Hazine! | ${clue.clueText}`
       });
       this.completeQuestByKind(client.sessionId, "DETECTIVE");
     });
@@ -755,16 +745,24 @@ export class SofraRoom extends Room<SofraState> {
       this.completeQuestByKind(client.sessionId, "ROOM_OR_BOARD");
     });
 
-    // 5B. GERİYE DÖNÜK UYUMLU `TRIAL` MESAJLARI (Sadeleştirilmiş akışta zorunlu değil, güvenli tutuldu)
+    // 5B. "EVET, OYUN ZAMANI!" (1 Dakikalık Dondurma & Gizli Altın Kolye Yarışı)
     this.onMessage("submit_trial_answer", (client, data: { puzzleId: string; optionIndex: number }) => {
       const p = this.state.players.get(client.sessionId);
       const ch = this.trialActiveChallenge.get(client.sessionId);
-      if (!p || !p.alive || p.ghost || this.state.phase !== "TRIAL" || !ch || ch.puzzleId !== data?.puzzleId) {
+      if (
+        !p ||
+        !p.alive ||
+        p.ghost ||
+        this.state.phase !== "TRIAL" ||
+        this.trialResultsPhaseActive ||
+        !ch ||
+        ch.puzzleId !== data?.puzzleId
+      ) {
         return;
       }
 
       const now = Date.now();
-      if (now - (this.lastTrialSubmitAt.get(p.id) || 0) < 800) return;
+      if (now - (this.lastTrialSubmitAt.get(p.id) || 0) < 600) return;
       this.lastTrialSubmitAt.set(p.id, now);
 
       if (Number(data.optionIndex) !== ch.correctIndex) {
@@ -774,6 +772,20 @@ export class SofraRoom extends Room<SofraState> {
       }
 
       const curStage = this.trialStageByPlayer.get(p.id) || 1;
+      const prog = this.trialProgress.get(p.id) || {
+        correctCount: 0,
+        firstCorrectAt: 0,
+        lastCorrectAt: 0,
+        finishedAt: 0
+      };
+      prog.correctCount = Math.max(prog.correctCount, curStage);
+      if (!prog.firstCorrectAt) prog.firstCorrectAt = now;
+      prog.lastCorrectAt = now;
+      if (curStage >= 3 && !prog.finishedAt) {
+        prog.finishedAt = now;
+      }
+      this.trialProgress.set(p.id, prog);
+
       this.state.pot += 20;
       client.send("match_reward", { bonusGold: 15, won: true });
 
@@ -795,17 +807,14 @@ export class SofraRoom extends Room<SofraState> {
       if (clue.grantedKahyaKey) p.hasKahyaKey = true;
       this.trialCompletedClue.set(p.id, clue.clueText);
 
-      let wonNecklace = false;
-      if (!this.necklaceClaimedByPuzzleThisRound && !this.state.necklaceHolder) {
-        this.necklaceClaimedByPuzzleThisRound = true;
-        this.state.necklaceHolder = p.id;
-        wonNecklace = true;
-      }
-
+      // Kimseye yarış bitmeden kolyeyi kazanıp kazanmadığı söylenmez — sonuçlarda GİZLİCE açıklanır!
       client.send("trial_completed", {
-        wonNecklace,
+        wonNecklace: false,
+        pendingSecretResult: true,
         clueText: clue.clueText
       });
+
+      this.checkAllHumansFinishedTrial();
     });
 
     this.onMessage("sabotage_trial", (client) => {
@@ -1819,12 +1828,9 @@ export class SofraRoom extends Room<SofraState> {
         case "kahya_ledger": {
           bonusGold = 10;
           this.state.pot += 10;
-          const neckOwner = this.state.necklaceHolder ? this.state.players.get(this.state.necklaceHolder) : undefined;
           const bellStatus =
             this.kahyaBellUsedRound === this.state.round ? "Bugün çalındı" : "Bugün henüz çalınmadı";
-          feedbackText = `🕯️ Kâhya Kayıt Defteri (+10🪙 Kasa & +10🪙 Hazine): Ortak Hazine ${this.state.pot}🪙 · Kâhya Zili: ${bellStatus} · Altın Kolye: ${
-            neckOwner ? `#${neckOwner.seat} ${neckOwner.nick}` : "Henüz sahnedeki Rün Kürsüsünden alınmadı"
-          }.`;
+          feedbackText = `🕯️ Kâhya Kayıt Defteri (+10🪙 Kasa & +10🪙 Hazine): Ortak Hazine ${this.state.pot}🪙 · Kâhya Zili: ${bellStatus} · Altın Kolye: Oyun Zamanı sonuçlarında kimsenin haberi olmadan GİZLİCE verilir.`;
           break;
         }
         case "equip_wizard": {
@@ -1995,7 +2001,6 @@ export class SofraRoom extends Room<SofraState> {
     if (
       this.state.phase !== "ARRIVAL" &&
       this.state.phase !== "DAY" &&
-      this.state.phase !== "TRIAL" &&
       this.state.phase !== "TABLE"
     ) {
       return;
@@ -2019,8 +2024,10 @@ export class SofraRoom extends Room<SofraState> {
     if (voterPool.length > 0 && readyCount >= voterPool.length) {
       if (this.state.phase === "ARRIVAL") {
         this.enterDayPhase();
-      } else if (this.state.phase === "DAY" || this.state.phase === "TRIAL" || this.state.phase === "TABLE") {
+      } else if (this.state.phase === "DAY") {
         this.advanceAfterDay();
+      } else if (this.state.phase === "TABLE") {
+        this.enterVotePhase([]);
       }
     }
   }
@@ -2055,7 +2062,8 @@ export class SofraRoom extends Room<SofraState> {
     this.departedSessions.delete(newSid);
 
     if (this.state.hostId === oldSid) this.state.hostId = newSid;
-    if (this.state.necklaceHolder === oldSid) this.state.necklaceHolder = newSid;
+    if (this.secretNecklaceHolderId === oldSid) this.secretNecklaceHolderId = newSid;
+    if (this.state.necklaceHolder === oldSid) this.state.necklaceHolder = "";
     if (this.state.lastBurnedId === oldSid) this.state.lastBurnedId = newSid;
     if (this.state.lastTakenId === oldSid) this.state.lastTakenId = newSid;
 
@@ -2108,6 +2116,7 @@ export class SofraRoom extends Room<SofraState> {
     migrateMapKey(this.trialCompletedClue);
     migrateMapKey(this.lastTrialSubmitAt);
     migrateSetItem(this.trialSabotagedPlayers);
+    migrateMapKey(this.trialProgress);
     migrateMapKey(this.chalkUsedRound);
     migrateMapKey(this.noteSabotageUsedRound);
     migrateMapKey(this.ghostHauntCooldown);
@@ -2381,7 +2390,9 @@ export class SofraRoom extends Room<SofraState> {
         });
         this.reassignHostIfNeeded(sessionId);
         this.checkEarlyReadyPhase(true);
-        if (this.state.phase === "VOTE") {
+        if (this.state.phase === "TRIAL") {
+          this.checkAllHumansFinishedTrial();
+        } else if (this.state.phase === "VOTE") {
           this.castSmartVoteForBotNow(player);
           this.checkIfAllVoted();
         } else if (this.state.phase === "NIGHT") {
@@ -2426,6 +2437,9 @@ export class SofraRoom extends Room<SofraState> {
 
       this.tieCandidates = this.tieCandidates.filter((id) => id !== sessionId);
       this.state.tieCandidateCsv = this.tieCandidates.join(",");
+      if (this.secretNecklaceHolderId === sessionId) {
+        this.secretNecklaceHolderId = "";
+      }
       if (this.state.necklaceHolder === sessionId) {
         this.state.necklaceHolder = "";
       }
@@ -2490,7 +2504,9 @@ export class SofraRoom extends Room<SofraState> {
 
     this.reassignHostIfNeeded(sessionId);
     this.checkEarlyReadyPhase(true);
-    if (this.state.phase === "VOTE") {
+    if (this.state.phase === "TRIAL") {
+      this.checkAllHumansFinishedTrial();
+    } else if (this.state.phase === "VOTE") {
       if (this.tieCandidates.length === 1) {
         this.enterFirePhase(this.tieCandidates[0]);
         return;
@@ -2570,6 +2586,10 @@ export class SofraRoom extends Room<SofraState> {
     this.puzzleCooldownUntil.clear();
     this.solvedPuzzleRound.clear();
     this.necklaceClaimedByPuzzleThisRound = false;
+    this.secretNecklaceHolderId = "";
+    this.trialProgress.clear();
+    this.trialResultsPhaseActive = false;
+    this.trialWinnerReason = "NONE";
     this.playerQuests.clear();
     this.trialStageByPlayer.clear();
     this.trialActiveChallenge.clear();
@@ -2666,7 +2686,8 @@ export class SofraRoom extends Room<SofraState> {
       myVotedTargetId,
       tieCandidates: this.tieCandidates,
       isNightSealed: this.sealedNightTraitors.has(sid),
-      myFinalDecision: this.finalDecisions.get(sid) || ""
+      myFinalDecision: this.finalDecisions.get(sid) || "",
+      hasSecretNecklace: Boolean(this.secretNecklaceHolderId && this.secretNecklaceHolderId === sid)
     });
   }
 
@@ -2700,32 +2721,48 @@ export class SofraRoom extends Room<SofraState> {
 
     const sid = client.sessionId;
     const p = this.state.players.get(sid);
-    if (this.state.phase === "TRIAL" && p && p.alive && !p.ghost) {
-      const stg = this.trialStageByPlayer.get(sid) || 1;
-      if (stg <= 3) {
-        const existingCh = this.trialActiveChallenge.get(sid);
-        if (existingCh) {
-          client.send("trial_challenge", {
-            stage: stg,
-            totalStages: 3,
-            puzzleId: existingCh.puzzleId,
-            title: existingCh.title,
-            prompt: existingCh.prompt,
-            options: existingCh.options,
-            feedback: "",
-            canSabotage:
-              this.secretRoles.get(sid) === "HAIN" &&
-              !this.trialSabotagedPlayers.has(sid)
-          });
-        } else {
-          this.trialStageByPlayer.set(sid, stg);
-          this.sendTrialStageToClient(client, stg);
-        }
-      } else {
-        client.send("trial_completed", {
-          wonNecklace: this.state.necklaceHolder === sid,
-          clueText: this.trialCompletedClue.get(sid) || "3/3 Bulmaca Aşaması tamamlandı!"
+    if (this.state.phase === "TRIAL") {
+      if (this.trialResultsPhaseActive) {
+        const won = Boolean(this.secretNecklaceHolderId && this.secretNecklaceHolderId === sid);
+        const someoneWon = Boolean(this.secretNecklaceHolderId);
+        client.send("trial_secret_result", {
+          wonNecklace: won,
+          someoneWon,
+          reason: this.trialWinnerReason,
+          text: won
+            ? "📿 ALTIN KOLYEYİ SEN KAZANDIN! Kimsenin haberi yok — bu gece Hainler seni seçerse infaz başarısız olacak!"
+            : someoneWon
+            ? "🤫 Sonuçlar belirlendi: İlk bitiren / ilk doğru yapan davetli KİMSENİN HABERİ OLMADAN Altın Kolyeyi aldı! (Sen kazanamadın ve kimin kazandığını KİMSE bilmiyor.)"
+            : "⏳ Süre doldu! Kimse şifreyi çözemediği için bu gece Altın Kolye sahipsiz kaldı."
         });
+      } else if (p && p.alive && !p.ghost) {
+        const stg = this.trialStageByPlayer.get(sid) || 1;
+        if (stg <= 3) {
+          const existingCh = this.trialActiveChallenge.get(sid);
+          if (existingCh) {
+            client.send("trial_challenge", {
+              stage: stg,
+              totalStages: 3,
+              puzzleId: existingCh.puzzleId,
+              title: existingCh.title,
+              prompt: existingCh.prompt,
+              options: existingCh.options,
+              feedback: "",
+              canSabotage:
+                this.secretRoles.get(sid) === "HAIN" &&
+                !this.trialSabotagedPlayers.has(sid)
+            });
+          } else {
+            this.trialStageByPlayer.set(sid, stg);
+            this.sendTrialStageToClient(client, stg);
+          }
+        } else {
+          client.send("trial_completed", {
+            wonNecklace: false,
+            pendingSecretResult: true,
+            clueText: this.trialCompletedClue.get(sid) || "3/3 Bulmaca Aşaması tamamlandı!"
+          });
+        }
       }
     }
 
@@ -2912,14 +2949,188 @@ export class SofraRoom extends Room<SofraState> {
     if (this.getAlivePlayerIds().length <= 4 && this.finalAskedForRound !== this.state.round) {
       this.enterFinalPhase();
     } else {
-      this.enterVotePhase([]);
+      this.enterTrialPhase();
     }
+  }
+
+  private enterTrialPhase() {
+    // 1 DAKİKA ŞATODA HER ŞEY DURUR ("🔔 EVET, OYUN ZAMANI!")
+    this.state.players.forEach((p) => {
+      if (p.alive && !p.ghost) {
+        p.anim = "idle";
+      }
+    });
+
+    this.state.necklaceHolder = "";
+    this.readyPhasePlayers.clear();
+    this.activePuzzles.clear();
+    this.trialStageByPlayer.clear();
+    this.trialActiveChallenge.clear();
+    this.trialCompletedClue.clear();
+    this.lastTrialSubmitAt.clear();
+    this.trialSabotagedPlayers.clear();
+    this.trialProgress.clear();
+    this.trialResultsPhaseActive = false;
+    this.trialWinnerReason = "NONE";
+    this.trialSabotageCount = 0;
+    this.pendingBotTrialPot = 0;
+    this.pendingSabotagePotDrain = 0;
+
+    this.broadcast("bell_tolls", { round: this.state.round });
+
+    this.setPhase(
+      "TRIAL",
+      SOFRA_CONFIG.DURATIONS.TRIAL,
+      "🔔 EVET, OYUN ZAMANI! Şatoda her şey 1 dakikalığına durdu — Altın Kolye yarışı başladı! İlk bitiren (veya ilk doğru yapan) sonuçlarda belirlenip KİMSENİN HABERİ OLMADAN kolyeyi alır!",
+      () => this.resolveTrialPhase()
+    );
+
+    this.clients.forEach((c) => {
+      const p = this.state.players.get(c.sessionId);
+      if (p && p.alive && !p.ghost) {
+        this.trialStageByPlayer.set(c.sessionId, 1);
+        this.sendTrialStageToClient(c, 1);
+      }
+    });
+
+    // Gerçekçi Zeki Bot Yarışçıları: Hızlı bir oyuncu (35 sn altı) botları geçer; hiç kimse bitiremezse de en hızlı doğru yapan belirlenir!
+    const seq = this.phaseSeq;
+    this.state.players.forEach((bot) => {
+      if (!this.aiControlledIds.has(bot.id) || !bot.alive || bot.ghost) return;
+      const t1 = 11000 + Math.floor(Math.random() * 9000);
+      const t2 = t1 + 12000 + Math.floor(Math.random() * 11000);
+      const t3 = t2 + 13000 + Math.floor(Math.random() * 13000);
+
+      this.clock.setTimeout(() => {
+        if (this.phaseSeq !== seq || this.state.phase !== "TRIAL" || this.trialResultsPhaseActive || !bot.alive) return;
+        if (Math.random() > 0.72) return;
+        const now = Date.now();
+        this.trialProgress.set(bot.id, {
+          correctCount: 1,
+          firstCorrectAt: now,
+          lastCorrectAt: now,
+          finishedAt: 0
+        });
+        this.state.pot += 10;
+
+        this.clock.setTimeout(() => {
+          if (this.phaseSeq !== seq || this.state.phase !== "TRIAL" || this.trialResultsPhaseActive || !bot.alive) return;
+          if (Math.random() > 0.68) return;
+          const now2 = Date.now();
+          const pr = this.trialProgress.get(bot.id);
+          if (pr) {
+            pr.correctCount = 2;
+            pr.lastCorrectAt = now2;
+          }
+          this.state.pot += 10;
+
+          this.clock.setTimeout(() => {
+            if (this.phaseSeq !== seq || this.state.phase !== "TRIAL" || this.trialResultsPhaseActive || !bot.alive) return;
+            if (Math.random() > 0.62) return;
+            const now3 = Date.now();
+            const pr3 = this.trialProgress.get(bot.id);
+            if (pr3) {
+              pr3.correctCount = 3;
+              pr3.lastCorrectAt = now3;
+              pr3.finishedAt = now3;
+            }
+            this.state.pot += 10;
+          }, t3 - t2);
+        }, t2 - t1);
+      }, t1);
+    });
+  }
+
+  private checkAllHumansFinishedTrial() {
+    if (this.state.phase !== "TRIAL" || this.trialResultsPhaseActive) return;
+    const aliveHumans = this.getAliveConnectedHumanIds();
+    if (aliveHumans.length === 0) return;
+    const allDone = aliveHumans.every((id) => (this.trialStageByPlayer.get(id) || 1) >= 4);
+    if (!allDone) return;
+
+    if (this.phaseTimer) this.phaseTimer.clear();
+    const seq = this.phaseSeq;
+    this.state.phaseEndsAt = Date.now() + 1800;
+    this.phaseTimer = this.clock.setTimeout(() => {
+      if (this.phaseSeq !== seq || this.state.phase !== "TRIAL") return;
+      this.resolveTrialPhase();
+    }, 1800);
+  }
+
+  private resolveTrialPhase() {
+    if (this.state.phase !== "TRIAL" || this.trialResultsPhaseActive) return;
+    this.trialResultsPhaseActive = true;
+    if (this.phaseTimer) this.phaseTimer.clear();
+
+    if (this.pendingSabotagePotDrain > 0) {
+      this.state.pot = Math.max(0, this.state.pot - this.pendingSabotagePotDrain);
+      this.pendingSabotagePotDrain = 0;
+    }
+
+    const aliveIds = this.getAlivePlayerIds();
+    const candidates = aliveIds.filter((id) => (this.trialProgress.get(id)?.correctCount || 0) >= 1);
+    const finishers = candidates
+      .filter((id) => (this.trialProgress.get(id)?.finishedAt || 0) > 0)
+      .sort((a, b) => (this.trialProgress.get(a)!.finishedAt || 0) - (this.trialProgress.get(b)!.finishedAt || 0));
+
+    let winnerId = "";
+    let reason: "FIRST_FINISH" | "FIRST_CORRECT" | "NONE" = "NONE";
+    if (finishers.length > 0) {
+      winnerId = finishers[0];
+      reason = "FIRST_FINISH";
+    } else if (candidates.length > 0) {
+      const byFirstCorrect = [...candidates].sort((a, b) => {
+        const pa = this.trialProgress.get(a)!;
+        const pb = this.trialProgress.get(b)!;
+        if (pb.correctCount !== pa.correctCount) return pb.correctCount - pa.correctCount;
+        return (pa.firstCorrectAt || Infinity) - (pb.firstCorrectAt || Infinity);
+      });
+      winnerId = byFirstCorrect[0];
+      reason = "FIRST_CORRECT";
+    }
+
+    this.trialWinnerReason = reason;
+    this.secretNecklaceHolderId = winnerId;
+    // DİKKAT: state.necklaceHolder DAİMA "" kalır — kimsenin kolyenin kimde olduğundan haberi olmaz!
+    this.state.necklaceHolder = "";
+
+    this.clients.forEach((c) => {
+      const won = Boolean(winnerId && c.sessionId === winnerId);
+      const someoneWon = Boolean(winnerId);
+      c.send("trial_secret_result", {
+        wonNecklace: won,
+        someoneWon,
+        reason,
+        text: won
+          ? "📿 ALTIN KOLYEYİ SEN KAZANDIN! Kimsenin haberi yok — kolyeyi gizlice taktın. Bu gece Hainler seni seçerse infaz başarısız olacak!"
+          : someoneWon
+          ? "🤫 Sonuçlar belirlendi: İlk bitiren / ilk doğru yapan davetli KİMSENİN HABERİ OLMADAN Altın Kolyeyi aldı! (Sen kazanamadın ve kimin kazandığını KİMSE bilmiyor.)"
+          : "⏳ Süre doldu! Kimse doğru yanıtlayamadığı için bu gece Altın Kolye sahipsiz kaldı."
+      });
+      this.sendPrivateRoleToClient(c, true);
+    });
+
+    this.state.announcement = winnerId
+      ? "🔔 Oyun Zamanı sonuçlandı! Altın Kolye KİMSENİN HABERİ OLMADAN gizlice sahibine verildi — Yuvarlak Sofraya geçiliyor..."
+      : "🔔 Oyun Zamanı sona erdi! Bu tur kimse kolyeyi alamadı — Yuvarlak Sofraya geçiliyor...";
+
+    const resultHoldMs = 4600;
+    this.state.phaseEndsAt = Date.now() + resultHoldMs;
+    const seq = this.phaseSeq;
+    this.phaseTimer = this.clock.setTimeout(() => {
+      if (this.phaseSeq !== seq || this.state.phase !== "TRIAL") return;
+      this.enterVotePhase([]);
+    }, resultHoldMs);
   }
 
   private enterDayPhase() {
     this.state.lastBurnedId = "";
     this.state.lastBurnedFlame = "";
     this.state.necklaceHolder = "";
+    this.secretNecklaceHolderId = "";
+    this.trialProgress.clear();
+    this.trialResultsPhaseActive = false;
+    this.trialWinnerReason = "NONE";
     this.state.tieCandidateCsv = "";
     this.tieCandidates = [];
     this.necklaceClaimedByPuzzleThisRound = false;
@@ -2928,12 +3139,13 @@ export class SofraRoom extends Room<SofraState> {
     this.accusedByHumansThisRound.clear();
     this.accusedScoreThisRound.clear();
     this.assignRoundQuestsForAll();
+    this.clients.forEach((c) => this.sendPrivateRoleToClient(c, true));
 
     const daySec = this.getPhaseSeconds("DAY", SOFRA_CONFIG.DURATIONS.DAY);
     this.setPhase(
       "DAY",
       daySec,
-      `Gündüz #${this.state.round} (${formatDurationLabelTR(daySec)} Keşif & Görev) · Odaları gez, Rün Kürsüsünü ilk çözüp 📿 Altın Kolye kazan ve 📖 Kitapçığa ipucu topla!`,
+      `Gündüz #${this.state.round} (${formatDurationLabelTR(daySec)} Keşif & Görev) · Odaları gez, 📖 Kitapçığa ipucu topla; keşif bitince 1 dakikalık 🔔 OYUN ZAMANI başlayacak!`,
       () => this.advanceAfterDay()
     );
 
@@ -3216,6 +3428,9 @@ export class SofraRoom extends Room<SofraState> {
       victim.anim = "ghost";
       victim.votedForId = "";
     }
+    if (this.secretNecklaceHolderId === burnedId) {
+      this.secretNecklaceHolderId = "";
+    }
     if (this.state.necklaceHolder === burnedId) {
       this.state.necklaceHolder = "";
     }
@@ -3270,11 +3485,8 @@ export class SofraRoom extends Room<SofraState> {
       const aliveHumanTraitors = this.getAliveAllHumanIds().filter(
         (id) => this.secretRoles.get(id) === "HAIN"
       );
-      const aliveGuests = this.getAlivePlayerIds().filter(
-        (id) => this.secretRoles.get(id) === "MISAFIR" && id !== this.state.necklaceHolder
-      );
-      const fallbackGuests = this.getAlivePlayerIds().filter((id) => this.secretRoles.get(id) === "MISAFIR");
-      const basePool = aliveGuests.length > 0 ? aliveGuests : fallbackGuests;
+      // Gizli Altın Kolyenin kimde olduğunu Hainler (botlar dahil) KESİNLİKLE bilmez!
+      const basePool = this.getAlivePlayerIds().filter((id) => this.secretRoles.get(id) === "MISAFIR");
       // 1. Gece koruması: İlk geceden insan oyuncuyu şanssızca oyundan düşürmemek için bot Misafir varsa önce onu hedef alırlar!
       const botOnlyFirstNight =
         this.state.round === 1 ? basePool.filter((id) => this.aiControlledIds.has(id)) : [];
@@ -3291,7 +3503,6 @@ export class SofraRoom extends Room<SofraState> {
           this.nightPicks.set(bot.id, pick);
           const pickP = this.state.players.get(pick);
           if (pickP) {
-            const neckP = this.state.necklaceHolder ? this.state.players.get(this.state.necklaceHolder) : undefined;
             this.sendToTraitors("traitor_pick_update", {
               traitorId: bot.id,
               traitorSeat: bot.seat,
@@ -3308,7 +3519,7 @@ export class SofraRoom extends Room<SofraState> {
                 botNick: bot.nick,
                 targetSeat: pickP.seat,
                 targetNick: pickP.nick,
-                necklaceSeat: neckP?.seat
+                necklaceSeat: undefined
               }),
               channel: "HAİN MECLİSİ"
             });
@@ -3341,25 +3552,36 @@ export class SofraRoom extends Room<SofraState> {
   private enterMorningPhase() {
     const aliveGuests = this.getAlivePlayerIds().filter((id) => this.secretRoles.get(id) === "MISAFIR");
     const picks = Array.from(this.nightPicks.values());
-    const nightRes = resolveNightVictim(picks, aliveGuests, this.state.necklaceHolder);
+    const nightRes = resolveNightVictim(picks, aliveGuests, this.secretNecklaceHolderId);
 
     if (nightRes.protectedByNecklace) {
-      const savedP = this.state.necklaceHolder ? this.state.players.get(this.state.necklaceHolder) : undefined;
+      const savedId = this.secretNecklaceHolderId;
+      const savedP = savedId ? this.state.players.get(savedId) : undefined;
       this.state.lastTakenId = "";
       this.state.lastTakenName = "";
       this.chronicleLog.push(
-        `📿 Gece #${this.state.round}: Hainlerin İnfaz girişimi Altın Kolye (${savedP?.nick || "Misafir"}) tarafından engellendi!`
+        `📿 Gece #${this.state.round}: Hainlerin İnfaz girişimi kurbanın boynundaki GİZLİ ALTIN KOLYE (${savedP?.nick || "Misafir"}) tarafından engellendi!`
       );
+      // Kimin kurtulduğu herkese AÇIKLANMAZ (kimsenin haberi olmadan korur); yalnızca kurtulan oyuncuya özel bildirim gider!
       this.broadcast("night_execution_event", {
         protectedByNecklace: true,
         victimId: "",
-        victimSeat: savedP?.seat || 0,
-        victimNick: savedP?.nick || ""
+        victimSeat: 0,
+        victimNick: ""
       });
+      if (savedId) {
+        const savedClient = this.clients.find((c) => c.sessionId === savedId);
+        if (savedClient) {
+          savedClient.send("puzzle_feedback", {
+            ok: true,
+            text: "📿 GİZLİ ALTIN KOLYEN BU GECE SENİ KURTARDI! Hainler seni hedef aldı ama kolyen hançeri kırdı ve kimsenin kimliğinden haberi olmadı!"
+          });
+        }
+      }
       this.setPhase(
         "MORNING",
         SOFRA_CONFIG.DURATIONS.MORNING,
-        "Kâhya: 'Gece Hainler Meclisi infaz emri verdi... Ama Altın Kolye parladı ve sahibini ölümden kurtardı!'",
+        "Kâhya: 'Dün gece Hainler Meclisi infaz emri verdi... Ama kurbanın boynunda GİZLİ ALTIN KOLYE vardı! Sabah kimsenin sandalyesi boş kalmadı!'",
         () => {
           this.state.round += 1;
           this.checkWinOrContinue("DAY");
@@ -3657,6 +3879,10 @@ export class SofraRoom extends Room<SofraState> {
     this.puzzleCooldownUntil.clear();
     this.solvedPuzzleRound.clear();
     this.necklaceClaimedByPuzzleThisRound = false;
+    this.secretNecklaceHolderId = "";
+    this.trialProgress.clear();
+    this.trialResultsPhaseActive = false;
+    this.trialWinnerReason = "NONE";
     this.playerQuests.clear();
     this.trialStageByPlayer.clear();
     this.trialActiveChallenge.clear();
