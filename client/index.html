@@ -420,65 +420,74 @@
         display: flex;
         justify-content: space-between;
         align-items: center;
-        gap: 6px;
+        gap: 5px;
         flex-wrap: wrap;
+      }
+
+      .top-bar .btn {
+        padding: 4px 8px;
+        font-size: 0.73rem;
+        border-radius: 7px;
       }
 
       .brand-pill {
         display: flex;
         align-items: center;
-        gap: 7px;
-        background: var(--bg-panel);
+        gap: 6px;
+        background: rgba(16, 12, 24, 0.84);
         border: 1px solid var(--gold-soft);
-        border-radius: 11px;
-        padding: 5px 10px;
+        border-radius: 9px;
+        padding: 3px 9px;
       }
 
       .brand-pill img {
-        width: 26px;
-        height: 26px;
+        width: 21px;
+        height: 21px;
         object-fit: contain;
       }
 
       .phase-banner {
-        background: linear-gradient(180deg, rgba(26, 18, 34, 0.95), rgba(12, 9, 18, 0.95));
+        background: linear-gradient(180deg, rgba(26, 18, 34, 0.88), rgba(12, 9, 18, 0.88));
         border: 1px solid var(--gold);
-        border-radius: 11px;
-        padding: 5px 14px;
+        border-radius: 9px;
+        padding: 3px 11px;
         text-align: center;
+        display: flex;
+        align-items: center;
+        gap: 8px;
       }
 
       .phase-name {
-        font-size: 0.86rem;
+        font-size: 0.78rem;
         font-weight: bold;
         color: var(--gold);
       }
 
       .phase-timer {
-        font-size: 0.75rem;
+        font-size: 0.72rem;
       }
 
       .vault-pill {
         display: flex;
         align-items: center;
-        gap: 5px;
-        background: var(--bg-panel);
+        gap: 4px;
+        background: rgba(16, 12, 24, 0.84);
         border: 1px solid var(--gold-soft);
-        border-radius: 11px;
-        padding: 5px 8px;
+        border-radius: 9px;
+        padding: 3px 7px;
       }
 
       .gold-badge {
         color: #ffd700;
         font-weight: bold;
-        font-size: 0.84rem;
+        font-size: 0.76rem;
       }
 
       .role-badge {
-        padding: 3px 8px;
-        border-radius: 7px;
+        padding: 2px 7px;
+        border-radius: 6px;
         font-weight: bold;
-        font-size: 0.73rem;
+        font-size: 0.69rem;
       }
 
       .role-hain {
@@ -496,16 +505,23 @@
       #announcement-box {
         flex-shrink: 0;
         align-self: center;
-        width: min(720px, 100%);
-        background: rgba(14, 10, 22, 0.88);
-        border-left: 3px solid var(--gold);
-        border-right: 3px solid var(--gold);
-        padding: 5px 12px;
-        border-radius: 8px;
+        width: min(600px, 92%);
+        background: rgba(14, 10, 22, 0.78);
+        border-left: 2px solid var(--gold);
+        border-right: 2px solid var(--gold);
+        padding: 3px 10px;
+        border-radius: 7px;
         text-align: center;
         font-style: italic;
-        font-size: 0.82rem;
+        font-size: 0.75rem;
         color: var(--parchment);
+        transition: opacity 0.35s ease, transform 0.35s ease;
+      }
+
+      #announcement-box.ann-auto-hidden {
+        opacity: 0;
+        pointer-events: none;
+        transform: translateY(-6px);
       }
 
       .middle-slot {
@@ -644,32 +660,32 @@
          ========================================================= */
       #ko-pm-container {
         position: fixed;
-        top: 106px;
-        left: max(10px, env(safe-area-inset-left));
+        top: 52px;
+        left: max(8px, env(safe-area-inset-left));
         z-index: 45;
         display: flex;
         flex-direction: column;
-        gap: 6px;
-        width: min(300px, 86vw);
+        gap: 4px;
+        width: min(224px, 74vw);
         pointer-events: none;
       }
 
       .ko-pm-window {
         pointer-events: auto;
-        background: rgba(14, 9, 24, 0.94);
-        border: 1px solid #c98bff;
-        border-radius: 10px;
-        box-shadow: 0 10px 28px rgba(0, 0, 0, 0.85);
+        background: rgba(14, 9, 24, 0.86);
+        border: 1px solid rgba(201, 139, 255, 0.75);
+        border-radius: 8px;
+        box-shadow: 0 8px 22px rgba(0, 0, 0, 0.75);
         overflow: hidden;
       }
 
       .ko-pm-header {
         background: linear-gradient(90deg, #3a1954, #200e30);
-        padding: 6px 10px;
+        padding: 4px 8px;
         display: flex;
         justify-content: space-between;
         align-items: center;
-        font-size: 0.78rem;
+        font-size: 0.72rem;
         font-weight: bold;
         color: #efd4ff;
         cursor: pointer;
@@ -689,64 +705,70 @@
       }
 
       .ko-pm-body {
-        padding: 8px;
+        padding: 6px;
         display: flex;
         flex-direction: column;
-        gap: 6px;
+        gap: 5px;
       }
 
       .ko-pm-messages {
-        max-height: 105px;
+        max-height: 70px;
         overflow-y: auto;
         -webkit-overflow-scrolling: touch;
         touch-action: pan-y;
-        font-size: 0.78rem;
+        font-size: 0.72rem;
         display: flex;
         flex-direction: column;
-        gap: 4px;
+        gap: 3px;
       }
 
       .ko-pm-form {
         display: flex;
-        gap: 5px;
+        gap: 4px;
       }
 
       .ko-pm-form input {
         flex: 1;
         min-width: 0;
-        padding: 5px 8px;
+        padding: 4px 7px;
         font-size: 16px;
       }
 
-      /* Alt Orta Knight Online Chat Kutusu */
+      /* Alt Orta Knight Online Chat Kutusu (Kompakt & Yarı Saydam) */
       #ko-bottom-chat {
         flex-shrink: 0;
         align-self: center;
-        width: min(460px, 100%);
-        background: rgba(11, 8, 18, 0.84);
+        width: min(355px, 92%);
+        background: rgba(11, 8, 18, 0.74);
         border: 1px solid var(--gold-soft);
-        border-radius: 11px;
-        padding: 6px 8px;
+        border-radius: 9px;
+        padding: 4px 7px;
         display: flex;
         flex-direction: column;
-        gap: 5px;
+        gap: 4px;
         z-index: 30;
+        transition: opacity 0.2s ease, background 0.2s ease;
+      }
+
+      body.in-day-mode #ko-bottom-chat:not(:focus-within):not(:hover) {
+        opacity: 0.76;
+        background: rgba(11, 8, 18, 0.56);
       }
 
       .ko-chat-tabs {
         display: flex;
         justify-content: space-between;
         align-items: center;
-        gap: 6px;
+        gap: 5px;
       }
 
       .ko-tab-btn {
-        background: rgba(34, 25, 48, 0.85);
+        background: rgba(34, 25, 48, 0.82);
         color: var(--text-muted);
         border: 1px solid transparent;
-        border-radius: 6px;
-        padding: 3px 8px;
-        font-size: 0.72rem;
+        border-radius: 5px;
+        padding: 2px 7px;
+        font-size: 0.69rem;
         cursor: pointer;
       }
 
@@ -756,17 +778,18 @@
       }
 
       #chat-log {
-        height: 64px;
+        height: 38px;
         overflow-y: auto;
         -webkit-overflow-scrolling: touch;
         touch-action: pan-y;
-        font-size: 0.76rem;
+        font-size: 0.72rem;
         display: flex;
         flex-direction: column;
-        gap: 3px;
+        gap: 2px;
       }
 
-      #ko-bottom-chat.minimized #chat-log {
+      #ko-bottom-chat.minimized #chat-log,
+      #ko-bottom-chat.minimized #chat-form {
         display: none;
       }
 
@@ -820,91 +843,106 @@
       /* Sol Alt: Kamera Dönüş + Hibrit Yön Okları (▲▼◄►) & Analog Joystick */
       .left-control-cluster {
         position: absolute;
-        left: max(12px, env(safe-area-inset-left));
-        bottom: max(12px, env(safe-area-inset-bottom));
+        left: max(10px, env(safe-area-inset-left));
+        bottom: max(10px, env(safe-area-inset-bottom));
         display: flex;
         flex-direction: column;
         align-items: center;
-        gap: 8px;
+        gap: 5px;
         pointer-events: auto;
+        opacity: 0.76;
+        transition: opacity 0.18s ease;
+      }
+
+      .left-control-cluster:active {
+        opacity: 1;
       }
 
       .cam-turn-row {
         display: flex;
-        gap: 8px;
+        gap: 5px;
       }
 
       .cam-turn-btn {
-        background: rgba(20, 15, 32, 0.85);
+        background: rgba(20, 15, 32, 0.82);
         border: 1px solid var(--gold-soft);
         color: var(--gold);
-        border-radius: 8px;
-        padding: 5px 11px;
-        font-size: 0.76rem;
+        border-radius: 7px;
+        padding: 4px 8px;
+        font-size: 0.7rem;
         font-weight: bold;
         touch-action: none;
       }
 
       .joystick-zone {
-        width: 126px;
-        height: 126px;
+        width: 104px;
+        height: 104px;
         border-radius: 50%;
-        background: radial-gradient(circle, rgba(35, 26, 52, 0.78), rgba(14, 10, 22, 0.88));
-        border: 2px solid var(--gold-soft);
+        background: radial-gradient(circle, rgba(35, 26, 52, 0.72), rgba(14, 10, 22, 0.82));
+        border: 1.5px solid var(--gold-soft);
         position: relative;
         touch-action: none;
-        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.65);
+        box-shadow: 0 6px 18px rgba(0, 0, 0, 0.55);
       }
 
       .dpad-arrow {
         position: absolute;
-        color: rgba(226, 189, 83, 0.75);
-        font-size: 0.95rem;
+        color: rgba(226, 189, 83, 0.72);
+        font-size: 0.84rem;
         font-weight: bold;
         pointer-events: none;
       }
       .dpad-up {
-        top: 6px;
+        top: 5px;
         left: 50%;
         transform: translateX(-50%);
       }
       .dpad-down {
-        bottom: 6px;
+        bottom: 5px;
         left: 50%;
         transform: translateX(-50%);
       }
       .dpad-left {
-        left: 8px;
+        left: 7px;
         top: 50%;
         transform: translateY(-50%);
       }
       .dpad-right {
-        right: 8px;
+        right: 7px;
         top: 50%;
         transform: translateY(-50%);
       }
 
       .joystick-knob {
-        width: 46px;
-        height: 46px;
+        width: 38px;
+        height: 38px;
         border-radius: 50%;
         background: radial-gradient(circle, #ffe28a, #a6781c);
         border: 2px solid #fff3c4;
         position: absolute;
-        top: 38px;
-        left: 38px;
+        top: 31px;
+        left: 31px;
         pointer-events: none;
-        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.6);
+        box-shadow: 0 4px 10px rgba(0, 0, 0, 0.55);
       }
 
-      /* Sağ Alt / Orta-Sağ: League of Legends: Wild Rift Koşturma & Aksiyon Çarkı */
+      /* Sağ Alt / Orta-Sağ: League of Legends: Wild Rift Koşturma & Aksiyon Çarkı (Kompakt) */
       .lol-wheel-cluster {
         position: absolute;
-        right: max(14px, env(safe-area-inset-right));
-        bottom: max(14px, env(safe-area-inset-bottom));
+        right: max(10px, env(safe-area-inset-right));
+        bottom: max(10px, env(safe-area-inset-bottom));
         width: 176px;
         height: 176px;
         pointer-events: none;
+        transform: scale(0.84);
+        transform-origin: bottom right;
+        opacity: 0.78;
+        transition: opacity 0.18s ease;
+      }
+
+      .lol-wheel-cluster:hover,
+      .lol-wheel-cluster:active {
+        opacity: 1;
       }
 
       /* Merkez Büyük Koşturma (Depar) Butonu + Stamina SVG Halkası */
@@ -992,34 +1030,40 @@
         top: 0px;
       }
 
-      /* Üst Konum Etiketi & Gündüz Kişisel Görev Kartı */
+      /* Üst Konum Etiketi & Gündüz Kişisel Görev Kartı (Kompakt & Katlanabilir) */
       .day-room-pill {
         position: absolute;
-        top: 98px;
-        right: max(12px, env(safe-area-inset-right));
-        background: rgba(16, 12, 26, 0.88);
+        top: 50px;
+        right: max(10px, env(safe-area-inset-right));
+        background: rgba(16, 12, 26, 0.78);
         border: 1px solid var(--gold-soft);
         border-radius: 99px;
-        padding: 4px 12px;
-        font-size: 0.76rem;
+        padding: 3px 10px;
+        font-size: 0.7rem;
         color: var(--gold);
       }
 
       .day-quest-box {
         position: absolute;
-        top: 132px;
-        right: max(12px, env(safe-area-inset-right));
-        width: min(275px, 78vw);
-        background: rgba(14, 10, 24, 0.9);
+        top: 78px;
+        right: max(10px, env(safe-area-inset-right));
+        width: min(214px, 68vw);
+        background: rgba(14, 10, 24, 0.78);
         border: 1px solid var(--gold-soft);
-        border-radius: 12px;
-        padding: 8px 10px;
+        border-radius: 9px;
+        padding: 5px 8px;
         pointer-events: auto;
-        box-shadow: 0 10px 26px rgba(0, 0, 0, 0.7);
+        box-shadow: 0 8px 20px rgba(0, 0, 0, 0.6);
+        transition: opacity 0.2s ease, background 0.2s ease;
       }
 
-      .day-quest-box.collapsed .quest-items-list {
-        display: none;
+      .day-quest-box:hover {
+        background: rgba(14, 10, 24, 0.94);
+      }
+
+      .day-quest-box.collapsed .quest-items-list,
+      .day-quest-box.collapsed #day-extra-actions {
+        display: none !important;
       }
 
       /* 360° Karakter İnceleme & Arkadaşlık / Yakınlık Barı Kartı */
@@ -1573,23 +1617,39 @@
         }
       }
 
-      /* PC Masaüstü Fare Yönlendirme İpucu */
+      /* PC Masaüstü Fare Yönlendirme İpucu & Dokunmatik Tuş Gizleme */
       #pc-mouse-hint {
         display: none;
         position: absolute;
-        top: 98px;
-        left: max(12px, env(safe-area-inset-left));
-        background: rgba(14, 10, 24, 0.84);
+        top: 50px;
+        left: max(10px, env(safe-area-inset-left));
+        background: rgba(14, 10, 24, 0.78);
         border: 1px solid var(--gold-soft);
         border-radius: 99px;
-        padding: 4px 11px;
-        font-size: 0.72rem;
+        padding: 3px 10px;
+        font-size: 0.68rem;
         color: var(--parchment);
+        transition: opacity 0.45s ease;
+      }
+
+      #pc-mouse-hint.hint-faded {
+        opacity: 0;
+        pointer-events: none;
       }
 
       @media (hover: hover) and (pointer: fine) {
         #pc-mouse-hint {
           display: inline-block;
+        }
+        body:not(.touch-detected) .left-control-cluster {
+          display: none;
+        }
+        body:not(.touch-detected) .lol-wheel-cluster {
+          transform: scale(0.76);
+          opacity: 0.65;
+        }
+        body:not(.touch-detected) .lol-wheel-cluster:hover {
+          opacity: 1;
         }
       }
     </style>
@@ -1944,7 +2004,10 @@
             id="btn-open-handbook"
             title="Dedektif & Taktik El Kitapçığı (Kısayol: B)"
           >
-            📖 El Kitapçığı <span id="handbook-badge" class="handbook-badge">0</span>
+            📖 Kitapçık <span id="handbook-badge" class="handbook-badge">0</span>
+          </button>
+          <button class="btn" id="btn-hud-zoom" title="Kamera Uzaklığı (Kısayol: V veya Fare Tekerleği)">
+            🔭 Uzak
           </button>
           <span class="gold-badge" id="gold-balance-label">🪙 100</span>
           <button class="btn" id="btn-watch-ad" title="Reklam İzle +50 Altın">🎬+50</button>
@@ -1969,11 +2032,11 @@
           <div style="display: flex; gap: 4px; align-items: center;">
             <button class="ko-tab-btn active" id="btn-chat-all">💬 Sohbet</button>
             <button class="ko-tab-btn" id="btn-open-dm-list" style="color: #e3b3ff; border-color: rgba(201,139,255,0.4);">
-              🤫 Özel DM / Fısılda
+              🤫 Özel DM
             </button>
           </div>
           <div style="display: flex; gap: 6px; align-items: center;">
-            <span id="fps-label" style="font-size: 0.68rem; color: var(--text-muted);">60 FPS</span>
+            <span id="fps-label" style="font-size: 0.65rem; color: var(--text-muted);">60 FPS</span>
             <button class="ko-tab-btn" id="btn-toggle-chat-min" title="Sohbeti Küçült/Büyüt">▾</button>
           </div>
         </div>
@@ -1982,11 +2045,11 @@
           <input
             type="text"
             id="chat-input"
-            placeholder="Yakındakilere yaz (İsme dokun = Özel DM)..."
+            placeholder="Yakındakilere yaz (Enter)..."
             maxlength="140"
             autocomplete="off"
           />
-          <button type="submit" class="btn">Gönder</button>
+          <button type="submit" class="btn" style="padding: 4px 8px; font-size: 0.72rem;">Gönder</button>
         </form>
       </div>
     </div>
@@ -1995,28 +2058,28 @@
          5. GÜNDÜZ KONTROLLERİ: SOL YÖN OKLARI + SAĞ WILD RIFT KOŞU ÇARKI
          ========================================================= -->
     <div id="day-action-hud">
-      <div id="pc-mouse-hint">🖱️ Fareyle yön ver (El Kitapçığı: B · Sohbet: Enter · Oyuncu & Bar: Tab · İmleç: Alt)</div>
+      <div id="pc-mouse-hint">🖱️ Fare: Bakış · Tekerlek/V: Uzaklık · B: Kitapçık · Enter: Sohbet · Tab: İncele</div>
       <div class="day-room-pill" id="zone-label">📍 Antre</div>
 
-      <!-- Gündüz Kişisel Gizli Görevler Takip Kutusu -->
-      <div class="day-quest-box" id="day-quest-box">
+      <!-- Gündüz Kişisel Gizli Görevler Takip Kutusu (Varsayılan Kompakt) -->
+      <div class="day-quest-box collapsed" id="day-quest-box">
         <div
           id="day-quest-header"
           style="display: flex; justify-content: space-between; align-items: center; cursor: pointer;"
         >
-          <strong style="font-size: 0.76rem; color: var(--gold);" id="day-quest-title">
-            📜 GİZLİ GÖREVLERİM (0/3)
+          <strong style="font-size: 0.71rem; color: var(--gold);" id="day-quest-title">
+            📜 Görevler (0/3)
           </strong>
-          <span style="font-size: 0.72rem; color: var(--text-muted);" id="day-quest-toggle">▾</span>
+          <span style="font-size: 0.68rem; color: var(--text-muted);" id="day-quest-toggle">▸</span>
         </div>
         <div
           class="quest-items-list"
           id="day-quest-list"
-          style="display: flex; flex-direction: column; gap: 6px; margin-top: 6px; font-size: 0.73rem;"
+          style="display: flex; flex-direction: column; gap: 5px; margin-top: 5px; font-size: 0.69rem;"
         ></div>
         <div
           id="day-extra-actions"
-          style="display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px;"
+          style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px;"
         ></div>
       </div>
 

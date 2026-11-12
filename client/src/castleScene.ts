@@ -52,9 +52,75 @@ interface CharacterRig {
   lastSeat: number;
   lastChat: string;
   chatExpiresAt: number;
+  isLocal: boolean;
   targetPos: THREE.Vector3;
   targetRotY: number;
   walkCycle: number;
+}
+
+interface OccludableWall {
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+  mats: THREE.MeshStandardMaterial[];
+  alpha: number;
+}
+
+interface WorldFloatingSprite {
+  sprite: THREE.Sprite;
+  mat: THREE.SpriteMaterial;
+  x: number;
+  z: number;
+  maxDist: number;
+  dayOnly: boolean;
+}
+
+const CAMERA_ZOOM_PRESETS: ReadonlyArray<{ dist: number; pitch: number; label: string }> = [
+  { dist: 7.6, pitch: 0.5, label: "🔭 Uzak" },
+  { dist: 10.4, pitch: 0.64, label: "🔭 Geniş" },
+  { dist: 5.8, pitch: 0.42, label: "🔭 Orta" },
+  { dist: 4.4, pitch: 0.34, label: "🔭 Yakın" }
+];
+
+function segmentIntersectsExpandedAABB(
+  ax: number,
+  az: number,
+  bx: number,
+  bz: number,
+  minX: number,
+  maxX: number,
+  minZ: number,
+  maxZ: number,
+  pad: number
+): boolean {
+  const dx = bx - ax;
+  const dz = bz - az;
+  let t0 = 0.02;
+  let t1 = 0.9;
+
+  const clip = (p: number, q: number): boolean => {
+    if (Math.abs(p) < 1e-6) {
+      return q >= 0;
+    }
+    const r = q / p;
+    if (p < 0) {
+      if (r > t1) return false;
+      if (r > t0) t0 = r;
+    } else {
+      if (r < t0) return false;
+      if (r < t1) t1 = r;
+    }
+    return true;
+  };
+
+  return (
+    clip(-dx, ax - (minX - pad)) &&
+    clip(dx, maxX + pad - ax) &&
+    clip(-dz, az - (minZ - pad)) &&
+    clip(dz, maxZ + pad - az) &&
+    t0 <= t1
+  );
 }
 
 export class CastleScene {
@@ -66,6 +132,9 @@ export class CastleScene {
   private torchFlames: { mesh: THREE.Mesh; baseY: number; phase: number }[] = [];
   private floatingRelics: { mesh: THREE.Object3D; baseY: number; phase: number }[] = [];
   private clockGears: { mesh: THREE.Object3D; speed: number }[] = [];
+  private occludableWalls: OccludableWall[] = [];
+  private worldSprites: WorldFloatingSprite[] = [];
+  private activePhase = "LOBBY";
 
   private ambientLight!: THREE.AmbientLight;
   private hemiLight!: THREE.HemisphereLight;
@@ -98,7 +167,9 @@ export class CastleScene {
 
   // Camera & 360° Character Inspect state
   public cameraYaw = 0;
-  public cameraPitch = 0.35;
+  public cameraPitch = 0.5;
+  public cameraDistance = 7.6;
+  private zoomPresetIndex = 0;
   public inspectTargetId: string | null = null;
   public inspectOrbitYaw = 0;
   private cameraTarget = new THREE.Vector3(0, 1.5, 0);
@@ -106,10 +177,10 @@ export class CastleScene {
   constructor(container: HTMLElement) {
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x16121b);
-    this.scene.fog = new THREE.FogExp2(0x16121b, 0.0078);
+    this.scene.fog = new THREE.FogExp2(0x16121b, 0.0068);
 
     this.camera = new THREE.PerspectiveCamera(
-      62,
+      65,
       window.innerWidth / window.innerHeight,
       0.1,
       150
@@ -157,9 +228,31 @@ export class CastleScene {
     const h = Math.max(1, window.innerHeight);
     const aspect = w / h;
     this.camera.aspect = aspect;
-    this.camera.fov = aspect < 1 ? 76 : 62;
+    this.camera.fov = aspect < 1 ? 78 : 65;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
+  }
+
+  public setActivePhase(phase: string): void {
+    this.activePhase = phase || "LOBBY";
+  }
+
+  public cycleCameraZoom(): string {
+    this.zoomPresetIndex = (this.zoomPresetIndex + 1) % CAMERA_ZOOM_PRESETS.length;
+    const preset = CAMERA_ZOOM_PRESETS[this.zoomPresetIndex];
+    this.cameraDistance = preset.dist;
+    this.cameraPitch = preset.pitch;
+    return preset.label;
+  }
+
+  public adjustCameraZoom(deltaDist: number): string {
+    this.cameraDistance = Math.max(4.0, Math.min(11.6, this.cameraDistance + deltaDist));
+    const t = (this.cameraDistance - 4.0) / (11.6 - 4.0);
+    this.cameraPitch = Math.max(0.22, Math.min(0.95, 0.32 + t * 0.36));
+    if (this.cameraDistance >= 9.2) return "🔭 Geniş";
+    if (this.cameraDistance >= 6.8) return "🔭 Uzak";
+    if (this.cameraDistance >= 5.1) return "🔭 Orta";
+    return "🔭 Yakın";
   }
 
   // ==========================================================================
@@ -541,15 +634,26 @@ export class CastleScene {
       sctx.font = "bold 25px Georgia, serif";
       sctx.textAlign = "center";
       sctx.fillText(zone.name.toUpperCase(), 256, 57);
-      const signSprite = new THREE.Sprite(
-        new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(signCanvas), transparent: true })
-      );
-      signSprite.position.set(cx, isBed ? 3.7 : 4.15, cz);
-      signSprite.scale.set(isBed ? 3.5 : 4.4, 0.78, 1);
+      const signMat = new THREE.SpriteMaterial({
+        map: new THREE.CanvasTexture(signCanvas),
+        transparent: true,
+        depthTest: true
+      });
+      const signSprite = new THREE.Sprite(signMat);
+      signSprite.position.set(cx, isBed ? 3.45 : 3.85, cz);
+      signSprite.scale.set(isBed ? 2.25 : 2.85, 0.48, 1);
       this.scene.add(signSprite);
+      this.worldSprites.push({
+        sprite: signSprite,
+        mat: signMat,
+        x: cx,
+        z: cz,
+        maxDist: 14.0,
+        dayOnly: true
+      });
     }
 
-    // 3. Kesme Taş Duvarlar + Alt/Üst Taş Silmeler + Mazgallı Surlar
+    // 3. Kesme Taş Duvarlar + Alt/Üst Taş Silmeler + Mazgallı Surlar (Kamera Engeli Yarı-Saydam Geçişli)
     const stonePlinthMat = new THREE.MeshStandardMaterial({
       color: 0x3b352f,
       roughness: 0.85,
@@ -574,27 +678,40 @@ export class CastleScene {
       texClone.needsUpdate = true;
       texClone.repeat.set(Math.max(1, len / 3.8), wallHeight / 2.7);
 
-      const wallMesh = new THREE.Mesh(
-        new THREE.BoxGeometry(sx, wallHeight, sz),
-        new THREE.MeshStandardMaterial({
-          map: texClone,
-          roughness: 0.86,
-          metalness: 0.08
-        })
-      );
+      const wallMat = new THREE.MeshStandardMaterial({
+        map: texClone,
+        roughness: 0.86,
+        metalness: 0.08
+      });
+      const wallCorniceMat = new THREE.MeshStandardMaterial({
+        color: 0x3b352f,
+        roughness: 0.85,
+        metalness: 0.12
+      });
+
+      const wallMesh = new THREE.Mesh(new THREE.BoxGeometry(sx, wallHeight, sz), wallMat);
       wallMesh.position.set(cx, wallHeight / 2, cz);
       wallMesh.castShadow = true;
       wallMesh.receiveShadow = true;
       this.scene.add(wallMesh);
 
-      // Taş Kaide (Plinth) & Üst Taş Korniş
+      // Taş Kaide (Plinth — zeminde hep katı kalarak kapı/duvar sınırını net gösterir) & Üst Taş Korniş
       const plinth = new THREE.Mesh(new THREE.BoxGeometry(sx + 0.1, 0.34, sz + 0.1), stonePlinthMat);
       plinth.position.set(cx, 0.17, cz);
       this.scene.add(plinth);
 
-      const cornice = new THREE.Mesh(new THREE.BoxGeometry(sx + 0.12, 0.24, sz + 0.12), stonePlinthMat);
+      const cornice = new THREE.Mesh(new THREE.BoxGeometry(sx + 0.12, 0.24, sz + 0.12), wallCorniceMat);
       cornice.position.set(cx, wallHeight - 0.1, cz);
       this.scene.add(cornice);
+
+      this.occludableWalls.push({
+        minX: w.minX,
+        maxX: w.maxX,
+        minZ: w.minZ,
+        maxZ: w.maxZ,
+        mats: [wallMat, wallCorniceMat],
+        alpha: 1.0
+      });
 
       // Dış surların üstüne Orta Çağ Mazgalları (Battlement Merlons)
       if (isOuter) {
@@ -605,7 +722,7 @@ export class CastleScene {
           const offset = -span / 2 + 1.2 + m * 2.4;
           const merlon = new THREE.Mesh(
             new THREE.BoxGeometry(alongX ? 1.25 : sx + 0.16, 0.85, alongX ? sz + 0.16 : 1.25),
-            stonePlinthMat
+            wallCorniceMat
           );
           merlon.position.set(alongX ? cx + offset : cx, wallHeight + 0.42, alongX ? cz : cz + offset);
           this.scene.add(merlon);
@@ -839,12 +956,24 @@ export class CastleScene {
       bctx.font = "bold 25px Georgia, serif";
       bctx.textAlign = "center";
       bctx.fillText(door.sealedByKahya ? "🔒 #11" : `🗝️ ODA #${door.ownerSeat}`, 96, 41);
-      const badgeSprite = new THREE.Sprite(
-        new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(badgeCanvas), transparent: true })
-      );
-      badgeSprite.position.set(door.x < 0 ? door.x + 0.58 : door.x - 0.58, 3.45, door.z);
-      badgeSprite.scale.set(1.5, 0.5, 1);
+      const badgeMat = new THREE.SpriteMaterial({
+        map: new THREE.CanvasTexture(badgeCanvas),
+        transparent: true,
+        depthTest: true
+      });
+      const badgeSprite = new THREE.Sprite(badgeMat);
+      const badgeX = door.x < 0 ? door.x + 0.58 : door.x - 0.58;
+      badgeSprite.position.set(badgeX, 3.35, door.z);
+      badgeSprite.scale.set(1.22, 0.4, 1);
       this.scene.add(badgeSprite);
+      this.worldSprites.push({
+        sprite: badgeSprite,
+        mat: badgeMat,
+        x: badgeX,
+        z: door.z,
+        maxDist: 11.5,
+        dayOnly: true
+      });
 
       pivot.add(leafGroup);
       const closedAngle = door.orientation === "vertical" ? Math.PI / 2 : 0;
@@ -1214,13 +1343,24 @@ export class CastleScene {
       stCtx.font = "bold 24px Georgia, serif";
       stCtx.textAlign = "center";
       stCtx.fillText(`${st.icon} ${st.shortLabel} ETKİLEŞİMİ`, 192, 53);
-      const sp = new THREE.Sprite(
-        new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(stCv), transparent: true })
-      );
-      sp.position.set(st.x, 2.45, st.z);
-      sp.scale.set(2.9, 0.66, 1);
+      const spMat = new THREE.SpriteMaterial({
+        map: new THREE.CanvasTexture(stCv),
+        transparent: true,
+        depthTest: true
+      });
+      const sp = new THREE.Sprite(spMat);
+      sp.position.set(st.x, 2.38, st.z);
+      sp.scale.set(2.15, 0.49, 1);
       this.scene.add(sp);
-      this.floatingRelics.push({ mesh: sp, baseY: 2.45, phase: st.x * 0.5 });
+      this.floatingRelics.push({ mesh: sp, baseY: 2.38, phase: st.x * 0.5 });
+      this.worldSprites.push({
+        sprite: sp,
+        mat: spMat,
+        x: st.x,
+        z: st.z,
+        maxDist: 13.0,
+        dayOnly: true
+      });
     }
 
     // Antre Hazine Sandığı
@@ -1536,6 +1676,8 @@ export class CastleScene {
         this.redrawCharacterLabel(rig);
       }
 
+      rig.isLocal = Boolean(ch.isLocal);
+
       const isGhost = !ch.alive || ch.isGhost;
       rig.bodyMat.transparent = isGhost;
       rig.bodyMat.opacity = isGhost ? 0.36 : 1.0;
@@ -1551,6 +1693,48 @@ export class CastleScene {
         rig.group.position.lerp(rig.targetPos, ch.isLocal ? 0.45 : 1.0);
       } else {
         rig.group.position.lerp(rig.targetPos, Math.min(1, dt * 11));
+      }
+
+      // Ekran kalabalığını önleyen akıllı 3B İsimlik & Konuşma Balonu Görünürlüğü
+      const labelMat = rig.labelSprite.material as THREE.SpriteMaterial;
+      const modalHeavyPhase =
+        this.activePhase === "LOBBY" ||
+        this.activePhase === "ARRIVAL" ||
+        this.activePhase === "TRIAL" ||
+        this.activePhase === "VOTE" ||
+        this.activePhase === "NIGHT" ||
+        this.activePhase === "FINAL" ||
+        this.activePhase === "RESULT";
+
+      if (this.inspectTargetId) {
+        rig.labelSprite.visible = this.inspectTargetId === ch.sessionId;
+        labelMat.opacity = 0.92;
+      } else if (modalHeavyPhase) {
+        // Merkezde büyük seçim/lobi paneli açıkken arkadaki isim yığılmasını gizle; sadece konuşan balon görünsün
+        rig.labelSprite.visible = Boolean(rig.lastChat);
+        labelMat.opacity = 0.9;
+      } else if (this.activePhase === "DAY") {
+        if (ch.isLocal && !rig.lastChat) {
+          rig.labelSprite.visible = false;
+        } else {
+          const dCam = Math.hypot(
+            rig.group.position.x - this.cameraTarget.x,
+            rig.group.position.z - this.cameraTarget.z
+          );
+          const maxD = rig.lastChat ? 18.5 : 14.2;
+          const fadeStart = rig.lastChat ? 12.5 : 9.2;
+          if (dCam > maxD) {
+            rig.labelSprite.visible = false;
+          } else {
+            rig.labelSprite.visible = true;
+            const factor = dCam <= fadeStart ? 1 : 1 - (dCam - fadeStart) / (maxD - fadeStart);
+            labelMat.opacity = (rig.lastChat ? 0.96 : 0.88) * Math.max(0, Math.min(1, factor));
+          }
+        }
+      } else {
+        // TABLE / FIRE / MORNING: Yuvarlak Sofra etrafında derli toplu görünüm
+        rig.labelSprite.visible = !ch.isLocal || Boolean(rig.lastChat);
+        labelMat.opacity = rig.lastChat ? 0.96 : 0.84;
       }
 
       let diffAngle = rig.targetRotY - rig.group.rotation.y;
@@ -1688,8 +1872,8 @@ export class CastleScene {
     const labelSprite = new THREE.Sprite(
       new THREE.SpriteMaterial({ map: labelTexture, transparent: true, depthTest: false })
     );
-    labelSprite.position.set(0, 2.52, 0);
-    labelSprite.scale.set(2.4, 0.75, 1);
+    labelSprite.position.set(0, 2.38, 0);
+    labelSprite.scale.set(1.56, 0.49, 1);
     group.add(labelSprite);
 
     const rig: CharacterRig = {
@@ -1716,6 +1900,7 @@ export class CastleScene {
       lastSeat: ch.seat,
       lastChat: "",
       chatExpiresAt: 0,
+      isLocal: Boolean(ch.isLocal),
       targetPos: new THREE.Vector3(ch.x, 0, ch.z),
       targetRotY: ch.rotY,
       walkCycle: 0
@@ -1876,27 +2061,83 @@ export class CastleScene {
       }
     }
 
-    const target = new THREE.Vector3(playerX, 1.55, playerZ);
+    const target = new THREE.Vector3(playerX, 1.5, playerZ);
     this.cameraTarget.lerp(target, Math.min(1, dt * 14));
-    this.playerLanternLight.position.set(this.cameraTarget.x, 2.8, this.cameraTarget.z);
+    this.playerLanternLight.position.set(this.cameraTarget.x, 3.0, this.cameraTarget.z);
 
     const isPortrait = window.innerWidth < window.innerHeight;
-    const distance = isPortrait ? 5.3 : 4.6;
+    const distance = this.cameraDistance + (isPortrait ? 0.9 : 0);
     const horizDist = distance * Math.cos(this.cameraPitch);
     const vertDist = distance * Math.sin(this.cameraPitch);
 
     let desiredX = this.cameraTarget.x + Math.sin(this.cameraYaw) * horizDist;
     let desiredZ = this.cameraTarget.z + Math.cos(this.cameraYaw) * horizDist;
-    const desiredY = Math.max(1.2, this.cameraTarget.y + vertDist);
+    const desiredY = Math.max(1.35, this.cameraTarget.y + vertDist);
 
-    desiredX = Math.max(-27.2, Math.min(27.2, desiredX));
-    desiredZ = Math.max(-31.2, Math.min(35.2, desiredZ));
+    desiredX = Math.max(-31.5, Math.min(31.5, desiredX));
+    desiredZ = Math.max(-37.5, Math.min(40.5, desiredZ));
 
     this.camera.position.set(desiredX, desiredY, desiredZ);
     this.camera.lookAt(this.cameraTarget);
   }
 
   public render(dt: number, elapsedTime: number): void {
+    // 1. Kamera ile oyuncu arasına giren taş duvarları otomatik yarı-saydamlaştır (Diablo / V Rising stili)
+    const camX = this.camera.position.x;
+    const camZ = this.camera.position.z;
+    const tgtX = this.cameraTarget.x;
+    const tgtZ = this.cameraTarget.z;
+    const checkWallFade = !this.inspectTargetId;
+
+    for (const wall of this.occludableWalls) {
+      const blocking =
+        checkWallFade &&
+        segmentIntersectsExpandedAABB(
+          camX,
+          camZ,
+          tgtX,
+          tgtZ,
+          wall.minX,
+          wall.maxX,
+          wall.minZ,
+          wall.maxZ,
+          0.58
+        );
+      const targetAlpha = blocking ? 0.16 : 1.0;
+      if (Math.abs(wall.alpha - targetAlpha) > 0.004) {
+        wall.alpha += (targetAlpha - wall.alpha) * Math.min(1, dt * 11);
+        if (Math.abs(wall.alpha - targetAlpha) <= 0.006) {
+          wall.alpha = targetAlpha;
+        }
+        const wantTrans = wall.alpha < 0.985;
+        for (const mat of wall.mats) {
+          if (mat.transparent !== wantTrans) {
+            mat.transparent = wantTrans;
+            mat.depthWrite = !wantTrans;
+            mat.needsUpdate = true;
+          }
+          mat.opacity = wantTrans ? wall.alpha : 1.0;
+        }
+      }
+    }
+
+    // 2. Uzaktaki oda/kapı/istasyon tabelalarını mesafe ve evreye göre gizle (ekran karmaşasını önle)
+    const showWorldLabels = this.activePhase === "DAY" && !this.inspectTargetId;
+    for (const ws of this.worldSprites) {
+      if (ws.dayOnly && !showWorldLabels) {
+        ws.sprite.visible = false;
+        continue;
+      }
+      const d = Math.hypot(ws.x - tgtX, ws.z - tgtZ);
+      if (d > ws.maxDist) {
+        ws.sprite.visible = false;
+      } else {
+        ws.sprite.visible = true;
+        const fadeStart = ws.maxDist * 0.62;
+        const factor = d <= fadeStart ? 1 : 1 - (d - fadeStart) / (ws.maxDist - fadeStart);
+        ws.mat.opacity = 0.88 * Math.max(0, Math.min(1, factor));
+      }
+    }
     const wasBlackout = this.blackoutTimer > 0;
     if (this.blackoutTimer > 0) {
       this.blackoutTimer = Math.max(0, this.blackoutTimer - dt);

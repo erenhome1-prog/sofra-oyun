@@ -197,9 +197,12 @@ class SofraGameApp {
   private lastRecordedBoardNote = "";
   private lastHandbookRenderHash = "";
 
-  // Menu idle rotation, PC zero-click mouse edge pan & FPS
+  // Menu idle rotation, PC zero-click mouse edge pan, auto-declutter timers & FPS
   private pcEdgePanDir = 0;
   private menuOrbitAngle = 0;
+  private lastAnnouncementText = "";
+  private announcementChangedAt = 0;
+  private dayPhaseEnteredAt = 0;
   private frameCount = 0;
   private fpsAccum = 0;
   private lastFrameTime = performance.now();
@@ -207,6 +210,11 @@ class SofraGameApp {
   constructor() {
     const container = document.getElementById("canvas-container")!;
     this.scene = new CastleScene(container);
+    window.addEventListener(
+      "touchstart",
+      () => document.body.classList.add("touch-detected"),
+      { once: true, passive: true }
+    );
 
     const isHttps = window.location.protocol === "https:";
     const host = window.location.hostname || "localhost";
@@ -803,14 +811,24 @@ class SofraGameApp {
 
         let thread = this.pmThreads.get(peerId);
         if (!thread) {
+          const curPhase = (this.room?.state as any)?.phase || "";
+          const inSelectionPhase =
+            curPhase === "VOTE" || curPhase === "NIGHT" || curPhase === "FINAL" || curPhase === "TRIAL";
+          const anyExpanded = Array.from(this.pmThreads.values()).some((t) => !t.minimized);
+          const startMinimized = !fromMe && (anyExpanded || inSelectionPhase);
           thread = {
             peerId,
             peerNick,
             peerSeat,
-            minimized: false,
-            unread: false,
+            minimized: startMinimized,
+            unread: startMinimized,
             messages: []
           };
+          if (!startMinimized) {
+            this.pmThreads.forEach((other) => {
+              other.minimized = true;
+            });
+          }
           this.pmThreads.set(peerId, thread);
         }
         thread.messages.push({
@@ -1188,6 +1206,10 @@ class SofraGameApp {
   // ==========================================================================
   public openPMThread(peerId: string, peerNick: string, peerSeat: number): void {
     if (!this.room || peerId === this.room.sessionId) return;
+    // Ekran kalabalığını önlemek için aynı anda en fazla 1 PM penceresi açık kalsın (diğerleri ince başlığa küçülsün)
+    this.pmThreads.forEach((other, oid) => {
+      if (oid !== peerId) other.minimized = true;
+    });
     let thread = this.pmThreads.get(peerId);
     if (!thread) {
       thread = {
@@ -1273,10 +1295,23 @@ class SofraGameApp {
         const id = (el as HTMLElement).dataset.pmMin!;
         const t = this.pmThreads.get(id);
         if (t) {
-          t.minimized = !t.minimized;
-          if (!t.minimized) t.unread = false;
+          const nextMin = !t.minimized;
+          if (!nextMin) {
+            this.pmThreads.forEach((other, oid) => {
+              if (oid !== id) other.minimized = true;
+            });
+            t.unread = false;
+          }
+          t.minimized = nextMin;
           this.renderPMWindows();
         }
+      });
+    });
+
+    container.querySelectorAll(".ko-pm-header").forEach((hdr) => {
+      hdr.addEventListener("click", () => {
+        const minBtn = hdr.querySelector("[data-pm-min]") as HTMLElement | null;
+        minBtn?.click();
       });
     });
 
@@ -1390,6 +1425,13 @@ class SofraGameApp {
     const cycleLight = () => {
       this.scene.cycleBrightnessBoost();
     };
+    const updateZoomBtn = (label: string) => {
+      const zBtn = document.getElementById("btn-hud-zoom");
+      if (zBtn) zBtn.textContent = label;
+    };
+    document.getElementById("btn-hud-zoom")?.addEventListener("click", () => {
+      updateZoomBtn(this.scene.cycleCameraZoom());
+    });
     document.getElementById("btn-open-handbook")?.addEventListener("click", () => this.toggleHandbookModal());
     document.getElementById("handbook-modal")?.addEventListener("click", (e) => {
       if ((e.target as HTMLElement)?.id === "handbook-modal") {
@@ -1427,9 +1469,17 @@ class SofraGameApp {
 
     // Alt sohbet küçült/büyüt
     const bottomChat = document.getElementById("ko-bottom-chat")!;
-    document.getElementById("btn-toggle-chat-min")?.addEventListener("click", (e) => {
+    const minChatBtn = document.getElementById("btn-toggle-chat-min");
+    minChatBtn?.addEventListener("click", (e) => {
       bottomChat.classList.toggle("minimized");
       (e.currentTarget as HTMLElement).textContent = bottomChat.classList.contains("minimized") ? "▴" : "▾";
+    });
+    document.getElementById("btn-chat-all")?.addEventListener("click", () => {
+      if (bottomChat.classList.contains("minimized")) {
+        bottomChat.classList.remove("minimized");
+        if (minChatBtn) minChatBtn.textContent = "▾";
+      }
+      (document.getElementById("chat-input") as HTMLInputElement | null)?.focus();
     });
 
     // Odadan Çık / Dramatik Veda Mektubu Bırak
@@ -1501,10 +1551,23 @@ class SofraGameApp {
         this.toggleHandbookModal();
         return;
       }
+      if (k === "v" && this.room) {
+        e.preventDefault();
+        const label = this.scene.cycleCameraZoom();
+        const zBtn = document.getElementById("btn-hud-zoom");
+        if (zBtn) zBtn.textContent = label;
+        return;
+      }
       if (k === "enter" && this.room) {
         e.preventDefault();
         if (document.pointerLockElement) {
           document.exitPointerLock?.();
+        }
+        const bChat = document.getElementById("ko-bottom-chat");
+        if (bChat?.classList.contains("minimized")) {
+          bChat.classList.remove("minimized");
+          const mBtn = document.getElementById("btn-toggle-chat-min");
+          if (mBtn) mBtn.textContent = "▾";
         }
         const chatInp = document.getElementById("chat-input") as HTMLInputElement | null;
         chatInp?.focus();
@@ -1622,6 +1685,19 @@ class SofraGameApp {
         this.pcEdgePanDir = 0;
       }
     });
+
+    // PC Fare Tekerleği ile Kamera Uzaklığı (Zoom) Ayarı
+    canvas.addEventListener(
+      "wheel",
+      (e) => {
+        if (!this.room || this.scene.inspectTargetId) return;
+        e.preventDefault();
+        const label = this.scene.adjustCameraZoom(e.deltaY > 0 ? 0.65 : -0.65);
+        const zBtn = document.getElementById("btn-hud-zoom");
+        if (zBtn) zBtn.textContent = label;
+      },
+      { passive: false }
+    );
 
     // PC'de 3B sahneye bir kez tıklanırsa tam 360° sonsuz fare kilidi (Pointer Lock) de açılabilir (ESC/Enter ile çıkılır)
     canvas.addEventListener("click", (e) => {
@@ -2031,7 +2107,7 @@ class SofraGameApp {
     if (!titleEl || !listEl) return;
 
     const doneCount = this.myQuests.filter((q) => q.done).length;
-    titleEl.textContent = `📜 GİZLİ GÖREVLERİM (${doneCount}/${this.myQuests.length})`;
+    titleEl.textContent = `📜 Görevler (${doneCount}/${this.myQuests.length})`;
 
     if (this.myQuests.length === 0) {
       listEl.innerHTML = `<div style="color:var(--text-muted);">Yeni tur görevleri hazırlanıyor...</div>`;
@@ -4871,9 +4947,15 @@ class SofraGameApp {
 
     const state: any = this.room?.state;
     if (state && this.room) {
+      this.scene.setActivePhase(state.phase);
       if (state.phase !== this.lastPhase) {
         this.readyStatusText = "";
         this.pcEdgePanDir = 0;
+        this.announcementChangedAt = now;
+        if (state.phase === "DAY") {
+          this.dayPhaseEnteredAt = now;
+          document.getElementById("pc-mouse-hint")?.classList.remove("hint-faded");
+        }
         if (state.phase !== "DAY" && document.pointerLockElement) {
           document.exitPointerLock?.();
         }
@@ -5038,8 +5120,20 @@ class SofraGameApp {
       }
 
       const annEl = document.getElementById("announcement-box");
-      if (annEl && state.announcement) {
-        annEl.textContent = `"${state.announcement}"`;
+      if (annEl) {
+        if (state.announcement && state.announcement !== this.lastAnnouncementText) {
+          this.lastAnnouncementText = state.announcement;
+          this.announcementChangedAt = now;
+          annEl.textContent = `"${state.announcement}"`;
+        }
+        const autoHideAnn = isDay && now - this.announcementChangedAt > 5200;
+        annEl.classList.toggle("ann-auto-hidden", autoHideAnn);
+      }
+
+      if (isDay) {
+        document
+          .getElementById("pc-mouse-hint")
+          ?.classList.toggle("hint-faded", now - this.dayPhaseEnteredAt > 7500);
       }
 
       this.updateLocalDayMovement(dt, state);
@@ -5116,6 +5210,7 @@ class SofraGameApp {
       this.scene.updateCamera(this.localX, this.localZ, dt);
       this.renderCenterPanel(state);
     } else {
+      this.scene.setActivePhase("LOBBY");
       // Kayıt / Ana Menüde "🔍 Karakterimi 360° İncele" açıkken önizleme karakterini çiz!
       if (this.previewSelfOnMenu) {
         const charDef = CHARACTERS.find((c) => c.seat === this.vault.selectedSeat) ?? CHARACTERS[0];
