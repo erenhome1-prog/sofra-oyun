@@ -1,17 +1,79 @@
+import fs from "node:fs";
+import path from "node:path";
 import http from "node:http";
 import express from "express";
 import cors from "cors";
-import { Server } from "@colyseus/core";
+import { Server, matchMaker } from "@colyseus/core";
 import { WebSocketTransport } from "@colyseus/ws-transport";
 import { SOFRA_CONFIG, normalizeRoomCode } from "@sofra/shared";
 import {
   SofraRoom,
   activeRoomsByCode,
+  breatheIdlePersistentRooms,
   findActiveSessionForToken,
+  findBestMatchmakingRoom,
+  getMissingPersistentSlots,
   listPublicRooms,
-  liveRooms
+  liveRooms,
+  registerPersistentRoomSpawner
 } from "./rooms/SofraRoom.js";
 import { accountStore } from "./accounts.js";
+
+// İsteğe bağlı ücretsiz LLM anahtarlarını (.env) ek paket gerektirmeden yükle
+function loadOptionalEnvFile() {
+  const candidates = [path.resolve(process.cwd(), ".env"), path.resolve(process.cwd(), "server", ".env")];
+  for (const envPath of candidates) {
+    if (!fs.existsSync(envPath)) continue;
+    try {
+      const content = fs.readFileSync(envPath, "utf-8");
+      for (const line of content.split(/\r?\n/)) {
+        const trimmed = line.trim();
+        if (!trimmed || trimmed.startsWith("#")) continue;
+        const eqIdx = trimmed.indexOf("=");
+        if (eqIdx <= 0) continue;
+        const key = trimmed.slice(0, eqIdx).trim();
+        const val = trimmed
+          .slice(eqIdx + 1)
+          .trim()
+          .replace(/^["']|["']$/g, "");
+        if (key && process.env[key] === undefined) {
+          process.env[key] = val;
+        }
+      }
+    } catch {
+      // .env okunamazsa sessizce Beyin-2 yerel motorla devam et
+    }
+  }
+}
+loadOptionalEnvFile();
+
+let ensuringPersistentRooms = false;
+async function ensurePersistentLobbyRooms(): Promise<void> {
+  if (ensuringPersistentRooms) return;
+  const missing = getMissingPersistentSlots();
+  if (missing.length === 0) return;
+  ensuringPersistentRooms = true;
+  try {
+    for (const slot of missing) {
+      await matchMaker.createRoom(SOFRA_CONFIG.ROOM_NAME, {
+        roomTitle: slot.roomTitle,
+        paceMode: slot.paceMode,
+        targetPlayerCount: slot.targetPlayerCount,
+        atmosphereTheme: slot.atmosphereTheme,
+        persistentSlot: slot.slotId,
+        seedBotCount: slot.seedBotCount
+      });
+    }
+  } catch (err) {
+    console.warn("[SOFRA] Kalıcı bekleme odası oluşturulurken uyarı:", err);
+  } finally {
+    ensuringPersistentRooms = false;
+  }
+}
+
+registerPersistentRoomSpawner(() => {
+  void ensurePersistentLobbyRooms();
+});
 
 const port = Number(process.env.PORT || SOFRA_CONFIG.SERVER_PORT);
 const app = express();
@@ -23,8 +85,19 @@ app.get("/health", (_req, res) => {
   res.json({ status: "ok", rooms: activeRoomsByCode.size });
 });
 
-app.get("/rooms", (_req, res) => {
+app.get("/rooms", async (_req, res) => {
+  await ensurePersistentLobbyRooms();
   res.json({ rooms: listPublicRooms() });
+});
+
+app.get("/quick-match", async (_req, res) => {
+  await ensurePersistentLobbyRooms();
+  const best = findBestMatchmakingRoom();
+  if (!best) {
+    res.status(404).json({ error: "Uygun açık oda bulunamadı." });
+    return;
+  }
+  res.json({ room: best });
 });
 
 app.get("/find-room", (req, res) => {
@@ -98,4 +171,11 @@ gameServer.define(SOFRA_CONFIG.ROOM_NAME, SofraRoom);
 
 httpServer.listen(port, "0.0.0.0", () => {
   console.log(`[SOFRA Sunucu] ws://0.0.0.0:${port} üzerinde çalışıyor.`);
+  setTimeout(() => {
+    void ensurePersistentLobbyRooms();
+  }, 350);
+  setInterval(() => {
+    void ensurePersistentLobbyRooms();
+    breatheIdlePersistentRooms();
+  }, 25000);
 });

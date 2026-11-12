@@ -34,14 +34,22 @@ import {
   BotMemory,
   PersonalQuest,
   RoomPlayerBrief,
+  TableDebateSpeakerInput,
+  adjustBotSuspicion,
   createInitialBotMemory,
   createPuzzleChallenge,
   generateBotReply,
   generateNightTraitorChatLine,
   generateRoundQuests,
   generateSmartBotReplyAsync,
+  generateSmartTableDebateBatchAsync,
   generateTableDebateLine,
-  generateTrueDetectiveClue
+  generateTrueDetectiveClue,
+  pickLobbyArrivalLine,
+  pickLobbyGreetingLine,
+  pickNaturalBotIdentity,
+  recordBotSighting,
+  recordPlayerRoomClaimAndDetectLie
 } from "../ai/botAI.js";
 
 export interface RoomSummary {
@@ -57,15 +65,112 @@ export interface RoomSummary {
   phase: string;
   fastMode: boolean;
   hostNick: string;
+  isPublicMatchmaking: boolean;
 }
+
+export interface PersistentLobbySlotDef {
+  slotId: string;
+  roomTitle: string;
+  paceMode: "10m" | "20m";
+  targetPlayerCount: number;
+  seedBotCount: number;
+  atmosphereTheme: "torch" | "crimson" | "mist";
+}
+
+export const PERSISTENT_LOBBY_SLOTS: PersistentLobbySlotDef[] = [
+  {
+    slotId: "slot_fast_8",
+    roomTitle: "Kuzgun Sofrası",
+    paceMode: "10m",
+    targetPlayerCount: 8,
+    seedBotCount: 3,
+    atmosphereTheme: "torch"
+  },
+  {
+    slotId: "slot_std_10",
+    roomTitle: "Şömine Meclisi",
+    paceMode: "20m",
+    targetPlayerCount: 10,
+    seedBotCount: 4,
+    atmosphereTheme: "crimson"
+  },
+  {
+    slotId: "slot_fast_night",
+    roomTitle: "Gece Fısıltısı",
+    paceMode: "10m",
+    targetPlayerCount: 8,
+    seedBotCount: 2,
+    atmosphereTheme: "mist"
+  }
+];
 
 export const activeRoomsByCode = new Map<string, string>();
 export const liveRooms = new Map<string, SofraRoom>();
 
+let persistentRoomSpawner: (() => void) | null = null;
+
+export function registerPersistentRoomSpawner(fn: () => void): void {
+  persistentRoomSpawner = fn;
+}
+
+export function notifyPersistentSlotReleased(): void {
+  if (persistentRoomSpawner) {
+    setTimeout(() => persistentRoomSpawner?.(), 150);
+  }
+}
+
+export function getMissingPersistentSlots(): PersistentLobbySlotDef[] {
+  const activeSlots = new Set<string>();
+  liveRooms.forEach((room) => {
+    const slot = room.getPersistentSlotId();
+    if (slot && room.state.phase === "LOBBY") {
+      activeSlots.add(slot);
+    }
+  });
+  return PERSISTENT_LOBBY_SLOTS.filter((s) => !activeSlots.has(s.slotId));
+}
+
+export function breatheIdlePersistentRooms(): void {
+  liveRooms.forEach((room) => {
+    room.pulseIdleWaitingBots();
+  });
+}
+
 export function listPublicRooms(): RoomSummary[] {
   const list: RoomSummary[] = [];
   liveRooms.forEach((room) => list.push(room.getSummary()));
+  list.sort((a, b) => {
+    const aOpen = a.phase === "LOBBY" && !a.hasPassword ? 1 : 0;
+    const bOpen = b.phase === "LOBBY" && !b.hasPassword ? 1 : 0;
+    if (aOpen !== bOpen) return bOpen - aOpen;
+    if (a.humanCount !== b.humanCount) return b.humanCount - a.humanCount;
+    if (a.isPublicMatchmaking !== b.isPublicMatchmaking) return a.isPublicMatchmaking ? -1 : 1;
+    return b.playerCount - a.playerCount;
+  });
   return list;
+}
+
+export function findBestMatchmakingRoom(): RoomSummary | null {
+  const openRooms: RoomSummary[] = [];
+  liveRooms.forEach((room) => {
+    if (room.state.phase !== "LOBBY" || room.state.hasPassword) return;
+    const summary = room.getSummary();
+    // Odaya gerçek insan sığabiliyorsa (bot varsa bot yer açar!) eşleşmeye uygundur
+    if (summary.humanCount < summary.targetPlayerCount) {
+      openRooms.push(summary);
+    }
+  });
+  if (openRooms.length === 0) return null;
+
+  openRooms.sort((a, b) => {
+    const aHasHumans = a.humanCount > 0 ? 1 : 0;
+    const bHasHumans = b.humanCount > 0 ? 1 : 0;
+    if (aHasHumans !== bHasHumans) return bHasHumans - aHasHumans;
+    if (a.isPublicMatchmaking !== b.isPublicMatchmaking) return a.isPublicMatchmaking ? -1 : 1;
+    if (a.fastMode !== b.fastMode) return a.fastMode ? -1 : 1;
+    return b.playerCount - a.playerCount;
+  });
+  return openRooms[0];
 }
 
 export function findActiveSessionForToken(
@@ -100,6 +205,8 @@ export interface JoinOptions {
   accentColor?: string;
   hat?: string;
   mask?: string;
+  persistentSlot?: string;
+  seedBotCount?: number;
 }
 
 interface BotBrain {
@@ -182,10 +289,16 @@ export class SofraRoom extends Room<SofraState> {
     { coatColor: string; accentColor: string; hat: string; mask: string }
   >();
 
-  // BOT YAPAY ZEKÂ HAFIZASI
+  // BOT YAPAY ZEKÂ HAFIZASI & KALICI EŞLEŞME ODASI DURUMU
   private aiControlledIds = new Set<string>();
   private botBrains = new Map<string, BotBrain>();
   private botMemories = new Map<string, BotMemory>();
+  private persistentSlotId: string = "";
+  private seedBotCount: number = 3;
+  private trickleLobbyTimer?: Delayed;
+  private botChalkUsedRound = 0;
+  private botSabotageTriggeredRound = 0;
+  private exposedLieRoundSeats = new Set<string>();
 
   private votes = new Map<string, string>();
   private abstainedVoters = new Set<string>();
@@ -196,13 +309,61 @@ export class SofraRoom extends Room<SofraState> {
   private lastMoveTimestamp = new Map<string, number>();
   private tieCandidates: string[] = [];
 
+  public getPersistentSlotId(): string {
+    return this.persistentSlotId;
+  }
+
+  public getHumanCount(): number {
+    let humans = 0;
+    this.state.players.forEach((p) => {
+      if (!p.isBot) humans += 1;
+    });
+    return humans;
+  }
+
+  public getTargetCap(): number {
+    return Math.max(
+      6,
+      Math.min(this.maxClients, this.state.targetPlayerCount || SOFRA_CONFIG.DEFAULT_MATCH_CLIENTS)
+    );
+  }
+
+  public pulseIdleWaitingBots(): void {
+    if (!this.persistentSlotId || this.state.phase !== "LOBBY" || this.clients.length > 0) return;
+    const cur = this.state.players.size;
+    if (cur < 2) {
+      const b = this.spawnBot();
+      if (b && !this.state.hostId) this.state.hostId = b.id;
+      return;
+    }
+    if (Math.random() < 0.35) {
+      if (cur >= 4) {
+        const bots = Array.from(this.state.players.values()).filter((p) => p.isBot);
+        const drop = bots[bots.length - 1];
+        if (drop) {
+          this.deleteBotById(drop.id);
+          if (this.state.hostId === drop.id) {
+            const first = Array.from(this.state.players.values())[0];
+            this.state.hostId = first ? first.id : "";
+          }
+        }
+      } else if (cur <= 3) {
+        this.spawnBot();
+      }
+    }
+  }
+
   public getSummary(): RoomSummary {
     let humanCount = 0;
-    let hostNick = "Kâhya";
+    let hostNick = "Emre";
     this.state.players.forEach((p) => {
       if (!p.isBot) humanCount += 1;
       if (p.id === this.state.hostId) hostNick = p.nick;
     });
+    if (!this.state.hostId && this.state.players.size > 0) {
+      const first = Array.from(this.state.players.values())[0];
+      if (first) hostNick = first.nick;
+    }
     return {
       roomId: this.roomId,
       code: this.state.code,
@@ -215,7 +376,8 @@ export class SofraRoom extends Room<SofraState> {
       paceMode: this.state.paceMode || "20m",
       phase: this.state.phase,
       fastMode: this.state.fastMode,
-      hostNick
+      hostNick,
+      isPublicMatchmaking: Boolean(this.state.isPublicMatchmaking)
     };
   }
 
@@ -275,6 +437,23 @@ export class SofraRoom extends Room<SofraState> {
       this.state.doors.set(d.id, ds);
     }
 
+    // Kalıcı Eşleşme Odası ("2-3 sabit çalışan oyuncu bekleyen oda"): 0 bağlı istemciyle bile kapanmadan bekler!
+    if (options?.persistentSlot) {
+      this.persistentSlotId = String(options.persistentSlot);
+      this.seedBotCount = Math.max(2, Math.min(5, Number(options.seedBotCount || 3)));
+      this.state.isPublicMatchmaking = true;
+      this.state.autoStart = true;
+      this.autoDispose = false;
+      for (let i = 0; i < this.seedBotCount; i++) {
+        const b = this.spawnBot();
+        if (b && !this.state.hostId) {
+          this.state.hostId = b.id;
+        }
+      }
+      this.state.announcement =
+        "🟢 Oyuncular bekleniyor... Koltuğunu seç, masa dolunca oyun otomatik başlayacak!";
+    }
+
     this.registerMessageHandlers();
     this.setSimulationInterval((dtMs) => this.updateSimulation(dtMs / 1000), 1000 / SOFRA_CONFIG.TICK_RATE_HZ);
   }
@@ -299,9 +478,82 @@ export class SofraRoom extends Room<SofraState> {
     return true;
   }
 
+  private scheduleMatchmakingTrickle() {
+    if (this.state.phase !== "LOBBY" || !this.state.isPublicMatchmaking) return;
+    if (this.clients.length === 0) return;
+
+    const targetCount = this.getTargetCap();
+    if (this.state.players.size >= targetCount) {
+      if (this.trickleLobbyTimer) {
+        this.trickleLobbyTimer.clear();
+        this.trickleLobbyTimer = undefined;
+      }
+      if (!this.autoLobbyTimer) {
+        const countdownMs = 5500;
+        this.state.phaseEndsAt = Date.now() + countdownMs;
+        this.state.announcement = `🔥 Masa doldu (${this.state.players.size}/${targetCount})! Oyun 5 saniye içinde başlıyor...`;
+        this.autoLobbyTimer = this.clock.setTimeout(() => {
+          this.autoLobbyTimer = undefined;
+          if (this.state.phase !== "LOBBY" || this.clients.length === 0) return;
+          while (this.state.players.size < targetCount) {
+            this.spawnBot();
+          }
+          this.startGameLoop();
+        }, countdownMs);
+      }
+      return;
+    }
+
+    if (this.autoLobbyTimer) {
+      this.autoLobbyTimer.clear();
+      this.autoLobbyTimer = undefined;
+    }
+    this.state.phaseEndsAt = 0;
+    this.state.announcement = `🟢 Oyuncular katılıyor (${this.state.players.size}/${targetCount})... Masa dolunca otomatik başlayacak!`;
+
+    if (this.trickleLobbyTimer) return;
+
+    const nextJoinMs = 2400 + Math.floor(Math.random() * 1400);
+    this.trickleLobbyTimer = this.clock.setTimeout(() => {
+      this.trickleLobbyTimer = undefined;
+      if (this.state.phase !== "LOBBY" || !this.state.isPublicMatchmaking || this.clients.length === 0) return;
+      const capNow = this.getTargetCap();
+      if (this.state.players.size < capNow) {
+        const newBot = this.spawnBot();
+        if (newBot) {
+          this.broadcast("chat_msg", {
+            senderId: newBot.id,
+            senderNick: "ODA",
+            seat: newBot.seat,
+            text: `✨ ${newBot.nick} odaya katıldı! (${this.state.players.size}/${capNow})`,
+            channel: "SİSTEM"
+          });
+          if (Math.random() < 0.42) {
+            this.clock.setTimeout(() => {
+              if (this.state.phase !== "LOBBY" || !this.state.players.has(newBot.id)) return;
+              this.broadcast("chat_msg", {
+                senderId: newBot.id,
+                senderNick: newBot.nick,
+                seat: newBot.seat,
+                text: pickLobbyArrivalLine(),
+                channel: "SOFRA"
+              });
+            }, 1050);
+          }
+        }
+      }
+      this.scheduleMatchmakingTrickle();
+    }, nextJoinMs);
+  }
+
   private scheduleAutoLobbyCountdown() {
     if (this.state.phase !== "LOBBY" || !this.state.autoStart) return;
     if (this.clients.length === 0) return;
+
+    if (this.state.isPublicMatchmaking) {
+      this.scheduleMatchmakingTrickle();
+      return;
+    }
 
     if (this.autoLobbyTimer) {
       this.autoLobbyTimer.clear();
@@ -312,6 +564,7 @@ export class SofraRoom extends Room<SofraState> {
     this.state.announcement = `🕯️ Kâhya sofrayı hazırlıyor... ${waitSec} sn içinde eksik koltuklar ${targetCount} kişiye tamamlanıp başlayacak (İstediğin an 'Oto' kapatabilirsin)!`;
 
     this.autoLobbyTimer = this.clock.setTimeout(() => {
+      this.autoLobbyTimer = undefined;
       if (this.state.phase !== "LOBBY" || !this.state.autoStart || this.clients.length === 0) return;
       while (this.state.players.size < targetCount) {
         this.spawnBot();
@@ -363,44 +616,88 @@ export class SofraRoom extends Room<SofraState> {
     });
     if (candidates.length === 0) return undefined;
 
-    // 1. Tur Koruması: Hiçbir insan tarafından suçlanmamış gerçek oyuncuyu 1. turda botlar rastgele günah keçisi seçmez!
+    const mem = this.botMemories.get(botId);
+
+    // Eğer masum bot bir oyuncunun oda yalanını kendi gözüyle yakaladıysa doğrudan onu hedef gösterir!
+    if (mem && botRole !== "HAIN" && mem.caughtLies.length > 0) {
+      for (let i = mem.caughtLies.length - 1; i >= 0; i--) {
+        const liar = candidates.find((c) => c.seat === mem.caughtLies[i].seat);
+        if (liar) return liar;
+      }
+    }
+
+    // 1. Tur Koruması: Hiçbir insan tarafından suçlanmamış (ve yalanı yakalanmamış) gerçek oyuncuyu 1. turda botlar rastgele günah keçisi seçmez!
     if (this.state.round === 1) {
       const fairFirstRound = candidates.filter(
-        (c) => this.aiControlledIds.has(c.id) || this.accusedByHumansThisRound.has(c.id)
+        (c) =>
+          this.aiControlledIds.has(c.id) ||
+          this.accusedByHumansThisRound.has(c.id) ||
+          (mem?.suspicionBySeat[c.seat] || 0) >= 35
       );
       if (fairFirstRound.length > 0) candidates = fairFirstRound;
     }
 
-    // Güçlü arkadaşlık bağı (affinity >= 48) kurduğu kişiyi başka aday varken hedef göstermez!
+    // Güçlü arkadaşlık bağı (affinity >= 48) kurduğu kişiyi şüpheli değilse hedef göstermez!
     const nonFriends = candidates.filter(
-      (c) => (this.affinities.get(pairKey(botId, c.id)) || 0) < 48
+      (c) => (this.affinities.get(pairKey(botId, c.id)) || 0) < 48 || (mem?.suspicionBySeat[c.seat] || 0) >= 30
     );
     if (nonFriends.length > 0) candidates = nonFriends;
+
+    // En yüksek şüphe puanına sahip adayı tercih et
+    if (mem) {
+      const sorted = [...candidates].sort(
+        (a, b) => (mem.suspicionBySeat[b.seat] || 0) - (mem.suspicionBySeat[a.seat] || 0)
+      );
+      if ((mem.suspicionBySeat[sorted[0].seat] || 0) >= 18) {
+        return sorted[0];
+      }
+    }
 
     return candidates[Math.floor(Math.random() * candidates.length)];
   }
 
   private selectSmartBotVoteTarget(botId: string, choices: string[], isTieBreaker: boolean): string {
     let filtered = [...choices];
+    const mem = this.botMemories.get(botId);
+    const botRole = this.secretRoles.get(botId) || "MISAFIR";
 
-    // 1. Tur Koruması: İlk oylamada henüz hiçbir insanın suçlamadığı pasif/sohbetteki insan oyuncuyu botlar rastgele şömineye atmaz!
+    // Yalanını bizzat yakaladığı aday hayattaysa Masafir bot tereddütsüz ona oy verir!
+    if (mem && botRole !== "HAIN" && mem.caughtLies.length > 0) {
+      for (let i = mem.caughtLies.length - 1; i >= 0; i--) {
+        const liarSeat = mem.caughtLies[i].seat;
+        const liarId = filtered.find((id) => this.state.players.get(id)?.seat === liarSeat);
+        if (liarId) return liarId;
+      }
+    }
+
+    // 1. Tur Koruması: İlk oylamada henüz hiçbir insanın suçlamadığı (ve yalan söylemeyen) insan oyuncuyu botlar rastgele şömineye atmaz!
     if (this.state.round === 1 && !isTieBreaker) {
-      const fairPool = filtered.filter(
-        (id) => this.aiControlledIds.has(id) || this.accusedByHumansThisRound.has(id)
-      );
+      const fairPool = filtered.filter((id) => {
+        const seat = this.state.players.get(id)?.seat || 0;
+        return (
+          this.aiControlledIds.has(id) ||
+          this.accusedByHumansThisRound.has(id) ||
+          (mem?.suspicionBySeat[seat] || 0) >= 35
+        );
+      });
       if (fairPool.length > 0) filtered = fairPool;
     }
 
-    // Yakın dostluk barı (affinity >= 48) olan müttefiklerine mecbur kalmadıkça oy vermez!
-    const nonAllies = filtered.filter(
-      (id) => (this.affinities.get(pairKey(botId, id)) || 0) < 48
-    );
+    // Yakın dostluk barı (affinity >= 48) ve düşük şüphesi olan müttefiklerine mecbur kalmadıkça oy vermez!
+    const nonAllies = filtered.filter((id) => {
+      const seat = this.state.players.get(id)?.seat || 0;
+      return (this.affinities.get(pairKey(botId, id)) || 0) < 48 || (mem?.suspicionBySeat[seat] || 0) >= 28;
+    });
     if (nonAllies.length > 0) filtered = nonAllies;
 
-    // Konsey tahtasında veya Yuvarlak Sofrada suçlanan adaylara ağırlıklı oy verir!
+    // Dedektif şüphe matrisi + Konsey/Sofra suçlamalarına göre ağırlıklı karar verir!
     const weightedPool: string[] = [];
     for (const cid of filtered) {
-      const weight = 1 + Math.min(6, (this.accusedScoreThisRound.get(cid) || 0) * 2);
+      const cSeat = this.state.players.get(cid)?.seat || 0;
+      const suspBonus = Math.max(0, Math.round((mem?.suspicionBySeat[cSeat] || 0) / 9));
+      const accusedBonus = Math.min(6, (this.accusedScoreThisRound.get(cid) || 0) * 2);
+      const trustPenalty = (mem?.suspicionBySeat[cSeat] || 0) <= -15 ? -1 : 0;
+      const weight = Math.max(1, 1 + suspBonus + accusedBonus + trustPenalty);
       for (let w = 0; w < weight; w++) {
         weightedPool.push(cid);
       }
@@ -733,6 +1030,9 @@ export class SofraRoom extends Room<SofraState> {
       if (!this.aiControlledIds.has(p.id)) {
         this.accusedByHumansThisRound.add(target.id);
       }
+      this.botMemories.forEach((mem, bId) => {
+        if (bId !== target.id && bId !== p.id) adjustBotSuspicion(mem, target.seat, 12);
+      });
 
       this.state.councilBoardNote = `📋 Konsey Tahtası: #${p.seat} ${p.nick} tebeşirle #${target.seat} ${target.nick} ismini şüpheli yazdı!`;
       this.broadcast("chat_msg", {
@@ -854,6 +1154,9 @@ export class SofraRoom extends Room<SofraState> {
       if (!this.aiControlledIds.has(sender.id)) {
         this.accusedByHumansThisRound.add(target.id);
       }
+      this.botMemories.forEach((mem, bId) => {
+        if (bId !== target.id && bId !== sender.id) adjustBotSuspicion(mem, target.seat, 16);
+      });
       this.chronicleLog.push(
         `👉 Gün #${this.state.round} Sofra: #${sender.seat} ${sender.nick}, masada #${target.seat} ${target.nick} için "${cleanReason}" diyerek suçlama yöneltti.`
       );
@@ -952,11 +1255,6 @@ export class SofraRoom extends Room<SofraState> {
               const botDef = CHARACTERS.find((c) => c.seat === freeSeat);
               if (botDef) {
                 occupant.charName = botDef.name;
-                occupant.nick = `${botDef.name} (${botDef.title})`;
-                occupant.coatColor = botDef.coatColor;
-                occupant.accentColor = botDef.accentColor;
-                occupant.hat = botDef.hat;
-                occupant.mask = botDef.mask;
               }
               const bsp = getAntreSpawn(freeSeat);
               occupant.x = bsp.x;
@@ -1071,7 +1369,14 @@ export class SofraRoom extends Room<SofraState> {
 
     this.onMessage("start_game", (client) => {
       if (this.state.hostId !== client.sessionId || this.state.phase !== "LOBBY") return;
-      if (this.autoLobbyTimer) this.autoLobbyTimer.clear();
+      if (this.autoLobbyTimer) {
+        this.autoLobbyTimer.clear();
+        this.autoLobbyTimer = undefined;
+      }
+      if (this.trickleLobbyTimer) {
+        this.trickleLobbyTimer.clear();
+        this.trickleLobbyTimer = undefined;
+      }
       const targetCount = Math.max(6, Math.min(SOFRA_CONFIG.MAX_CLIENTS, this.state.targetPlayerCount || SOFRA_CONFIG.DEFAULT_MATCH_CLIENTS));
       while (this.state.players.size < targetCount) {
         this.spawnBot();
@@ -1304,6 +1609,7 @@ export class SofraRoom extends Room<SofraState> {
         text: rawText,
         channel: sender.ghost ? "HAYALET" : this.state.phase === "DAY" ? "YAKIN" : "SOFRA"
       });
+      this.observePublicClaimByBots(sender, rawText);
 
       // Yakındaki (veya Sofradaki) bir Akıllı Bot bu mesaja doğal Türkçe "Mini-AI" cevabı versin!
       if (
@@ -1386,6 +1692,7 @@ export class SofraRoom extends Room<SofraState> {
               text: res.text,
               channel: this.state.phase === "DAY" ? "YAKIN" : "SOFRA"
             });
+            this.observePublicClaimByBots(addressed, res.text);
           }, 950 + Math.random() * 750);
         }
       }
@@ -1472,6 +1779,9 @@ export class SofraRoom extends Room<SofraState> {
           if (!mem) {
             mem = createInitialBotMemory(target.seat);
             this.botMemories.set(target.id, mem);
+          }
+          if (this.state.phase === "DAY" || this.state.phase === "VOTE" || this.state.phase === "TABLE") {
+            recordPlayerRoomClaimAndDetectLie(mem, sender.seat, sender.nick, rawText, this.state.round, target.seat);
           }
           const neckHolder = this.state.necklaceHolder
             ? this.state.players.get(this.state.necklaceHolder)
@@ -1982,6 +2292,67 @@ export class SofraRoom extends Room<SofraState> {
     });
   }
 
+  private observePublicClaimByBots(speaker: Player, rawText: string) {
+    if (!speaker.alive || speaker.ghost) return;
+    if (this.state.phase !== "DAY" && this.state.phase !== "VOTE" && this.state.phase !== "TABLE") return;
+
+    let witnessCalloutBot: Player | undefined;
+    let calloutClaimed = "";
+    let calloutActual = "";
+
+    this.state.players.forEach((bot) => {
+      if (!this.aiControlledIds.has(bot.id) || !bot.alive || bot.ghost || bot.id === speaker.id) return;
+      if (this.state.phase === "DAY") {
+        const dist = Math.hypot(bot.x - speaker.x, bot.z - speaker.z);
+        if (dist > 15 && bot.roomId !== speaker.roomId) return;
+      }
+      let mem = this.botMemories.get(bot.id);
+      if (!mem) {
+        mem = createInitialBotMemory(bot.seat);
+        this.botMemories.set(bot.id, mem);
+      }
+      const res = recordPlayerRoomClaimAndDetectLie(
+        mem,
+        speaker.seat,
+        speaker.nick,
+        rawText,
+        this.state.round,
+        bot.seat
+      );
+      if (res.caughtLie && this.secretRoles.get(bot.id) !== "HAIN") {
+        this.accusedScoreThisRound.set(speaker.id, (this.accusedScoreThisRound.get(speaker.id) || 0) + 2);
+        if (!witnessCalloutBot && res.claimedRoom && res.actualRoom) {
+          witnessCalloutBot = bot;
+          calloutClaimed = res.claimedRoom;
+          calloutActual = res.actualRoom;
+        }
+      }
+    });
+
+    const lieKey = `${this.state.round}:${speaker.seat}`;
+    if (
+      witnessCalloutBot &&
+      (this.state.phase === "VOTE" || this.state.phase === "TABLE") &&
+      !this.exposedLieRoundSeats.has(lieKey)
+    ) {
+      this.exposedLieRoundSeats.add(lieKey);
+      const botRef = witnessCalloutBot;
+      const seq = this.phaseSeq;
+      this.clock.setTimeout(() => {
+        if (this.phaseSeq !== seq || !botRef.alive || (this.state.phase !== "VOTE" && this.state.phase !== "TABLE")) {
+          return;
+        }
+        this.broadcast("chat_msg", {
+          senderId: botRef.id,
+          senderNick: botRef.nick,
+          seat: botRef.seat,
+          text: `Bir dakika! #${speaker.seat} ${speaker.nick} az önce "${calloutClaimed}" dedi ama ben onu gündüz ${calloutActual} içinde gördüm!`,
+          channel: "SOFRA"
+        });
+      }, 1350);
+    }
+  }
+
   private tryApplyBotPersuadedVote(bot: Player, mem: BotMemory, candidateId: string) {
     const candidate = this.state.players.get(candidateId);
     if (!candidate || !candidate.alive || candidate.ghost || candidate.id === bot.id) return;
@@ -2133,25 +2504,30 @@ export class SofraRoom extends Room<SofraState> {
     }
   }
 
-  private spawnBot() {
+  private spawnBot(): Player | undefined {
     const takenSeats = new Set<number>();
-    this.state.players.forEach((p) => takenSeats.add(p.seat));
+    const usedNicks = new Set<string>();
+    this.state.players.forEach((p) => {
+      takenSeats.add(p.seat);
+      usedNicks.add(p.nick);
+    });
     const allowedSeats = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12];
     const seat = allowedSeats.find((s) => !takenSeats.has(s));
-    if (!seat) return;
+    if (!seat) return undefined;
 
     const cDef = CHARACTERS.find((c) => c.seat === seat) || CHARACTERS[0];
+    const ident = pickNaturalBotIdentity(usedNicks, seat);
     const botId = `bot_${seat}_${Math.floor(100 + Math.random() * 900)}`;
     const bot = new Player();
     bot.id = botId;
-    bot.nick = `${cDef.name} (${cDef.title})`;
+    bot.nick = ident.nick;
     bot.seat = seat;
     bot.isBot = true;
     bot.charName = cDef.name;
-    bot.coatColor = cDef.coatColor;
+    bot.coatColor = ident.coatColor;
     bot.accentColor = cDef.accentColor;
-    bot.hat = cDef.hat;
-    bot.mask = cDef.mask;
+    bot.hat = ident.hat;
+    bot.mask = ident.mask;
 
     const spawn = getAntreSpawn(seat);
     bot.x = spawn.x;
@@ -2164,6 +2540,7 @@ export class SofraRoom extends Room<SofraState> {
     this.botMemories.set(botId, createInitialBotMemory(seat));
     const wp = BOT_WAYPOINTS[Math.floor(Math.random() * BOT_WAYPOINTS.length)];
     this.botBrains.set(botId, { targetX: wp.x, targetZ: wp.z, waitUntil: Date.now() + 800 });
+    return bot;
   }
 
   onJoin(client: Client, options: JoinOptions) {
@@ -2211,7 +2588,7 @@ export class SofraRoom extends Room<SofraState> {
         const anyBot = Array.from(this.state.players.values()).find((pl) => pl.isBot);
         if (anyBot) this.deleteBotById(anyBot.id);
       }
-      // İstenen koltukta bir bot oturuyorsa botu boş bir koltuğa kaydır
+      // İstenen koltukta bir bot oturuyorsa botu kendi kimliğini koruyarak boş bir koltuğa kaydır
       if (options?.seat && allowedSeats.includes(options.seat)) {
         const seatBot = Array.from(this.state.players.values()).find(
           (pl) => pl.isBot && pl.seat === options.seat
@@ -2224,11 +2601,6 @@ export class SofraRoom extends Room<SofraState> {
             seatBot.seat = freeForBot;
             const bDef = CHARACTERS.find((c) => c.seat === freeForBot) || CHARACTERS[0];
             seatBot.charName = bDef.name;
-            seatBot.nick = `${bDef.name} (${bDef.title})`;
-            seatBot.coatColor = bDef.coatColor;
-            seatBot.accentColor = bDef.accentColor;
-            seatBot.hat = bDef.hat;
-            seatBot.mask = bDef.mask;
             const bsp = getAntreSpawn(freeForBot);
             seatBot.x = bsp.x;
             seatBot.z = bsp.z;
@@ -2275,8 +2647,37 @@ export class SofraRoom extends Room<SofraState> {
       this.tokenToSession.set(pToken, client.sessionId);
     }
 
-    if (!this.state.hostId || !this.state.players.has(this.state.hostId)) {
+    // Kalıcı eşleşme odasına ilk gerçek oyuncu girdiğinde kurucu yetkisini ona devret ("Hemen Başlat" açılır!)
+    const curHost = this.state.hostId ? this.state.players.get(this.state.hostId) : undefined;
+    if (!curHost || curHost.isBot) {
       this.state.hostId = client.sessionId;
+    }
+
+    if (this.state.phase === "LOBBY" && this.state.isPublicMatchmaking) {
+      const capNow = this.getTargetCap();
+      this.broadcast("chat_msg", {
+        senderId: player.id,
+        senderNick: "ODA",
+        seat: player.seat,
+        text: `✨ ${player.nick} odaya katıldı! (${this.state.players.size}/${capNow})`,
+        channel: "SİSTEM"
+      });
+
+      const greeter = Array.from(this.state.players.values()).find((p) => p.isBot && p.id !== player.id);
+      if (greeter) {
+        this.clock.setTimeout(() => {
+          if (this.state.phase !== "LOBBY" || !this.state.players.has(player.id) || !this.state.players.has(greeter.id)) {
+            return;
+          }
+          this.broadcast("chat_msg", {
+            senderId: greeter.id,
+            senderNick: greeter.nick,
+            seat: greeter.seat,
+            text: pickLobbyGreetingLine(player.nick),
+            channel: "SOFRA"
+          });
+        }, 1500);
+      }
     }
 
     if (this.state.phase === "LOBBY" && this.state.autoStart) {
@@ -2321,6 +2722,10 @@ export class SofraRoom extends Room<SofraState> {
     this.handlePermanentDeparture(client.sessionId);
 
     if (this.clients.length === 0) {
+      if (this.persistentSlotId && this.state.phase === "LOBBY") {
+        // Kalıcı bekleme odası kapanmaz; başlangıçtaki bekleme düzenine geri döner!
+        return;
+      }
       this.disconnect();
     }
   }
@@ -2346,8 +2751,26 @@ export class SofraRoom extends Room<SofraState> {
       this.tempEquippedCosmetics.delete(sessionId);
       this.clearSessionTokenMapping(sessionId);
       this.reassignHostIfNeeded(sessionId);
-      if (this.state.phase === "LOBBY" && this.clients.length === 0 && this.autoLobbyTimer) {
-        this.autoLobbyTimer.clear();
+      if (this.state.phase === "LOBBY" && this.clients.length === 0) {
+        if (this.autoLobbyTimer) {
+          this.autoLobbyTimer.clear();
+          this.autoLobbyTimer = undefined;
+        }
+        if (this.trickleLobbyTimer) {
+          this.trickleLobbyTimer.clear();
+          this.trickleLobbyTimer = undefined;
+        }
+        if (this.persistentSlotId) {
+          this.trimLobbyBotsTo(this.seedBotCount);
+          while (this.state.players.size < this.seedBotCount) {
+            this.spawnBot();
+          }
+          const firstBot = Array.from(this.state.players.values())[0];
+          this.state.hostId = firstBot ? firstBot.id : "";
+          this.state.phaseEndsAt = 0;
+          this.state.announcement =
+            "🟢 Oyuncular bekleniyor... Koltuğunu seç, masa dolunca oyun otomatik başlayacak!";
+        }
       }
       return;
     }
@@ -2562,11 +2985,27 @@ export class SofraRoom extends Room<SofraState> {
   }
 
   private startGameLoop() {
-    if (this.autoLobbyTimer) this.autoLobbyTimer.clear();
+    if (this.autoLobbyTimer) {
+      this.autoLobbyTimer.clear();
+      this.autoLobbyTimer = undefined;
+    }
+    if (this.trickleLobbyTimer) {
+      this.trickleLobbyTimer.clear();
+      this.trickleLobbyTimer = undefined;
+    }
+    // Kalıcı bekleme odası maça başladığı anda slotunu serbest bırakır ve arka planda YENİ bir bekleme odası açılır!
+    if (this.persistentSlotId) {
+      this.persistentSlotId = "";
+      this.autoDispose = true;
+      notifyPersistentSlotReleased();
+    }
     // joinOrCreate'i engellerken playerToken ile joinById yeniden katılımını açık tutmak için lock() yerine setPrivate(true) kullan!
     this.setPrivate(true);
 
     this.state.round = 1;
+    this.botChalkUsedRound = 0;
+    this.botSabotageTriggeredRound = 0;
+    this.exposedLieRoundSeats.clear();
     this.state.pot = 0;
     this.state.winnerTeam = "";
     this.state.winReason = "";
@@ -3265,48 +3704,70 @@ export class SofraRoom extends Room<SofraState> {
     this.setPhase("VOTE", durFallback, msg, () => this.resolveVotePhase());
     const seq = this.phaseSeq;
 
-    // 1. İlk 3-15 sn içinde AI botlar doğal Yuvarlak Sofra tartışma cümlelerini paylaşır
+    // 1. İlk 3-15 sn içinde AI botlar doğal Yuvarlak Sofra tartışma cümlelerini paylaşır (Tek mikro-batch çağrısı + 0ms Beyin-2 yedeği!)
     if (tieCandidates.length === 0) {
-      const scheduleDebateWave = (delayMs: number, wave: 1 | 2 | 3 | 4) => {
-        this.clock.setTimeout(() => {
-          if (this.phaseSeq !== seq || this.state.phase !== "VOTE") return;
-          const aliveBots = Array.from(this.state.players.values()).filter(
-            (p) => this.aiControlledIds.has(p.id) && p.alive && !p.ghost
-          );
-          if (aliveBots.length === 0) return;
-          const speaker = aliveBots[Math.floor(Math.random() * aliveBots.length)];
-          if (!speaker.alive) return;
-          const role = this.secretRoles.get(speaker.id) || "MISAFIR";
-          const mem = this.botMemories.get(speaker.id) || createInitialBotMemory(speaker.seat);
-          const sc = this.pickScapegoatForBot(speaker.id, role);
-          if (sc && (wave === 1 || wave === 3)) {
+      const aliveBots = Array.from(this.state.players.values()).filter(
+        (p) => this.aiControlledIds.has(p.id) && p.alive && !p.ghost
+      );
+      if (aliveBots.length > 0) {
+        const shuffled = [...aliveBots].sort(() => Math.random() - 0.5);
+        const waveConfigs: Array<{ delayMs: number; wave: 1 | 2 | 3 | 4 }> = [
+          { delayMs: 3200, wave: 1 },
+          { delayMs: 6900, wave: 2 },
+          { delayMs: 10700, wave: 3 },
+          { delayMs: 14400, wave: 4 }
+        ];
+        const speakerInputs: TableDebateSpeakerInput[] = [];
+        for (let i = 0; i < Math.min(waveConfigs.length, shuffled.length); i++) {
+          const sp = shuffled[i];
+          const role = this.secretRoles.get(sp.id) || "MISAFIR";
+          let mem = this.botMemories.get(sp.id);
+          if (!mem) {
+            mem = createInitialBotMemory(sp.seat);
+            this.botMemories.set(sp.id, mem);
+          }
+          const sc = this.pickScapegoatForBot(sp.id, role);
+          if (sc && (waveConfigs[i].wave === 1 || waveConfigs[i].wave === 3)) {
             this.accusedScoreThisRound.set(sc.id, (this.accusedScoreThisRound.get(sc.id) || 0) + 1);
           }
-          const line = generateTableDebateLine({
-            speakerSeat: speaker.seat,
-            speakerNick: speaker.nick,
-            speakerRole: role,
+          speakerInputs.push({
+            id: sp.id,
+            seat: sp.seat,
+            nick: sp.nick,
+            role,
             personality: mem.personality,
             mem,
-            scapegoat: sc,
-            topBond: this.getTopBondHighlight(),
-            sabotageCount: 0,
-            wave
+            scapegoat: sc ? { seat: sc.seat, nick: sc.nick } : undefined,
+            wave: waveConfigs[i].wave
           });
-          this.broadcast("chat_msg", {
-            senderId: speaker.id,
-            senderNick: speaker.nick,
-            seat: speaker.seat,
-            text: line,
-            channel: "SOFRA"
-          });
-        }, delayMs);
-      };
+        }
 
-      scheduleDebateWave(3200, 1);
-      scheduleDebateWave(7000, 2);
-      scheduleDebateWave(11000, 3);
-      scheduleDebateWave(15000, 4);
+        void generateSmartTableDebateBatchAsync(speakerInputs, {
+          round: this.state.round,
+          topBond: this.getTopBondHighlight(),
+          sabotageCount: this.trialSabotageCount
+        }).then((linesMap) => {
+          if (this.phaseSeq !== seq || this.state.phase !== "VOTE") return;
+          speakerInputs.forEach((sp, idx) => {
+            const delayMs = waveConfigs[idx].delayMs;
+            this.clock.setTimeout(() => {
+              if (this.phaseSeq !== seq || this.state.phase !== "VOTE") return;
+              const botNow = this.state.players.get(sp.id);
+              if (!botNow || !botNow.alive || botNow.ghost) return;
+              const line = linesMap.get(sp.id);
+              if (!line) return;
+              this.broadcast("chat_msg", {
+                senderId: botNow.id,
+                senderNick: botNow.nick,
+                seat: botNow.seat,
+                text: line,
+                channel: "SOFRA"
+              });
+              this.observePublicClaimByBots(botNow, line);
+            }, delayMs);
+          });
+        });
+      }
     }
 
     // 2. AI Botlar 14-28 sn içinde (veya tüm insanlar oy verdikten hemen sonra!) gizli zarf oylarını verir
@@ -3439,6 +3900,49 @@ export class SofraRoom extends Room<SofraState> {
     this.state.lastBurnedName = victim?.nick || "Bilinmeyen";
     this.state.lastBurnedFlame = wasTraitor ? "RED" : "WHITE";
 
+    // ŞÖMİNE ALEVİ ÇIKARIM MOTORU (Beyin-2): Kırmızı / Beyaz aleve göre tüm botların şüphe matrisini güncelle!
+    if (victim) {
+      let topWhisperPartner: Player | undefined;
+      let topWhisperVal = 0;
+      this.state.players.forEach((other) => {
+        if (!other.alive || other.ghost || other.id === burnedId) return;
+        const sc = this.affinities.get(pairKey(burnedId, other.id)) || 0;
+        if (sc > topWhisperVal) {
+          topWhisperVal = sc;
+          topWhisperPartner = other;
+        }
+      });
+
+      this.botMemories.forEach((mem, botId) => {
+        const botP = this.state.players.get(botId);
+        if (!botP || !botP.alive) return;
+        if (wasTraitor) {
+          // Hain yakalayan seçmenlere güven artar; yanan Hainle yoğun fısıldaşan ortağa şüphe fırlar!
+          this.votes.forEach((targetId, voterId) => {
+            if (targetId === burnedId) {
+              const vSeat = this.state.players.get(voterId)?.seat || 0;
+              adjustBotSuspicion(mem, vSeat, -18);
+            }
+          });
+          if (topWhisperPartner && topWhisperVal >= 38 && topWhisperPartner.id !== botId) {
+            adjustBotSuspicion(mem, topWhisperPartner.seat, 28);
+            mem.lastRoundFlameInsight = `Yanan Hain #${victim.seat} ${victim.nick} ile en çok #${topWhisperPartner.seat} ${topWhisperPartner.nick} fısıldaşmıştı!`;
+          } else {
+            mem.lastRoundFlameInsight = `Dün #${victim.seat} ${victim.nick} kırmızı alevle Hain çıktı!`;
+          }
+        } else {
+          // Masum Misafiri şömineye atan seçmenlere şüphe artar!
+          this.votes.forEach((targetId, voterId) => {
+            if (targetId === burnedId && voterId !== botId) {
+              const vSeat = this.state.players.get(voterId)?.seat || 0;
+              adjustBotSuspicion(mem, vSeat, 15);
+            }
+          });
+          mem.lastRoundFlameInsight = `Dün masum #${victim.seat} ${victim.nick} boşuna yandı, hedef gösterenlere dikkat edin!`;
+        }
+      });
+    }
+
     this.broadcast("fireplace_burn", {
       playerId: burnedId,
       playerNick: victim?.nick || "",
@@ -3499,7 +4003,20 @@ export class SofraRoom extends Room<SofraState> {
       this.state.players.forEach((bot) => {
         if (!this.aiControlledIds.has(bot.id) || !bot.alive) return;
         if (this.secretRoles.get(bot.id) === "HAIN" && targetPool.length > 0) {
-          const pick = humanAlreadyPicked || targetPool[Math.floor(Math.random() * targetPool.length)];
+          let strategicPick = humanAlreadyPicked;
+          if (!strategicPick && this.state.round >= 2) {
+            // 2. Geceden itibaren Hain botlar kendilerine oy veren veya aktif dedektiflik yapan hedefleri önceliklendirir!
+            const weightedNight: string[] = [];
+            for (const candId of targetPool) {
+              let threat = 1;
+              const votedTarget = this.votes.get(candId);
+              if (votedTarget && this.secretRoles.get(votedTarget) === "HAIN") threat += 3;
+              if (this.solvedPuzzleRound.get(candId) === this.state.round) threat += 2;
+              for (let k = 0; k < threat; k++) weightedNight.push(candId);
+            }
+            strategicPick = weightedNight[Math.floor(Math.random() * weightedNight.length)];
+          }
+          const pick = strategicPick || targetPool[Math.floor(Math.random() * targetPool.length)];
           this.nightPicks.set(bot.id, pick);
           const pickP = this.state.players.get(pick);
           if (pickP) {
@@ -3826,14 +4343,6 @@ export class SofraRoom extends Room<SofraState> {
         p.accentColor = savedCos.accentColor;
         p.hat = savedCos.hat as any;
         p.mask = savedCos.mask as any;
-      } else if (p.isBot) {
-        const cDef = CHARACTERS.find((c) => c.seat === p.seat);
-        if (cDef) {
-          p.coatColor = cDef.coatColor;
-          p.accentColor = cDef.accentColor;
-          p.hat = cDef.hat;
-          p.mask = cDef.mask;
-        }
       }
       p.alive = true;
       p.ghost = false;
@@ -4091,14 +4600,12 @@ export class SofraRoom extends Room<SofraState> {
       const zInfo = detectRoomZone(bot.x, bot.z);
       bot.roomId = zInfo.id;
 
-      // Botun gerçek oda ve gördüğü oyuncu hafızasını güncelle
+      // Botun gerçek oda ve gördüğü oyuncu hafızasını güncelle (Beyin-2 Tanık Kaydı!)
       if (mem) {
         mem.realLastRoom = zInfo.name;
         this.state.players.forEach((other) => {
-          if (other.id !== bot.id && other.alive && Math.hypot(other.x - bot.x, other.z - bot.z) < 6.0) {
-            mem.lastSeenSeat = other.seat;
-            mem.lastSeenNick = other.nick;
-            mem.lastSeenRoom = zInfo.name;
+          if (other.id !== bot.id && other.alive && !other.ghost && Math.hypot(other.x - bot.x, other.z - bot.z) < 6.8) {
+            recordBotSighting(mem, other.seat, other.nick, zInfo.name, this.state.round);
           }
         });
       }
@@ -4107,27 +4614,106 @@ export class SofraRoom extends Room<SofraState> {
 
   private triggerAutonomousBotSocial() {
     const aliveBots = Array.from(this.state.players.values()).filter(
-      (p) => this.aiControlledIds.has(p.id) && p.alive
+      (p) => this.aiControlledIds.has(p.id) && p.alive && !p.ghost
     );
     if (aliveBots.length === 0 || this.clients.length === 0) return;
 
+    const now = Date.now();
+
+    // A) OTONOM KONSEY TAHTASI: Şüphesi netleşen bir bot turda 1 kez Konsey Tahtasına şüpheli yazar!
+    if (this.botChalkUsedRound !== this.state.round && !this.state.councilBoardNote) {
+      const detectiveBot = aliveBots.find((b) => {
+        const m = this.botMemories.get(b.id);
+        return (
+          b.roomId === "toplanti_salonu" ||
+          Math.hypot(b.x - COUNCIL_BOARD_POS.x, b.z - COUNCIL_BOARD_POS.z) <= 10 ||
+          (m && m.caughtLies.length > 0)
+        );
+      });
+      if (detectiveBot && Math.random() < 0.48) {
+        const dRole = this.secretRoles.get(detectiveBot.id) || "MISAFIR";
+        const suspect = this.pickScapegoatForBot(detectiveBot.id, dRole);
+        if (suspect) {
+          this.botChalkUsedRound = this.state.round;
+          this.chalkUsedRound.set(detectiveBot.id, this.state.round);
+          this.accusedScoreThisRound.set(suspect.id, (this.accusedScoreThisRound.get(suspect.id) || 0) + 1);
+          this.state.councilBoardNote = `📋 Konsey Tahtası: #${detectiveBot.seat} ${detectiveBot.nick} tebeşirle #${suspect.seat} ${suspect.nick} ismini şüpheli yazdı!`;
+          this.broadcast("chat_msg", {
+            senderId: detectiveBot.id,
+            senderNick: "KONSEY SALONU",
+            seat: detectiveBot.seat,
+            text: this.state.councilBoardNote,
+            channel: "KONSEY"
+          });
+        }
+      }
+    }
+
+    // B) OTONOM HAİN SABOTAJI: Yanında insan yokken Hain bot turda 1 kez Karartma veya İsimsiz Not bırakabilir!
+    if (this.botSabotageTriggeredRound !== this.state.round && now < this.state.phaseEndsAt - 12000) {
+      const stealthTraitor = aliveBots.find((b) => {
+        if (this.secretRoles.get(b.id) !== "HAIN") return false;
+        const nearHuman = this.clients.some((c) => {
+          const hp = this.state.players.get(c.sessionId);
+          return hp && hp.alive && !hp.ghost && Math.hypot(hp.x - b.x, hp.z - b.z) <= 7.5;
+        });
+        return !nearHuman;
+      });
+      if (stealthTraitor && Math.random() < 0.3) {
+        this.botSabotageTriggeredRound = this.state.round;
+        if (now - this.lastLightSabotageAt > 75000 && Math.random() < 0.55) {
+          this.lastLightSabotageAt = now;
+          this.chronicleLog.push(
+            `🕯️ Gün #${this.state.round}: Hainler avize ve şamdanları söndürerek şatoya 12 saniyelik zifiri karanlık çöktürdü.`
+          );
+          this.broadcast("blackout_event", { durationSec: 12 });
+          this.broadcast("chat_msg", {
+            senderId: "",
+            senderNick: "KARARTMA",
+            seat: 11,
+            text: "🕯️ ŞATODA KARARTMA! Gizli bir el avize ve şamdanları söndürdü — 12 saniye zifiri karanlık!",
+            channel: "SABOTAJ"
+          });
+          return;
+        }
+        const humanClient = this.clients.find((c) => {
+          const hp = this.state.players.get(c.sessionId);
+          return hp && hp.alive && !hp.ghost && this.secretRoles.get(hp.id) !== "HAIN";
+        });
+        if (humanClient) {
+          const decoy = this.pickScapegoatForBot(stealthTraitor.id, "HAIN");
+          this.noteSabotageUsedRound.set(stealthTraitor.id, this.state.round);
+          humanClient.send("anonymous_note", {
+            text: decoy
+              ? `Koltuk #${decoy.seat} ${decoy.nick} koridorda tek başına dolaşıyor, ona sakın sırtını dönme!`
+              : "Yakınındaki kişiye sakın güvenme, zarfı kan kokuyor!"
+          });
+          return;
+        }
+      }
+    }
+
     const bot = aliveBots[Math.floor(Math.random() * aliveBots.length)];
     const role = this.secretRoles.get(bot.id) || "MISAFIR";
+    const mem = this.botMemories.get(bot.id);
     const sc = this.pickScapegoatForBot(bot.id, role);
     if (!sc) return;
 
-    // Yakında gerçek bir insan oyuncu varsa ona sürpriz 1'e 1 Fısıltı (PM) at!
+    // Yakında gerçek bir insan oyuncu varsa ona doğal bir 1'e 1 Fısıltı (PM) at!
     const humanClient = this.clients.find((c) => {
       const hp = this.state.players.get(c.sessionId);
-      return hp && hp.alive && Math.hypot(hp.x - bot.x, hp.z - bot.z) <= 16;
+      return hp && hp.alive && !hp.ghost && Math.hypot(hp.x - bot.x, hp.z - bot.z) <= 16;
     });
 
     if (humanClient && Math.random() < 0.55) {
       const hp = this.state.players.get(humanClient.sessionId)!;
+      const latestLie = mem?.caughtLies[mem.caughtLies.length - 1];
       const line =
-        role === "HAIN"
-          ? `🤫 Şşşt ${hp.nick}, aramızda kalsın ama #${sc.seat} ${sc.nick} bana çok tekinsiz göründü... Sofrada ona oy basalım mı?`
-          : `🤫 ${hp.nick}, gözünü dört aç! #${sc.seat} ${sc.nick} koridorlarda tek başına dolaşıyor, dikkatli ol.`;
+        role !== "HAIN" && latestLie
+          ? `${hp.nick} bak aramızda kalsın, #${latestLie.seat} ${latestLie.nick} az önce "${latestLie.claimedRoom}" dedi ama ben onu ${latestLie.actualSeenRoom} içinde gördüm!`
+          : role === "HAIN"
+          ? `${hp.nick} bence #${sc.seat} ${sc.nick} çok garip oynuyor, sofrada dikkat edelim ona.`
+          : `${hp.nick} görevleri bitirdin mi? #${sc.seat} ${sc.nick} koridorda tek başına dolanıyordu az önce.`;
 
       this.addAffinity(bot.id, hp.id, 8);
       humanClient.send("pm_msg", {
@@ -4138,28 +4724,48 @@ export class SofraRoom extends Room<SofraState> {
         toNick: hp.nick,
         toSeat: hp.seat,
         text: line,
-        ts: Date.now()
+        ts: now
       });
       return;
     }
 
-    // Değilse yalnızca yakındaki oyuncuların duyacağı yakın sohbete atmosferik bir cümle bırak!
+    // Değilse yalnızca yakındaki oyuncuların duyacağı doğal oyuncu sohbeti bırak (ve kendi alibisini paylaş ki yalan yakalama mekaniği canlı işlesin!)
+    const ambientOptions =
+      role === "HAIN"
+        ? [
+            `Ben az önce ${mem?.fakeAlibiRoom || "Şato Kütüphanesi & Arşiv"} içindeydim, kimseyi göremedim.`,
+            `#${sc.seat} ${sc.nick} görev yapıyor mu hiç gören var mı?`,
+            `Hazineyi 50 yapalım da Kâhya Zili çalalım bu el.`
+          ]
+        : [
+            `Az önce ${mem?.realLastRoom || "Antre / Giriş Holü"} tarafındaydım, koridorlar çok sessiz.`,
+            `Etkinlik Salonu'ndaki kürsüye bakan oldu mu bu tur?`,
+            `#${sc.seat} ${sc.nick} hangi odadaydı acaba, bilen var mı?`
+          ];
+    const chosenAmbient = ambientOptions[Math.floor(Math.random() * ambientOptions.length)];
+
     this.sendProximityOrPhaseChat(bot, {
       senderId: bot.id,
       senderNick: bot.nick,
       seat: bot.seat,
-      text: `#${sc.seat} ${sc.nick} sabahtan beri hangi odada saklanıyor acaba?`,
+      text: chosenAmbient,
       channel: "YAKIN"
     });
+    this.observePublicClaimByBots(bot, chosenAmbient);
   }
 
   onDispose() {
     this.phaseSeq += 1;
     if (this.phaseTimer) this.phaseTimer.clear();
     if (this.autoLobbyTimer) this.autoLobbyTimer.clear();
+    if (this.trickleLobbyTimer) this.trickleLobbyTimer.clear();
     liveRooms.delete(this.roomId);
     if (this.state?.code) {
       activeRoomsByCode.delete(this.state.code);
+    }
+    if (this.persistentSlotId) {
+      this.persistentSlotId = "";
+      notifyPersistentSlotReleased();
     }
   }
 }

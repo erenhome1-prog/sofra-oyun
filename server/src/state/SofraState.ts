@@ -47,6 +47,7 @@ export class SofraState extends Schema {
   @type("string") hostId: string = "";
   @type("boolean") fastMode: boolean = false;
   @type("boolean") autoStart: boolean = false;
+  @type("boolean") isPublicMatchmaking: boolean = false;
   @type("number") targetPlayerCount: number = 10;
   @type("string") paceMode: string = "20m";
   @type("string") atmosphereTheme: string = "torch";

@@ -2434,9 +2434,14 @@
           <!-- SAĞ SÜTUN: HIZLI MAÇ, ŞİFRELİ ODA KURMA & CANLI ODALAR -->
           <div class="menu-card">
             <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;">
-              <h3>🏰 2. Odaya Gir veya Şifreli Oda Kur</h3>
-              <button class="btn" id="btn-quick-play" style="background: linear-gradient(180deg,#9c1928,#570b14); color:#fff;">
-                ⚡ Hemen Açık Odaya Gir
+              <h3>🏰 2. Oda Bul veya Şifreli Oda Kur</h3>
+              <button
+                class="btn"
+                id="btn-quick-play"
+                title="Oyuncu bekleyen canlı şato odalarından birine anında katıl"
+                style="background: linear-gradient(180deg,#b82032,#5f0c16); color:#fff; font-weight:bold; box-shadow: 0 0 12px rgba(226, 65, 83, 0.35);"
+              >
+                🔍 Oda Bul (Hızlı Gir)
               </button>
             </div>
 
@@ -2547,8 +2552,8 @@
             </div>
 
             <!-- Canlı Oda Listesi -->
-            <div style="font-size: 0.75rem; color: var(--text-muted);">
-              📋 Açık & Şifreli Canlı Şato Odaları:
+            <div style="font-size: 0.75rem; color: var(--gold); font-weight: bold;">
+              🟢 Oyuncu Bekleyen Canlı Şato Odaları (Tıkla & Katıl):
             </div>
             <div class="room-list-box" id="live-rooms-list">
               <div style="font-size: 0.8rem; color: var(--text-muted);">Odalar yükleniyor...</div>

@@ -50,6 +50,7 @@ interface RoomSummary {
   phase: string;
   fastMode: boolean;
   hostNick: string;
+  isPublicMatchmaking?: boolean;
 }
 
 interface PMThread {
@@ -782,23 +783,29 @@ class SofraGameApp {
           const preset = resolveDurationPreset(r.paceMode, r.fastMode);
           const cap = r.targetPlayerCount || r.maxClients;
           const isLobby = r.phase === "LOBBY";
+          const isWaitingHub = Boolean(r.isPublicMatchmaking && isLobby);
           const isMyActiveRoom = !isLobby && this.activeReconnectRoomId === r.roomId;
           const canJoin = isLobby || isMyActiveRoom;
           const safeTitle = escapeHtml(String(r.roomTitle || "Sofra Odası"));
           const safeCode = escapeHtml(String(r.code || "---"));
           const safeHost = escapeHtml(String(r.hostNick || "Kurucu"));
+          const statusText = isWaitingHub
+            ? `<span style="color:#8ce99a; font-weight:bold;">🟢 Oyuncu Bekliyor (${r.playerCount}/${cap})</span>`
+            : isLobby
+            ? `🟢 Lobide (${r.playerCount}/${cap})`
+            : isMyActiveRoom
+            ? "🔄 Senin Maçın"
+            : "🔥 Maç Devam Ediyor";
           return `
-        <div class="room-row">
+        <div class="room-row" style="${isWaitingHub ? "border-color:rgba(140,233,154,0.38); background:rgba(20,28,22,0.72);" : ""}">
           <div style="min-width:0;">
             <div style="font-weight:bold; font-size:0.85rem; color:var(--gold); display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-              <span>${r.hasPassword ? "🔒" : "🔓"} ${safeTitle}</span>
+              <span>${r.hasPassword ? "🔒" : isWaitingHub ? "🟢" : "🔓"} ${safeTitle}</span>
               <span style="font-size:0.69rem; padding:1px 6px; border-radius:99px; background:rgba(226,189,83,0.16); border:1px solid var(--gold-soft); color:#ffe6a1;">${preset.badge}</span>
               <span style="font-size:0.72rem; color:var(--text-muted);">(${safeCode})</span>
             </div>
             <div style="font-size:0.72rem; color:var(--text-muted);">
-              Kurucu: ${safeHost} · Kadro: ${r.playerCount}/${cap} · ${
-            isLobby ? "🟢 Lobide" : isMyActiveRoom ? "🔄 Senin Maçın" : "🔥 Maç Devam Ediyor"
-          }
+              Masa: ${safeHost} · ${statusText}
             </div>
           </div>
           ${
@@ -808,7 +815,7 @@ class SofraGameApp {
                   data-join-id="${escapeHtml(r.roomId)}"
                   data-has-pass="${r.hasPassword ? "1" : "0"}"
                 >
-                  ${isLobby ? "Katıl" : "🔄 Oyuna Dön"}
+                  ${isWaitingHub ? "⚡ Katıl" : isLobby ? "Katıl" : "🔄 Oyuna Dön"}
                 </button>`
               : `<button class="btn" disabled style="opacity:0.5; cursor:not-allowed;" title="Başlamış maça dışarıdan girilemez">
                   🔥 Oyunda
@@ -891,7 +898,22 @@ class SofraGameApp {
       } else if (mode === "byId" && extra?.roomId) {
         room = await this.client.joinById(extra.roomId, opts);
       } else {
-        room = await this.client.joinOrCreate(SOFRA_CONFIG.ROOM_NAME, opts);
+        // 🔍 Oda Bul (Hızlı Eşleşme): Önce gerçek oyuncu bekleyen veya açık sabit odayı bul!
+        let matchedRoom: Room | null = null;
+        for (let attempt = 0; attempt < 2 && !matchedRoom; attempt++) {
+          try {
+            const mmRes = await fetch(`${this.apiBase}/quick-match`);
+            if (mmRes.ok) {
+              const mmData = await mmRes.json();
+              if (mmData?.room?.roomId) {
+                matchedRoom = await this.client.joinById(String(mmData.room.roomId), opts);
+              }
+            }
+          } catch {
+            matchedRoom = null;
+          }
+        }
+        room = matchedRoom ?? (await this.client.joinOrCreate(SOFRA_CONFIG.ROOM_NAME, opts));
       }
 
       this.bindActiveRoom(room);
@@ -4835,7 +4857,7 @@ class SofraGameApp {
       .map(([s, t]) => `${s}:${t}`)
       .join(",");
     const tieKey = this.getActiveTieCandidateIds(state).join(",");
-    const hash = `${phase}|${state.round}|${this.myRole?.role || ""}|${this.myHasSecretNecklace}|${trialSecretKey}|${state.fastMode}|${state.paceMode || "normal"}|${state.targetPlayerCount || 10}|${state.atmosphereTheme || "torch"}|${state.autoStart}|${state.pot}|${state.lastBurnedId}|${state.lastBurnedFlame}|${state.winReason}|${this.lastVoteReveal.length}|${this.mobileLobbyTab}|${this.vault.gold}|${this.vault.selectedSeat}|${this.vault.coatColor}|${this.vault.hat}|${this.vault.mask}|${this.selectedVoteTargetId}|${this.selectedNightTargetId}|${this.selectedFinalChoice}|${this.isLocalReadyForPhase}|${this.isNightSealed}|${this.readyStatusText}|${tieKey}|${this.preTargetSeat}|${stampsKey}|${this.clueJournal.length}|${trialKey}|${picksKey}|${this.nightConclaveLogs.length}|${this.nightWatchNote}|${Boolean(this.gameOverSummary)}|${playerSummary}`;
+    const hash = `${phase}|${state.round}|${state.hostId || ""}|${Boolean(state.isPublicMatchmaking)}|${this.myRole?.role || ""}|${this.myHasSecretNecklace}|${trialSecretKey}|${state.fastMode}|${state.paceMode || "normal"}|${state.targetPlayerCount || 10}|${state.atmosphereTheme || "torch"}|${state.autoStart}|${state.pot}|${state.lastBurnedId}|${state.lastBurnedFlame}|${state.winReason}|${this.lastVoteReveal.length}|${this.mobileLobbyTab}|${this.vault.gold}|${this.vault.selectedSeat}|${this.vault.coatColor}|${this.vault.hat}|${this.vault.mask}|${this.selectedVoteTargetId}|${this.selectedNightTargetId}|${this.selectedFinalChoice}|${this.isLocalReadyForPhase}|${this.isNightSealed}|${this.readyStatusText}|${tieKey}|${this.preTargetSeat}|${stampsKey}|${this.clueJournal.length}|${trialKey}|${picksKey}|${this.nightConclaveLogs.length}|${this.nightWatchNote}|${Boolean(this.gameOverSummary)}|${playerSummary}`;
 
     if (hash === this.lastCenterRenderHash) return;
     this.lastCenterRenderHash = hash;
@@ -4879,6 +4901,7 @@ class SofraGameApp {
     const playerCount = state.players?.size || 1;
     const myId = this.room?.sessionId || "";
     const isHost = state.hostId === myId;
+    const isMatchmaking = Boolean(state.isPublicMatchmaking);
     const targetCount = state.targetPlayerCount || 10;
     const activePreset = resolveDurationPreset(state.paceMode, state.fastMode);
     const paceMode = activePreset.id;
@@ -4896,16 +4919,28 @@ class SofraGameApp {
     panel.innerHTML = `
       <div class="panel-header">
         <div>
-          <h2>🏰 ${state.hasPassword ? "🔒" : "🔓"} ${escapeHtml(state.roomTitle || "ORTA ÇAĞ SOFRA LOBİSİ")} (${playerCount}/${targetCount})</h2>
+          <h2>${isMatchmaking ? "🔍" : "🏰"} ${state.hasPassword ? "🔒" : isMatchmaking ? "🟢" : "🔓"} ${escapeHtml(
+      state.roomTitle || "ORTA ÇAĞ SOFRA LOBİSİ"
+    )} (${playerCount}/${targetCount})</h2>
           <span style="font-size:0.75rem; color:var(--text-muted);">
-            Oda Kodu: <strong style="color:var(--gold);">${escapeHtml(state.code || "---")}</strong> · <strong style="color:#ffe6a1;">${escapeHtml(activePreset.title)}</strong> (${escapeHtml(activePreset.summary)})
+            Oda Kodu: <strong style="color:var(--gold);">${escapeHtml(state.code || "---")}</strong> · <strong style="color:#ffe6a1;">${escapeHtml(
+      activePreset.title
+    )}</strong> (${escapeHtml(activePreset.summary)})${
+      isMatchmaking
+        ? ` · <strong style="color:#8ce99a;">✨ Oyuncular toplanıyor, kadro dolunca otomatik başlar!</strong>`
+        : ""
+    }
           </span>
         </div>
-        <div style="display:flex; gap:6px; flex-wrap:wrap;">
+        <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
           <button class="btn" id="btn-lobby-inspect-self">🔍 360° Karakterim</button>
           <button class="btn" id="btn-share-room">🔗 Davet Kopyala</button>
           ${
-            isHost
+            isMatchmaking
+              ? isHost
+                ? `<button class="btn btn-crimson" id="btn-start-game">⚡ Hemen Başlat</button>`
+                : `<span style="font-size:0.8rem; color:#8ce99a;">⏳ Oyuncular katılıyor (${playerCount}/${targetCount})...</span>`
+              : isHost
               ? `
             <button class="btn" id="btn-add-bots">🤖 Bot Doldur</button>
             ${
@@ -4932,7 +4967,7 @@ class SofraGameApp {
             .map(
               (o) =>
                 `<button class="btn ${targetCount === o.n ? "btn-crimson" : ""}" data-opt-count="${o.n}" ${
-                  !isHost ? "disabled" : ""
+                  !isHost || isMatchmaking ? "disabled" : ""
                 } style="padding:3px 8px; font-size:0.71rem;">${o.lbl}</button>`
             )
             .join("")}
@@ -4948,7 +4983,7 @@ class SofraGameApp {
             .map(
               (p) =>
                 `<button class="btn ${paceMode === p.k ? "btn-crimson" : ""}" data-opt-pace="${p.k}" ${
-                  !isHost ? "disabled" : ""
+                  !isHost || isMatchmaking ? "disabled" : ""
                 } style="padding:3px 8px; font-size:0.71rem;">${p.lbl}</button>`
             )
             .join("")}
@@ -4992,7 +5027,9 @@ class SofraGameApp {
                   : takenByHuman
                   ? `<span style="color:#ff8593;">👤 Dolu: ${escapeHtml(occ!.nick)}</span>`
                   : occ?.isBot
-                  ? `<span style="color:#ffd166;">🤖 Bot (Dokun & Geç)</span>`
+                  ? isMatchmaking
+                    ? `<span style="color:#ffd166;">👤 Hazır: ${escapeHtml(occ!.nick)}</span>`
+                    : `<span style="color:#ffd166;">🤖 Bot (Dokun & Geç)</span>`
                   : `<span style="color:#8ce99a;">🟢 Boş Koltuk</span>`;
                 return `
               <div class="seat-card ${isMine ? "active" : ""}" data-seat="${c.seat}" data-human-locked="${
