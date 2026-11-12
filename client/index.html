@@ -1055,6 +1055,35 @@
         gap: 3px;
       }
 
+      #chat-log,
+      .ko-pm-messages {
+        scrollbar-width: thin;
+        scrollbar-color: rgba(226, 189, 83, 0.58) rgba(14, 10, 22, 0.55);
+      }
+
+      #chat-log::-webkit-scrollbar,
+      .ko-pm-messages::-webkit-scrollbar {
+        width: 6px;
+        height: 6px;
+      }
+
+      #chat-log::-webkit-scrollbar-track,
+      .ko-pm-messages::-webkit-scrollbar-track {
+        background: rgba(14, 10, 22, 0.55);
+        border-radius: 99px;
+      }
+
+      #chat-log::-webkit-scrollbar-thumb,
+      .ko-pm-messages::-webkit-scrollbar-thumb {
+        background: linear-gradient(180deg, rgba(226, 189, 83, 0.75), rgba(168, 126, 38, 0.75));
+        border-radius: 99px;
+      }
+
+      #chat-log::-webkit-scrollbar-thumb:hover,
+      .ko-pm-messages::-webkit-scrollbar-thumb:hover {
+        background: #ffd166;
+      }
+
       .ko-pm-form {
         display: flex;
         gap: 4px;
@@ -1067,25 +1096,151 @@
         font-size: 16px;
       }
 
-      /* Alt Orta Knight Online Chat Kutusu (Kompakt & Yarı Saydam) */
+      /* Alt Orta Knight Online Chat Kutusu (Kompakt, Yarı Saydam & Sürükleyerek Uzatılabilir) */
       #ko-bottom-chat {
+        position: relative;
         flex-shrink: 0;
         align-self: center;
-        width: min(355px, 92%);
-        background: rgba(11, 8, 18, 0.74);
+        width: var(--chat-box-w, min(360px, 92%));
+        max-width: 96vw;
+        background: rgba(11, 8, 18, 0.76);
         border: 1px solid var(--gold-soft);
         border-radius: 9px;
-        padding: 4px 7px;
+        padding: 3px 7px 4px 7px;
         display: flex;
         flex-direction: column;
         gap: 4px;
         z-index: 30;
-        transition: opacity 0.2s ease, background 0.2s ease;
+        transition: opacity 0.2s ease, background 0.2s ease, border-color 0.15s ease;
       }
 
-      body.in-day-mode #ko-bottom-chat:not(:focus-within):not(:hover) {
+      body.in-day-mode #ko-bottom-chat:not(:focus-within):not(:hover):not(.resizing):not(.chat-expanded) {
         opacity: 0.76;
         background: rgba(11, 8, 18, 0.56);
+      }
+
+      #ko-bottom-chat.chat-expanded {
+        background: rgba(11, 8, 18, 0.86);
+        border-color: rgba(226, 189, 83, 0.65);
+      }
+
+      #ko-bottom-chat.resizing {
+        opacity: 0.98 !important;
+        background: rgba(11, 8, 18, 0.92) !important;
+        border-color: #ffd166 !important;
+        box-shadow: 0 0 18px rgba(255, 209, 102, 0.28);
+        transition: none !important;
+        user-select: none;
+      }
+
+      /* Üst Tutamaç Çubuğu + Köşe/Kenar Uzatma Tutamaçları (PC Fare + Mobil Parmak Uyumlu) */
+      .ko-chat-resize-handle {
+        position: relative;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 10px;
+        margin: -1px 10px 0 10px;
+        cursor: ns-resize;
+        touch-action: none;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+
+      .ko-chat-resize-handle::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        right: 0;
+        top: -9px;
+        bottom: -4px;
+      }
+
+      .ko-chat-grip-pill {
+        width: 46px;
+        height: 4px;
+        border-radius: 99px;
+        background: rgba(226, 189, 83, 0.52);
+        border: 1px solid rgba(255, 226, 138, 0.35);
+        box-shadow: 0 1px 4px rgba(0, 0, 0, 0.55);
+        transition: transform 0.15s ease, background 0.15s ease;
+        pointer-events: none;
+      }
+
+      .ko-chat-resize-handle:hover .ko-chat-grip-pill,
+      #ko-bottom-chat.resizing .ko-chat-grip-pill {
+        background: #ffd166;
+        transform: scaleX(1.18);
+      }
+
+      .ko-chat-corner-grip {
+        position: absolute;
+        top: -6px;
+        width: 20px;
+        height: 20px;
+        z-index: 4;
+        touch-action: none;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+
+      .ko-chat-corner-grip.nw {
+        left: -6px;
+        cursor: nwse-resize;
+      }
+
+      .ko-chat-corner-grip.ne {
+        right: -6px;
+        cursor: nesw-resize;
+      }
+
+      .ko-chat-corner-grip::after {
+        content: "";
+        position: absolute;
+        top: 6px;
+        width: 8px;
+        height: 8px;
+        border-color: rgba(226, 189, 83, 0.55);
+        border-style: solid;
+        pointer-events: none;
+        transition: border-color 0.15s ease;
+      }
+
+      .ko-chat-corner-grip.nw::after {
+        left: 6px;
+        border-width: 2px 0 0 2px;
+        border-top-left-radius: 6px;
+      }
+
+      .ko-chat-corner-grip.ne::after {
+        right: 6px;
+        border-width: 2px 2px 0 0;
+        border-top-right-radius: 6px;
+      }
+
+      .ko-chat-corner-grip:hover::after,
+      #ko-bottom-chat.resizing .ko-chat-corner-grip::after {
+        border-color: #ffd166;
+      }
+
+      .ko-chat-edge-grip {
+        position: absolute;
+        top: 14px;
+        bottom: 6px;
+        width: 11px;
+        z-index: 3;
+        cursor: ew-resize;
+        touch-action: none;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+
+      .ko-chat-edge-grip.w {
+        left: -6px;
+      }
+
+      .ko-chat-edge-grip.e {
+        right: -6px;
       }
 
       .ko-chat-tabs {
@@ -1112,11 +1267,13 @@
       }
 
       #chat-log {
-        height: 38px;
+        height: var(--chat-log-h, 42px);
         overflow-y: auto;
         -webkit-overflow-scrolling: touch;
         touch-action: pan-y;
         font-size: 0.72rem;
+        line-height: 1.32;
+        padding-right: 3px;
         display: flex;
         flex-direction: column;
         gap: 2px;
@@ -1847,14 +2004,14 @@
           grid-template-columns: repeat(auto-fill, minmax(146px, 1fr));
         }
         body.in-day-mode #ko-bottom-chat {
-          width: clamp(190px, calc(100vw - 360px), 340px);
+          width: var(--chat-box-w, clamp(190px, calc(100vw - 360px), 340px));
           margin-bottom: 2px;
         }
       }
 
       @media (max-width: 560px) {
         body.in-day-mode #ko-bottom-chat {
-          width: 94%;
+          width: var(--chat-box-w, 94%);
           margin-bottom: 164px;
         }
       }
@@ -2040,16 +2197,16 @@
           font-size: 0.71rem;
         }
         #ko-bottom-chat {
-          width: min(380px, 46vw);
-          padding: 3px 7px;
+          width: var(--chat-box-w, min(380px, 46vw));
+          padding: 2px 7px 3px 7px;
           gap: 3px;
         }
         body.in-day-mode #ko-bottom-chat {
-          width: clamp(188px, calc(100vw - 354px), 350px);
+          width: var(--chat-box-w, clamp(188px, calc(100vw - 354px), 350px));
           margin-bottom: 2px;
         }
         #chat-log {
-          height: 34px;
+          height: var(--chat-log-h, 34px);
           font-size: 0.7rem;
         }
         .left-control-cluster {
@@ -2620,18 +2777,51 @@
         <div id="center-panel" class="center-panel interactive"></div>
       </div>
 
-      <!-- KNIGHT ONLINE TARZI ALT SOHBET KUTUSU -->
+      <!-- KNIGHT ONLINE TARZI ALT SOHBET KUTUSU (UZATARAK BÜYÜTÜLEBİLİR) -->
       <div id="ko-bottom-chat" class="interactive">
+        <div
+          class="ko-chat-corner-grip nw"
+          data-chat-resize="nw"
+          title="Sohbeti köşeden uzat / genişlet"
+        ></div>
+        <div
+          class="ko-chat-corner-grip ne"
+          data-chat-resize="ne"
+          title="Sohbeti köşeden uzat / genişlet"
+        ></div>
+        <div class="ko-chat-edge-grip w" data-chat-resize="w" title="Sohbeti yana genişlet"></div>
+        <div class="ko-chat-edge-grip e" data-chat-resize="e" title="Sohbeti yana genişlet"></div>
+        <div
+          id="ko-chat-resize-handle"
+          class="ko-chat-resize-handle"
+          data-chat-resize="n"
+          title="Yukarı / aşağı sürükleyerek sohbeti uzat veya küçült"
+        >
+          <span class="ko-chat-grip-pill"></span>
+        </div>
         <div class="ko-chat-tabs">
           <div style="display: flex; gap: 4px; align-items: center;">
-            <button class="ko-tab-btn active" id="btn-chat-all">💬 Sohbet</button>
-            <button class="ko-tab-btn" id="btn-open-dm-list" style="color: #e3b3ff; border-color: rgba(201,139,255,0.4);">
+            <button class="ko-tab-btn active" type="button" id="btn-chat-all">💬 Sohbet</button>
+            <button
+              class="ko-tab-btn"
+              type="button"
+              id="btn-open-dm-list"
+              style="color: #e3b3ff; border-color: rgba(201,139,255,0.4);"
+            >
               🤫 Özel DM
             </button>
           </div>
-          <div style="display: flex; gap: 6px; align-items: center;">
+          <div style="display: flex; gap: 5px; align-items: center;">
             <span id="fps-label" style="font-size: 0.65rem; color: var(--text-muted);">60 FPS</span>
-            <button class="ko-tab-btn" id="btn-toggle-chat-min" title="Sohbeti Küçült/Büyüt">▾</button>
+            <button
+              class="ko-tab-btn"
+              type="button"
+              id="btn-expand-chat"
+              title="Sohbeti Büyüt / Boyut Değiştir (Üst çubuğu sürükleyerek de uzatabilirsin)"
+            >
+              ↕
+            </button>
+            <button class="ko-tab-btn" type="button" id="btn-toggle-chat-min" title="Sohbeti Gizle / Aç">▾</button>
           </div>
         </div>
         <div id="chat-log"></div>

@@ -234,6 +234,10 @@ class SofraGameApp {
   private inspectedFromHandbook = false;
   private resetPointersFn: (() => void) | null = null;
   private toastHideTimer: number | null = null;
+  private chatUserLogHeight: number | null = null;
+  private chatUserBoxWidth: number | null = null;
+  private chatSizePresetIdx = 0;
+  private chatPanelOverridePhase = "";
 
   constructor() {
     const container = document.getElementById("canvas-container")!;
@@ -282,8 +286,10 @@ class SofraGameApp {
         setTimeout(() => {
           window.scrollTo(0, 0);
           this.scene.forceResize();
+          this.syncChatDimensions(false);
         }, 80);
       }
+      this.syncChatDimensions(false);
     };
 
     const syncOrientationState = () => {
@@ -1801,6 +1807,122 @@ class SofraGameApp {
     document.getElementById("hud-gear-dropdown")?.classList.add("hidden");
   }
 
+  private getChatSizeBounds(): {
+    phase: string;
+    isDay: boolean;
+    isShortViewport: boolean;
+    minH: number;
+    dragMaxH: number;
+    autoCapH: number;
+    minW: number;
+    maxW: number;
+  } {
+    const vw = Math.max(320, window.innerWidth || 360);
+    const vvH = window.visualViewport?.height || window.innerHeight || 360;
+    const vh = Math.max(200, Math.min(window.innerHeight || vvH, vvH));
+    const phase = String((this.room?.state as any)?.phase || "LOBBY");
+    const isDay = document.body.classList.contains("in-day-mode") || phase === "DAY";
+    const isShortViewport = vh <= 600;
+    const minH = vh <= 560 ? 34 : 42;
+
+    let dragMaxH: number;
+    let autoCapH: number;
+    if (isDay) {
+      const topAndChromeReserve = vh <= 560 ? 190 : 184;
+      dragMaxH = Math.max(minH, Math.min(440, vh - topAndChromeReserve));
+      autoCapH = dragMaxH;
+    } else if (isShortViewport) {
+      dragMaxH = Math.max(minH, Math.floor(vh * 0.4));
+      autoCapH = Math.max(minH, Math.floor(vh * 0.16));
+    } else {
+      dragMaxH = Math.max(minH + 40, Math.min(310, Math.floor(vh * 0.34)));
+      autoCapH = dragMaxH;
+    }
+
+    let minW: number;
+    let maxW: number;
+    if (isDay) {
+      if (vw <= 560) {
+        maxW = Math.max(210, Math.floor(vw * 0.94));
+        minW = Math.min(230, maxW);
+      } else {
+        // Sol Kontrol Kümesi (🔍+ dahil, iPhone çentik payı dahil) + Sağ Aksiyon Çarkı arasına taşmayacak dinamik sınır
+        let safeCorridorW = vw - 380;
+        const leftCluster = document.querySelector(".left-control-cluster") as HTMLElement | null;
+        const rightWheel = document.querySelector(".lol-wheel-cluster") as HTMLElement | null;
+        const centerX = vw / 2;
+        if (leftCluster && leftCluster.offsetParent !== null) {
+          const lr = leftCluster.getBoundingClientRect();
+          if (lr.width > 0 && lr.right < centerX) {
+            safeCorridorW = Math.min(safeCorridorW, Math.floor((centerX - lr.right - 8) * 2));
+          }
+        }
+        if (rightWheel && rightWheel.offsetParent !== null) {
+          const rr = rightWheel.getBoundingClientRect();
+          if (rr.width > 0 && rr.left > centerX) {
+            safeCorridorW = Math.min(safeCorridorW, Math.floor((rr.left - centerX - 8) * 2));
+          }
+        }
+        maxW = Math.max(192, Math.min(720, safeCorridorW));
+        minW = Math.min(220, maxW);
+      }
+    } else {
+      maxW = Math.max(240, Math.min(740, Math.floor(vw * 0.9)));
+      minW = Math.min(260, maxW);
+    }
+
+    return { phase, isDay, isShortViewport, minH, dragMaxH, autoCapH, minW, maxW };
+  }
+
+  private syncChatDimensions(keepScrollBottom = false): void {
+    const bottomChat = document.getElementById("ko-bottom-chat");
+    if (!bottomChat) return;
+    const bounds = this.getChatSizeBounds();
+    const expandBtn = document.getElementById("btn-expand-chat");
+
+    if (this.chatUserLogHeight !== null) {
+      const capH =
+        !bounds.isDay && bounds.isShortViewport && this.chatPanelOverridePhase !== bounds.phase
+          ? bounds.autoCapH
+          : bounds.dragMaxH;
+      const clampedH = Math.round(Math.max(bounds.minH, Math.min(capH, this.chatUserLogHeight)));
+      const nextH = `${clampedH}px`;
+      if (bottomChat.style.getPropertyValue("--chat-log-h") !== nextH) {
+        bottomChat.style.setProperty("--chat-log-h", nextH);
+      }
+      bottomChat.classList.toggle("chat-expanded", clampedH > bounds.minH + 10);
+    } else {
+      if (bottomChat.style.getPropertyValue("--chat-log-h")) {
+        bottomChat.style.removeProperty("--chat-log-h");
+      }
+      bottomChat.classList.remove("chat-expanded");
+    }
+
+    if (this.chatUserBoxWidth !== null) {
+      const clampedW = Math.round(Math.max(bounds.minW, Math.min(bounds.maxW, this.chatUserBoxWidth)));
+      const nextW = `${clampedW}px`;
+      if (bottomChat.style.getPropertyValue("--chat-box-w") !== nextW) {
+        bottomChat.style.setProperty("--chat-box-w", nextW);
+      }
+    } else if (bottomChat.style.getPropertyValue("--chat-box-w")) {
+      bottomChat.style.removeProperty("--chat-box-w");
+    }
+
+    if (expandBtn) {
+      const isExpanded =
+        (this.chatUserLogHeight !== null && this.chatUserLogHeight > bounds.minH + 10) ||
+        this.chatUserBoxWidth !== null;
+      expandBtn.classList.toggle("active", isExpanded);
+    }
+
+    if (keepScrollBottom) {
+      const chatLog = document.getElementById("chat-log");
+      if (chatLog) {
+        chatLog.scrollTop = chatLog.scrollHeight;
+      }
+    }
+  }
+
   // ==========================================================================
   // HUD AKSİYONLARI & WILD RIFT + HİBRİT YÖN KONTROLLERİ
   // ==========================================================================
@@ -1936,18 +2058,140 @@ class SofraGameApp {
 
     document.getElementById("btn-wheel-door")?.addEventListener("click", () => this.tryInteractNearestDoor());
 
-    // Alt sohbet küçült/büyüt
+    // Alt sohbet küçült/büyüt + sürükleyerek uzatma (PC Fare & Mobil Dokunmatik Uyumlu)
     const bottomChat = document.getElementById("ko-bottom-chat")!;
+    const chatLogEl = document.getElementById("chat-log")!;
     const minChatBtn = document.getElementById("btn-toggle-chat-min");
-    minChatBtn?.addEventListener("click", (e) => {
-      bottomChat.classList.toggle("minimized");
-      (e.currentTarget as HTMLElement).textContent = bottomChat.classList.contains("minimized") ? "▴" : "▾";
-    });
-    document.getElementById("btn-chat-all")?.addEventListener("click", () => {
+    const expandChatBtn = document.getElementById("btn-expand-chat");
+
+    const ensureChatUnminimized = () => {
       if (bottomChat.classList.contains("minimized")) {
         bottomChat.classList.remove("minimized");
         if (minChatBtn) minChatBtn.textContent = "▾";
       }
+    };
+
+    minChatBtn?.addEventListener("click", (e) => {
+      bottomChat.classList.toggle("minimized");
+      (e.currentTarget as HTMLElement).textContent = bottomChat.classList.contains("minimized") ? "▴" : "▾";
+    });
+
+    expandChatBtn?.addEventListener("click", () => {
+      ensureChatUnminimized();
+      this.chatSizePresetIdx = (this.chatSizePresetIdx + 1) % 3;
+      const bounds = this.getChatSizeBounds();
+      if (this.chatSizePresetIdx === 0) {
+        this.chatUserLogHeight = null;
+        this.chatUserBoxWidth = null;
+        this.chatPanelOverridePhase = "";
+      } else if (this.chatSizePresetIdx === 1) {
+        this.chatPanelOverridePhase = bounds.phase;
+        this.chatUserLogHeight = Math.round(bounds.minH + (bounds.dragMaxH - bounds.minH) * 0.52);
+        const targetMidW = window.innerWidth <= 940 ? 410 : 470;
+        this.chatUserBoxWidth = Math.round(Math.max(bounds.minW, Math.min(bounds.maxW, targetMidW)));
+      } else {
+        this.chatPanelOverridePhase = bounds.phase;
+        this.chatUserLogHeight = bounds.dragMaxH;
+        const targetMaxW = window.innerWidth <= 940 ? 490 : 600;
+        this.chatUserBoxWidth = Math.round(Math.max(bounds.minW, Math.min(bounds.maxW, targetMaxW)));
+      }
+      sfx.playUiClick();
+      this.syncChatDimensions(true);
+    });
+
+    document.getElementById("ko-chat-resize-handle")?.addEventListener("dblclick", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      ensureChatUnminimized();
+      const bounds = this.getChatSizeBounds();
+      if (this.chatUserLogHeight !== null && this.chatUserLogHeight > bounds.minH + 14) {
+        this.chatUserLogHeight = null;
+        this.chatUserBoxWidth = null;
+        this.chatSizePresetIdx = 0;
+        this.chatPanelOverridePhase = "";
+      } else {
+        this.chatPanelOverridePhase = bounds.phase;
+        this.chatUserLogHeight = Math.round(bounds.minH + (bounds.dragMaxH - bounds.minH) * 0.72);
+        this.chatSizePresetIdx = 2;
+      }
+      this.syncChatDimensions(true);
+    });
+
+    bottomChat.querySelectorAll<HTMLElement>("[data-chat-resize]").forEach((grip) => {
+      const mode = grip.dataset.chatResize || "n";
+      let activePid: number | null = null;
+      let startX = 0;
+      let startY = 0;
+      let startLogH = 42;
+      let startBoxW = 355;
+
+      const finishDrag = (ev: PointerEvent) => {
+        if (activePid === null || ev.pointerId !== activePid) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        try {
+          if (grip.hasPointerCapture(activePid)) {
+            grip.releasePointerCapture(activePid);
+          }
+        } catch {
+          // ignore release errors
+        }
+        activePid = null;
+        bottomChat.classList.remove("resizing");
+        const bounds = this.getChatSizeBounds();
+        if (this.chatUserLogHeight !== null && this.chatUserLogHeight <= bounds.minH + 2 && this.chatUserBoxWidth === null) {
+          this.chatUserLogHeight = null;
+          this.chatSizePresetIdx = 0;
+        } else if (this.chatUserLogHeight !== null) {
+          this.chatSizePresetIdx = this.chatUserLogHeight >= bounds.dragMaxH * 0.75 ? 2 : 1;
+        }
+        this.syncChatDimensions(true);
+      };
+
+      grip.addEventListener("pointerdown", (ev) => {
+        if (ev.pointerType === "mouse" && ev.button !== 0) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        ensureChatUnminimized();
+        const bounds = this.getChatSizeBounds();
+        this.chatPanelOverridePhase = bounds.phase;
+        activePid = ev.pointerId;
+        startX = ev.clientX;
+        startY = ev.clientY;
+        startLogH = chatLogEl.getBoundingClientRect().height || bounds.minH;
+        startBoxW = bottomChat.getBoundingClientRect().width || 355;
+        bottomChat.classList.add("resizing");
+        try {
+          grip.setPointerCapture(ev.pointerId);
+        } catch {
+          // ignore capture errors
+        }
+      });
+
+      grip.addEventListener("pointermove", (ev) => {
+        if (activePid === null || ev.pointerId !== activePid) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        const bounds = this.getChatSizeBounds();
+        if (mode.includes("n")) {
+          const dy = startY - ev.clientY;
+          this.chatUserLogHeight = Math.max(bounds.minH, Math.min(bounds.dragMaxH, startLogH + dy));
+        }
+        if (mode.includes("e") || mode.includes("w")) {
+          const dx = ev.clientX - startX;
+          const signedDx = mode.includes("w") ? -dx : dx;
+          // Ortalanmış kutuda (align-self: center) kenarın parmak/imleç altında 1:1 kalması için 2x fark uygulanır
+          this.chatUserBoxWidth = Math.max(bounds.minW, Math.min(bounds.maxW, startBoxW + signedDx * 2));
+        }
+        this.syncChatDimensions(true);
+      });
+
+      grip.addEventListener("pointerup", finishDrag);
+      grip.addEventListener("pointercancel", finishDrag);
+    });
+
+    document.getElementById("btn-chat-all")?.addEventListener("click", () => {
+      ensureChatUnminimized();
       (document.getElementById("chat-input") as HTMLInputElement | null)?.focus();
     });
 
@@ -6455,6 +6699,9 @@ class SofraGameApp {
           this.gameOverSummary = null;
           this.resetHandbookForNewMatch();
         }
+        if (state.phase !== "DAY") {
+          this.chatPanelOverridePhase = "";
+        }
         this.lastPhase = state.phase;
         this.lastCenterRenderHash = "";
       }
@@ -6476,8 +6723,14 @@ class SofraGameApp {
       }
 
       const isDay = state.phase === "DAY";
+      const wasInDayClass = document.body.classList.contains("in-day-mode");
       document.body.classList.toggle("in-day-mode", isDay);
       document.getElementById("day-action-hud")?.classList.toggle("day-active", isDay);
+      if (wasInDayClass !== isDay) {
+        this.syncChatDimensions(false);
+      } else if (this.chatUserLogHeight !== null || this.chatUserBoxWidth !== null) {
+        this.syncChatDimensions(false);
+      }
       if (isDay) {
         this.renderDayExtraActions(state);
       }
