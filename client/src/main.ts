@@ -3,13 +3,16 @@ import {
   CHARACTERS,
   COUNCIL_BOARD_POS,
   DOORS,
+  MATCH_DURATION_PRESETS,
   MEDIEVAL_STATIONS,
+  MatchDurationMode,
   MedievalStationDef,
   PUZZLE_ALTARS,
   SOFRA_CONFIG,
   detectRoomZone,
   normalizeRoomCode,
-  resolveCastleCollision
+  resolveCastleCollision,
+  resolveDurationPreset
 } from "@sofra/shared";
 import { CastleScene, CharacterVisualState } from "./castleScene";
 import { sfx } from "./sfx";
@@ -41,6 +44,8 @@ interface RoomSummary {
   playerCount: number;
   humanCount: number;
   maxClients: number;
+  targetPlayerCount?: number;
+  paceMode?: string;
   phase: string;
   fastMode: boolean;
   hostNick: string;
@@ -115,6 +120,8 @@ class SofraGameApp {
 
   private vault: VaultData;
   private authTabMode: "guest" | "register" | "login" = "guest";
+  private createPaceMode: MatchDurationMode = "20m";
+  private createPlayerCount: 8 | 10 | 12 = 10;
   private myRole: SecretRolePayload | null = null;
   private lastPhase = "";
   private lastCenterRenderHash = "";
@@ -513,11 +520,56 @@ class SofraGameApp {
       this.joinRoomFlow("quick");
     });
 
+    // Oda Kurma Kutusu: Oyun Süresi (10 Dk / 20 Dk / 35 Dk / 1 Saat) & Kadro (8 / 10 / 12) Seçimi
+    const updateCreateSummary = () => {
+      const preset = MATCH_DURATION_PRESETS[this.createPaceMode];
+      document.querySelectorAll("[data-create-pace]").forEach((el) => {
+        el.classList.toggle("btn-crimson", (el as HTMLElement).dataset.createPace === this.createPaceMode);
+      });
+      document.querySelectorAll("[data-create-count]").forEach((el) => {
+        el.classList.toggle(
+          "btn-crimson",
+          Number((el as HTMLElement).dataset.createCount) === this.createPlayerCount
+        );
+      });
+      const descEl = document.getElementById("create-duration-desc");
+      if (descEl) {
+        descEl.textContent = `${preset.title} (${this.createPlayerCount} Kişi) — ${preset.summary}`;
+      }
+    };
+
+    document.querySelectorAll("[data-create-pace]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const mode = ((btn as HTMLElement).dataset.createPace || "20m") as MatchDurationMode;
+        if (MATCH_DURATION_PRESETS[mode]) {
+          this.createPaceMode = mode;
+          this.createPlayerCount = MATCH_DURATION_PRESETS[mode].defaultPlayers;
+          updateCreateSummary();
+        }
+      });
+    });
+
+    document.querySelectorAll("[data-create-count]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const cnt = Number((btn as HTMLElement).dataset.createCount) as 8 | 10 | 12;
+        if (cnt === 8 || cnt === 10 || cnt === 12) {
+          this.createPlayerCount = cnt;
+          updateCreateSummary();
+        }
+      });
+    });
+    updateCreateSummary();
+
     document.getElementById("btn-create-room")?.addEventListener("click", () => {
       this.syncGuestNameFromInput();
       const title = (document.getElementById("input-create-title") as HTMLInputElement).value.trim();
       const pass = (document.getElementById("input-create-pass") as HTMLInputElement).value.trim();
-      this.joinRoomFlow("create", { roomTitle: title, roomPassword: pass });
+      this.joinRoomFlow("create", {
+        roomTitle: title,
+        roomPassword: pass,
+        paceMode: this.createPaceMode,
+        targetPlayerCount: this.createPlayerCount
+      });
     });
 
     document.getElementById("btn-join-by-code")?.addEventListener("click", async () => {
@@ -621,16 +673,19 @@ class SofraGameApp {
       }
 
       listEl.innerHTML = rooms
-        .map(
-          (r) => `
+        .map((r) => {
+          const preset = resolveDurationPreset(r.paceMode, r.fastMode);
+          const cap = r.targetPlayerCount || r.maxClients;
+          return `
         <div class="room-row">
           <div>
-            <div style="font-weight:bold; font-size:0.86rem; color:var(--gold);">
-              ${r.hasPassword ? "🔒" : "🔓"} ${r.roomTitle}
+            <div style="font-weight:bold; font-size:0.86rem; color:var(--gold); display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+              <span>${r.hasPassword ? "🔒" : "🔓"} ${r.roomTitle}</span>
+              <span style="font-size:0.69rem; padding:1px 6px; border-radius:99px; background:rgba(226,189,83,0.16); border:1px solid var(--gold-soft); color:#ffe6a1;">${preset.badge}</span>
               <span style="font-size:0.72rem; color:var(--text-muted);">(${r.code})</span>
             </div>
             <div style="font-size:0.72rem; color:var(--text-muted);">
-              Kurucu: ${r.hostNick} · Oyuncu: ${r.playerCount}/${r.maxClients} · ${
+              Kurucu: ${r.hostNick} · Kadro: ${r.playerCount}/${cap} · ${
             r.phase === "LOBBY" ? "🟢 Lobide" : "🔥 Oyunda"
           }
             </div>
@@ -643,8 +698,8 @@ class SofraGameApp {
             ${r.phase === "LOBBY" ? "Katıl" : "İzle/Dön"}
           </button>
         </div>
-      `
-        )
+      `;
+        })
         .join("");
 
       listEl.querySelectorAll("[data-join-id]").forEach((btn) => {
@@ -688,7 +743,13 @@ class SofraGameApp {
 
   private async joinRoomFlow(
     mode: "quick" | "create" | "byId",
-    extra?: { roomId?: string; roomTitle?: string; roomPassword?: string }
+    extra?: {
+      roomId?: string;
+      roomTitle?: string;
+      roomPassword?: string;
+      paceMode?: string;
+      targetPlayerCount?: number;
+    }
   ): Promise<void> {
     try {
       const charDef =
@@ -702,7 +763,9 @@ class SofraGameApp {
         hat: this.vault.hat,
         mask: this.vault.mask,
         roomTitle: extra?.roomTitle || "",
-        roomPassword: extra?.roomPassword || ""
+        roomPassword: extra?.roomPassword || "",
+        paceMode: extra?.paceMode || "20m",
+        targetPlayerCount: extra?.targetPlayerCount || 10
       };
 
       let room: Room;
@@ -3550,7 +3613,8 @@ class SofraGameApp {
     const playerCount = state.players?.size || 1;
     const isHost = state.hostId === this.room?.sessionId;
     const targetCount = state.targetPlayerCount || 10;
-    const paceMode = state.paceMode || (state.fastMode ? "fast" : "normal");
+    const activePreset = resolveDurationPreset(state.paceMode, state.fastMode);
+    const paceMode = activePreset.id;
     const atmo = state.atmosphereTheme || "torch";
 
     panel.innerHTML = `
@@ -3558,7 +3622,7 @@ class SofraGameApp {
         <div>
           <h2>🏰 ${state.hasPassword ? "🔒" : "🔓"} ${state.roomTitle || "ORTA ÇAĞ SOFRA LOBİSİ"} (${playerCount}/${targetCount})</h2>
           <span style="font-size:0.75rem; color:var(--text-muted);">
-            Oda Kodu: <strong style="color:var(--gold);">${state.code}</strong> · 21 Odalı Orta Çağ Kargalı Şatosu
+            Oda Kodu: <strong style="color:var(--gold);">${state.code}</strong> · <strong style="color:#ffe6a1;">${activePreset.title}</strong> (${activePreset.summary})
           </span>
         </div>
         <div style="display:flex; gap:6px; flex-wrap:wrap;">
@@ -3593,11 +3657,12 @@ class SofraGameApp {
             .join("")}
         </div>
         <div style="display:flex; gap:5px; align-items:center; flex-wrap:wrap;">
-          <strong style="color:var(--gold);">⏳ Tempo:</strong>
+          <strong style="color:var(--gold);">⏱️ Oyun Süresi:</strong>
           ${[
-            { k: "normal", lbl: "⚖️ Klasik" },
-            { k: "long", lbl: "📜 Uzun Stratejik" },
-            { k: "fast", lbl: "⚡ Hızlı" }
+            { k: "10m", lbl: "⚡ 10 Dk Hızlı" },
+            { k: "20m", lbl: "⏳ 20 Dk Standart" },
+            { k: "35m", lbl: "🕵️ 35 Dk Dedektif" },
+            { k: "60m", lbl: "👑 1 Saat Destansı" }
           ]
             .map(
               (p) =>
@@ -5085,19 +5150,22 @@ class SofraGameApp {
       const titleEl = document.getElementById("room-title-label");
       if (titleEl) titleEl.textContent = state.roomTitle || "SOFRA";
       const codeEl = document.getElementById("room-code-label");
-      if (codeEl) codeEl.textContent = `Kod: ${state.code || "---"}`;
+      if (codeEl) {
+        const pBadge = resolveDurationPreset(state.paceMode, state.fastMode).badge;
+        codeEl.textContent = `Kod: ${state.code || "---"} · ${pBadge}`;
+      }
 
       const phaseTitleEl = document.getElementById("phase-title");
       if (phaseTitleEl) {
         const phaseMap: Record<string, string> = {
-          LOBBY: "LOBİ — KARAKTER & KASA",
+          LOBBY: "LOBİ — KARAKTER & SÜRE",
           ARRIVAL: "GİRİŞ — GİZLİ ZARFLAR",
-          DAY: `GÜN ${state.round} — ŞATO KEŞFİ & GÖREVLER`,
-          TRIAL: `GÜN ${state.round} — 1 DK BULMACA SINAVI`,
-          TABLE: `GÜN ${state.round} — YUVARLAK SOFRA TARTIŞMASI`,
+          DAY: `GÜN ${state.round} — ŞATO KEŞFİ`,
+          TRIAL: `GÜN ${state.round} — BULMACA SINAVI`,
+          TABLE: `GÜN ${state.round} — SOFRA TARTIŞMASI`,
           VOTE: `GÜN ${state.round} — ŞÖMİNE OYLAMASI`,
           FIRE: `GÜN ${state.round} — ŞÖMİNE ALEVİ`,
-          NIGHT: `GECE ${state.round} — 2 DK HAİNLER TOPLANTISI`,
+          NIGHT: `GECE ${state.round} — HAİNLER TOPLANTISI`,
           MORNING: `SABAH ${state.round + 1} — İNFAZ HÜKMÜ`,
           FINAL: "SON 4 KİŞİ — FİNAL KARARI",
           RESULT: "OYUN SONUCU"

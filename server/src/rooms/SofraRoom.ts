@@ -13,11 +13,13 @@ import {
   detectRoomZone,
   evaluateWinCondition,
   filterProfanityTR,
+  formatDurationLabelTR,
   generateRoomCode,
   getAntreSpawn,
   getSeatTransform,
   normalizeRoomCode,
   resolveCastleCollision,
+  resolveDurationPreset,
   resolveFinalDecision,
   resolveNightVictim,
   sanitizeNickname,
@@ -49,6 +51,8 @@ export interface RoomSummary {
   playerCount: number;
   humanCount: number;
   maxClients: number;
+  targetPlayerCount: number;
+  paceMode: string;
   phase: string;
   fastMode: boolean;
   hostNick: string;
@@ -87,6 +91,9 @@ export interface JoinOptions {
   roomPassword?: string;
   playerToken?: string;
   createNew?: boolean;
+  paceMode?: string;
+  targetPlayerCount?: number;
+  atmosphereTheme?: string;
   seat?: number;
   coatColor?: string;
   accentColor?: string;
@@ -180,6 +187,8 @@ export class SofraRoom extends Room<SofraState> {
       playerCount: this.state.players.size,
       humanCount,
       maxClients: this.maxClients,
+      targetPlayerCount: this.state.targetPlayerCount || SOFRA_CONFIG.DEFAULT_MATCH_CLIENTS,
+      paceMode: this.state.paceMode || "20m",
       phase: this.state.phase,
       fastMode: this.state.fastMode,
       hostNick
@@ -202,12 +211,22 @@ export class SofraRoom extends Room<SofraState> {
 
     const cleanTitle = filterProfanityTR(String(options?.roomTitle || "").trim()).slice(0, 28);
     const cleanPass = String(options?.roomPassword || "").trim().slice(0, 24);
+    const preset = resolveDurationPreset(options?.paceMode);
 
     this.roomPassword = cleanPass;
     this.state.code = code;
     this.state.roomTitle = cleanTitle || `Sofra ${code}`;
     this.state.hasPassword = cleanPass.length > 0;
     this.state.phase = "LOBBY";
+    this.state.paceMode = preset.id;
+    this.state.fastMode = preset.id === "10m";
+    this.state.targetPlayerCount =
+      options?.targetPlayerCount && [8, 10, 12].includes(Number(options.targetPlayerCount))
+        ? Number(options.targetPlayerCount)
+        : preset.defaultPlayers;
+    if (options?.atmosphereTheme && ["torch", "crimson", "mist"].includes(options.atmosphereTheme)) {
+      this.state.atmosphereTheme = options.atmosphereTheme;
+    }
 
     if (this.state.hasPassword) {
       this.setPrivate(true);
@@ -215,7 +234,12 @@ export class SofraRoom extends Room<SofraState> {
 
     activeRoomsByCode.set(code, this.roomId);
     liveRooms.set(this.roomId, this);
-    this.setMetadata({ code, roomTitle: this.state.roomTitle, hasPassword: this.state.hasPassword });
+    this.setMetadata({
+      code,
+      roomTitle: this.state.roomTitle,
+      hasPassword: this.state.hasPassword,
+      paceMode: this.state.paceMode
+    });
 
     // 12 Kişisel Özel Yatak Odası Kapısını Başlat (Herkesin kendi odası yalnız kendi anahtarına açık!)
     for (const d of DOORS) {
@@ -871,7 +895,7 @@ export class SofraRoom extends Room<SofraState> {
     this.onMessage("toggle_fast_mode", (client) => {
       if (this.state.hostId !== client.sessionId || this.state.phase !== "LOBBY") return;
       this.state.fastMode = !this.state.fastMode;
-      this.state.paceMode = this.state.fastMode ? "fast" : "normal";
+      this.state.paceMode = this.state.fastMode ? "10m" : "20m";
     });
 
     this.onMessage(
@@ -881,6 +905,17 @@ export class SofraRoom extends Room<SofraState> {
         data: { targetPlayerCount?: number; paceMode?: string; atmosphereTheme?: string }
       ) => {
         if (this.state.hostId !== client.sessionId || this.state.phase !== "LOBBY") return;
+        if (data?.paceMode && ["10m", "20m", "35m", "60m", "normal", "long", "fast"].includes(data.paceMode)) {
+          const preset = resolveDurationPreset(data.paceMode);
+          this.state.paceMode = preset.id;
+          this.state.fastMode = preset.id === "10m";
+          this.setMetadata({
+            code: this.state.code,
+            roomTitle: this.state.roomTitle,
+            hasPassword: this.state.hasPassword,
+            paceMode: this.state.paceMode
+          });
+        }
         if (data?.targetPlayerCount && [8, 10, 12].includes(Number(data.targetPlayerCount))) {
           const nextTarget = Number(data.targetPlayerCount);
           this.state.targetPlayerCount = nextTarget;
@@ -897,10 +932,6 @@ export class SofraRoom extends Room<SofraState> {
               this.botMemories.delete(remId);
             }
           }
-        }
-        if (data?.paceMode && ["normal", "long", "fast"].includes(data.paceMode)) {
-          this.state.paceMode = data.paceMode;
-          this.state.fastMode = data.paceMode === "fast";
         }
         if (data?.atmosphereTheme && ["torch", "crimson", "mist"].includes(data.atmosphereTheme)) {
           this.state.atmosphereTheme = data.atmosphereTheme;
@@ -1570,10 +1601,11 @@ export class SofraRoom extends Room<SofraState> {
         });
         return;
       }
-      if (usedList.length >= 2) {
+      const maxStationUses = resolveDurationPreset(this.state.paceMode, this.state.fastMode).stationUsesPerDay;
+      if (usedList.length >= maxStationUses) {
         client.send("puzzle_feedback", {
           ok: false,
-          text: "⏳ Bir gündüz turunda en fazla 2 Orta Çağ istasyonu kullanabilirsin! Yeni günde tekrar gel."
+          text: `⏳ Bu oyun süresinde bir gündüz turunda en fazla ${maxStationUses} Orta Çağ istasyonu kullanabilirsin! Yeni günde tekrar gel.`
         });
         return;
       }
@@ -2078,25 +2110,28 @@ export class SofraRoom extends Room<SofraState> {
   // ============================================================================
   // OYUN DÖNGÜSÜ (KENDİ KENDİNE AKAN EVRE MAKİNESİ)
   // ============================================================================
-  private getDurationMs(baseSeconds: number, phase?: GamePhase): number {
-    if (this.state.paceMode === "long" && !this.state.fastMode) {
-      return Math.round(baseSeconds * 1.35) * 1000;
+  private getPhaseSeconds(phase: GamePhase, fallbackSec: number): number {
+    const preset = resolveDurationPreset(this.state.paceMode, this.state.fastMode);
+    if (phase === "VOTE" && this.tieCandidates.length > 0) {
+      return preset.durations.TIE_VOTE;
     }
-    if (!this.state.fastMode && this.state.paceMode !== "fast") {
-      return baseSeconds * 1000;
-    }
-    const raw = Math.round(baseSeconds / SOFRA_CONFIG.FAST_DIVISOR);
-    let minSec = 12;
-    if (phase === "VOTE") minSec = this.tieCandidates.length > 0 ? 25 : 45;
-    else if (phase === "TRIAL" || phase === "FINAL") minSec = 45;
-    else if (phase === "TABLE" || phase === "NIGHT") minSec = 60;
-    else if (phase === "DAY") minSec = 150;
-    return Math.max(minSec, raw) * 1000;
+    const map: Partial<Record<GamePhase, number>> = {
+      ARRIVAL: preset.durations.ARRIVAL,
+      DAY: preset.durations.DAY,
+      TRIAL: preset.durations.TRIAL,
+      TABLE: preset.durations.TABLE,
+      VOTE: preset.durations.VOTE,
+      FIRE: preset.durations.FIRE,
+      NIGHT: preset.durations.NIGHT,
+      MORNING: preset.durations.MORNING,
+      FINAL: preset.durations.FINAL
+    };
+    return map[phase] ?? fallbackSec;
   }
 
   private setPhase(phase: GamePhase, durationSec: number, announcement: string, onComplete: () => void) {
     if (this.phaseTimer) this.phaseTimer.clear();
-    const durMs = this.getDurationMs(durationSec, phase);
+    const durMs = this.getPhaseSeconds(phase, durationSec) * 1000;
     this.state.phase = phase;
     this.state.phaseEndsAt = Date.now() + durMs;
     this.state.announcement = announcement;
@@ -2385,10 +2420,11 @@ export class SofraRoom extends Room<SofraState> {
     this.clients.forEach((c) => this.sendPrivateRoleToClient(c));
     this.assignRoundQuestsForAll();
 
+    const daySec = this.getPhaseSeconds("DAY", SOFRA_CONFIG.DURATIONS.DAY);
     this.setPhase(
       "DAY",
-      SOFRA_CONFIG.DURATIONS.DAY,
-      `Gündüz #${this.state.round} (5 Dk Keşif & Görev) · Gizli görevlerini yap, özel odanı (#Koltuk) gez, fısıldaş ve 🔍 İncele ile Yakınlık Barlarına bak!`,
+      daySec,
+      `Gündüz #${this.state.round} (${formatDurationLabelTR(daySec)} Keşif & Görev) · Gizli görevlerini yap, odaları gez ve 📖 Kitapçığa ipucu topla!`,
       () => this.enterTrialPhase()
     );
   }
@@ -2420,10 +2456,11 @@ export class SofraRoom extends Room<SofraState> {
       }
     });
 
+    const trialSec = this.getPhaseSeconds("TRIAL", SOFRA_CONFIG.DURATIONS.TRIAL);
     this.setPhase(
       "TRIAL",
-      SOFRA_CONFIG.DURATIONS.TRIAL,
-      "🧩 ŞATO BULMACA SINAVI (1 Dakika) · 3 aşamalı kadim şifreyi çöz, hazineyi büyüt ve Altın Kolye / Dedektif İpucu kazan! (Hainler gizlice sabote edebilir!)",
+      trialSec,
+      `🧩 ŞATO BULMACA SINAVI (${formatDurationLabelTR(trialSec)}) · 3 aşamalı kadim şifreyi çöz, hazineyi büyüt ve Altın Kolye / Dedektif İpucu kazan!`,
       () => this.enterTablePhase()
     );
   }
@@ -2488,12 +2525,13 @@ export class SofraRoom extends Room<SofraState> {
       }, delayMs);
     };
 
-    const factor = this.state.fastMode ? 0.35 : 1.0;
-    scheduleWave(4000 * factor, 1);
-    scheduleWave(18000 * factor, 2);
-    scheduleWave(36000 * factor, 3);
-    scheduleWave(56000 * factor, 4);
-    scheduleWave(78000 * factor, 5);
+    const tableSec = this.getPhaseSeconds("TABLE", SOFRA_CONFIG.DURATIONS.TABLE);
+    const tableMs = tableSec * 1000;
+    scheduleWave(Math.max(2500, Math.round(tableMs * 0.06)), 1);
+    scheduleWave(Math.max(8500, Math.round(tableMs * 0.22)), 2);
+    scheduleWave(Math.max(16000, Math.round(tableMs * 0.42)), 3);
+    scheduleWave(Math.max(25000, Math.round(tableMs * 0.62)), 4);
+    scheduleWave(Math.max(34000, Math.round(tableMs * 0.8)), 5);
 
     const sabMsg =
       this.trialSabotageCount > 0
@@ -2502,8 +2540,8 @@ export class SofraRoom extends Room<SofraState> {
 
     this.setPhase(
       "TABLE",
-      SOFRA_CONFIG.DURATIONS.TABLE,
-      `${sabMsg}Yuvarlak Sofra Tartışması (2 Dk) · '👉 Suçla' ile gerekçeni söyle, '🔍 İncele' ile kimin kiminle fısıldaştığını ortaya dök!`,
+      tableSec,
+      `${sabMsg}Yuvarlak Sofra Tartışması (${formatDurationLabelTR(tableSec)}) · '👉 Suçla' ile gerekçeni söyle, '📖 Kitapçık' ile ipuçlarını kontrol et!`,
       () => {
         if (this.getAlivePlayerIds().length <= 4 && this.finalAskedForRound !== this.state.round) {
           this.enterFinalPhase();
@@ -2740,10 +2778,11 @@ export class SofraRoom extends Room<SofraState> {
       }
     }, 2600);
 
+    const nightSec = this.getPhaseSeconds("NIGHT", SOFRA_CONFIG.DURATIONS.NIGHT);
     this.setPhase(
       "NIGHT",
-      SOFRA_CONFIG.DURATIONS.NIGHT,
-      "🌑 2 DAKİKA GECE MOLASI · Kapılar kilitlendi! Hainler kulede gizli toplantı yapıyor ve bu gecenin İNFAZ kararını veriyor...",
+      nightSec,
+      `🌑 GECE MOLASI (${formatDurationLabelTR(nightSec)}) · Kapılar kilitlendi! Hainler kulede gizli toplantı yapıyor ve İNFAZ kararını veriyor...`,
       () => this.enterMorningPhase()
     );
   }
@@ -2922,7 +2961,8 @@ export class SofraRoom extends Room<SofraState> {
         const won = pRole === winner;
         accountStore.recordMatchResult(token, won);
         const c = this.clients.find((cl) => cl.sessionId === p.id);
-        c?.send("match_reward", { bonusGold: won ? 30 : 10, won });
+        const mult = resolveDurationPreset(this.state.paceMode, this.state.fastMode).rewardMultiplier;
+        c?.send("match_reward", { bonusGold: Math.round((won ? 30 : 10) * mult), won });
       }
     });
 

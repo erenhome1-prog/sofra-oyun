@@ -1794,20 +1794,20 @@
               </button>
             </div>
 
-            <!-- Yeni Oda Kurma Kutusu -->
+            <!-- Yeni Oda Kurma Kutusu (Süre & Kadro Seçimli) -->
             <div
               style="
-                background: rgba(14, 10, 22, 0.8);
+                background: rgba(14, 10, 22, 0.86);
                 border: 1px solid var(--gold-soft);
                 border-radius: 10px;
-                padding: 9px;
+                padding: 9px 10px;
                 display: flex;
                 flex-direction: column;
                 gap: 7px;
               "
             >
               <div style="font-size: 0.78rem; color: var(--gold); font-weight: bold;">
-                ➕ Kendi Sofranı Kur (İstersen Şifre Koy):
+                ➕ Kendi Sofranı Kur (Oyun Süresi, Kadro & İsteğe Bağlı Şifre):
               </div>
               <div style="display: flex; gap: 6px; flex-wrap: wrap;">
                 <input
@@ -1821,10 +1821,69 @@
                   type="text"
                   id="input-create-pass"
                   maxlength="16"
-                  placeholder="Şifre (Boş = Herkese Açık)"
-                  style="flex: 1 1 120px;"
+                  placeholder="Şifre (Boş = Açık)"
+                  style="flex: 1 1 110px;"
                 />
                 <button class="btn btn-crimson" id="btn-create-room">🏰 Oda Kur</button>
+              </div>
+
+              <!-- Oyun Süresi Seçimi: 10 Dk / 20 Dk / 35 Dk / 1 Saat + Kadro -->
+              <div
+                style="
+                  display: flex;
+                  justify-content: space-between;
+                  align-items: center;
+                  gap: 6px;
+                  flex-wrap: wrap;
+                  padding-top: 3px;
+                  border-top: 1px solid rgba(226, 189, 83, 0.18);
+                "
+              >
+                <div style="display: flex; gap: 4px; flex-wrap: wrap; align-items: center;">
+                  <span style="font-size: 0.71rem; color: var(--gold); font-weight: bold;">⏱️ Süre:</span>
+                  <button type="button" class="btn" data-create-pace="10m" style="padding: 4px 8px; font-size: 0.71rem;">
+                    ⚡ 10 Dk
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn-crimson"
+                    data-create-pace="20m"
+                    style="padding: 4px 8px; font-size: 0.71rem;"
+                  >
+                    ⏳ 20 Dk
+                  </button>
+                  <button type="button" class="btn" data-create-pace="35m" style="padding: 4px 8px; font-size: 0.71rem;">
+                    🕵️ 35 Dk
+                  </button>
+                  <button type="button" class="btn" data-create-pace="60m" style="padding: 4px 8px; font-size: 0.71rem;">
+                    👑 1 Saat
+                  </button>
+                </div>
+
+                <div style="display: flex; gap: 4px; align-items: center;">
+                  <span style="font-size: 0.71rem; color: var(--gold); font-weight: bold;">👥 Kadro:</span>
+                  <button type="button" class="btn" data-create-count="8" style="padding: 4px 7px; font-size: 0.7rem;">
+                    8
+                  </button>
+                  <button
+                    type="button"
+                    class="btn btn-crimson"
+                    data-create-count="10"
+                    style="padding: 4px 7px; font-size: 0.7rem;"
+                  >
+                    10
+                  </button>
+                  <button type="button" class="btn" data-create-count="12" style="padding: 4px 7px; font-size: 0.7rem;">
+                    12
+                  </button>
+                </div>
+              </div>
+
+              <div
+                id="create-duration-desc"
+                style="font-size: 0.69rem; color: var(--parchment); opacity: 0.9;"
+              >
+                ⏳ 20 Dakikalık Standart Oyun (10 Kişi) — Gündüz 3 dk · Sofra 1.5 dk · Oylama 65 sn
               </div>
             </div>
 
