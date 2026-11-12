@@ -146,6 +146,8 @@ export class SofraRoom extends Room<SofraState> {
   private ghostHauntCooldown = new Map<string, number>();
   private finalAskedForRound = 0;
   private voteLockdownPending = false;
+  private accusedByHumansThisRound = new Set<string>();
+  private accusedScoreThisRound = new Map<string, number>();
 
   // BOT YAPAY ZEKÂ HAFIZASI
   private aiControlledIds = new Set<string>();
@@ -301,14 +303,57 @@ export class SofraRoom extends Room<SofraState> {
   }
 
   private pickScapegoatForBot(botId: string, botRole: PlayerRole): { id: string; seat: number; nick: string } | undefined {
-    const candidates: Array<{ id: string; seat: number; nick: string }> = [];
+    let candidates: Array<{ id: string; seat: number; nick: string }> = [];
     this.state.players.forEach((p) => {
       if (!p.alive || p.ghost || p.id === botId) return;
       if (botRole === "HAIN" && this.secretRoles.get(p.id) === "HAIN") return;
       candidates.push({ id: p.id, seat: p.seat, nick: p.nick });
     });
     if (candidates.length === 0) return undefined;
+
+    // 1. Tur Koruması: Hiçbir insan tarafından suçlanmamış gerçek oyuncuyu 1. turda botlar rastgele günah keçisi seçmez!
+    if (this.state.round === 1) {
+      const fairFirstRound = candidates.filter(
+        (c) => this.aiControlledIds.has(c.id) || this.accusedByHumansThisRound.has(c.id)
+      );
+      if (fairFirstRound.length > 0) candidates = fairFirstRound;
+    }
+
+    // Güçlü arkadaşlık bağı (affinity >= 48) kurduğu kişiyi başka aday varken hedef göstermez!
+    const nonFriends = candidates.filter(
+      (c) => (this.affinities.get(pairKey(botId, c.id)) || 0) < 48
+    );
+    if (nonFriends.length > 0) candidates = nonFriends;
+
     return candidates[Math.floor(Math.random() * candidates.length)];
+  }
+
+  private selectSmartBotVoteTarget(botId: string, choices: string[], isTieBreaker: boolean): string {
+    let filtered = [...choices];
+
+    // 1. Tur Koruması: İlk oylamada henüz hiçbir insanın suçlamadığı pasif/sohbetteki insan oyuncuyu botlar rastgele şömineye atmaz!
+    if (this.state.round === 1 && !isTieBreaker) {
+      const fairPool = filtered.filter(
+        (id) => this.aiControlledIds.has(id) || this.accusedByHumansThisRound.has(id)
+      );
+      if (fairPool.length > 0) filtered = fairPool;
+    }
+
+    // Yakın dostluk barı (affinity >= 48) olan müttefiklerine mecbur kalmadıkça oy vermez!
+    const nonAllies = filtered.filter(
+      (id) => (this.affinities.get(pairKey(botId, id)) || 0) < 48
+    );
+    if (nonAllies.length > 0) filtered = nonAllies;
+
+    // Konsey tahtasında veya Yuvarlak Sofrada suçlanan adaylara ağırlıklı oy verir!
+    const weightedPool: string[] = [];
+    for (const cid of filtered) {
+      const weight = 1 + Math.min(6, (this.accusedScoreThisRound.get(cid) || 0) * 2);
+      for (let w = 0; w < weight; w++) {
+        weightedPool.push(cid);
+      }
+    }
+    return weightedPool[Math.floor(Math.random() * weightedPool.length)] || filtered[0];
   }
 
   private buildRoomPlayerBriefs(botId: string): RoomPlayerBrief[] {
@@ -567,6 +612,11 @@ export class SofraRoom extends Room<SofraState> {
       const target = Array.from(this.state.players.values()).find((x) => x.seat === Number(data?.suspectSeat));
       if (!target) return;
 
+      this.accusedScoreThisRound.set(target.id, (this.accusedScoreThisRound.get(target.id) || 0) + 1);
+      if (!this.aiControlledIds.has(p.id)) {
+        this.accusedByHumansThisRound.add(target.id);
+      }
+
       this.state.councilBoardNote = `📋 Konsey Tahtası: #${p.seat} ${p.nick} tebeşirle #${target.seat} ${target.nick} ismini şüpheli yazdı!`;
       this.broadcast("chat_msg", {
         senderId: p.id,
@@ -663,6 +713,10 @@ export class SofraRoom extends Room<SofraState> {
         String(data?.reason || "Hareketleri ve fısıltıları çok şüpheli!").trim()
       ).slice(0, 90);
       this.addAffinity(sender.id, target.id, -10);
+      this.accusedScoreThisRound.set(target.id, (this.accusedScoreThisRound.get(target.id) || 0) + 2);
+      if (!this.aiControlledIds.has(sender.id)) {
+        this.accusedByHumansThisRound.add(target.id);
+      }
 
       this.broadcast("chat_msg", {
         senderId: sender.id,
@@ -1256,7 +1310,8 @@ export class SofraRoom extends Room<SofraState> {
 
     // 13. Lobiye Dön
     this.onMessage("back_to_lobby", (client) => {
-      if (this.state.hostId !== client.sessionId) return;
+      const hostConnected = Boolean(this.state.hostId && this.state.players.get(this.state.hostId)?.connected);
+      if (this.state.hostId !== client.sessionId && hostConnected && this.state.phase !== "RESULT") return;
       this.resetToLobby();
     });
 
@@ -1690,9 +1745,15 @@ export class SofraRoom extends Room<SofraState> {
 
       const outcome = evaluateWinCondition(this.getAlivePlayerIds(), this.getRolesRecord());
       if (outcome === "MISAFIR_WINS") {
-        this.enterResultPhase("MISAFIR");
+        this.enterResultPhase(
+          "MISAFIR",
+          `Son kalan Hain (#${player.seat} ${player.nick}) sofradan ayrıldığı için şatoda hiçbir Hain kalmadı!`
+        );
       } else if (outcome === "HAIN_WINS") {
-        this.enterResultPhase("HAIN");
+        this.enterResultPhase(
+          "HAIN",
+          `Koltuk #${player.seat} ${player.nick} ayrıldıktan sonra hayatta kalan Hain sayısı Misafir sayısına ulaştı!`
+        );
       } else {
         this.checkIfAllVoted();
       }
@@ -1736,6 +1797,7 @@ export class SofraRoom extends Room<SofraState> {
     this.state.round = 1;
     this.state.pot = 0;
     this.state.winnerTeam = "";
+    this.state.winReason = "";
     this.state.lastBurnedId = "";
     this.state.lastBurnedName = "";
     this.state.lastBurnedFlame = "";
@@ -1753,6 +1815,8 @@ export class SofraRoom extends Room<SofraState> {
     this.ghostHauntCooldown.clear();
     this.finalAskedForRound = 0;
     this.voteLockdownPending = false;
+    this.accusedByHumansThisRound.clear();
+    this.accusedScoreThisRound.clear();
 
     // Herkesin özel yatak odası kilitli başlar (yalnız kendi anahtarına açık!)
     this.state.doors.forEach((d) => {
@@ -1908,6 +1972,8 @@ export class SofraRoom extends Room<SofraState> {
     this.state.lastBurnedFlame = "";
     this.necklaceClaimedByPuzzleThisRound = false;
     this.readyPhasePlayers.clear();
+    this.accusedByHumansThisRound.clear();
+    this.accusedScoreThisRound.clear();
     this.assignRoundQuestsForAll();
 
     this.setPhase(
@@ -1986,13 +2052,17 @@ export class SofraRoom extends Room<SofraState> {
         if (!speaker.alive) return;
         const role = this.secretRoles.get(speaker.id) || "MISAFIR";
         const mem = this.botMemories.get(speaker.id) || createInitialBotMemory(speaker.seat);
+        const sc = this.pickScapegoatForBot(speaker.id, role);
+        if (sc && (wave === 1 || wave === 3 || wave === 5)) {
+          this.accusedScoreThisRound.set(sc.id, (this.accusedScoreThisRound.get(sc.id) || 0) + 1);
+        }
         const line = generateTableDebateLine({
           speakerSeat: speaker.seat,
           speakerNick: speaker.nick,
           speakerRole: role,
           personality: mem.personality,
           mem,
-          scapegoat: this.pickScapegoatForBot(speaker.id, role),
+          scapegoat: sc,
           topBond: this.getTopBondHighlight(),
           sabotageCount: this.trialSabotageCount,
           wave
@@ -2062,7 +2132,8 @@ export class SofraRoom extends Room<SofraState> {
             mem?.promisedVoteTargetId && choices.includes(mem.promisedVoteTargetId)
               ? mem.promisedVoteTargetId
               : undefined;
-          const pick = promised || choices[Math.floor(Math.random() * choices.length)];
+          const pick =
+            promised || this.selectSmartBotVoteTarget(bot.id, choices, tieCandidates.length > 0);
           if (mem) mem.promisedVoteTargetId = undefined;
           this.votes.set(bot.id, pick);
           bot.votedForId = pick;
@@ -2351,20 +2422,39 @@ export class SofraRoom extends Room<SofraState> {
     const outcome = resolveFinalDecision(decObj, aliveIds, roleObj);
     if (outcome === "VOTE_AGAIN") {
       this.enterVotePhase([]);
+    } else if (outcome === "HAIN_WINS") {
+      this.enterResultPhase(
+        "HAIN",
+        "Son 4 Kişi Final Kararında herkes 'Hepimiz Misafiriz' dedi ama sofrada gizlenen bir Hain vardı!"
+      );
     } else {
-      this.enterResultPhase(outcome === "HAIN_WINS" ? "HAIN" : "MISAFIR");
+      this.enterResultPhase(
+        "MISAFIR",
+        "Son 4 Kişi Final Kararında masum Misafirler birbirine güvendi ve aralarında hiç Hain kalmamıştı!"
+      );
     }
   }
 
   private checkWinOrContinue(nextPhase: "DAY" | "NIGHT") {
     const aliveIds = this.getAlivePlayerIds();
-    const outcome = evaluateWinCondition(aliveIds, this.getRolesRecord());
+    const rolesRec = this.getRolesRecord();
+    const outcome = evaluateWinCondition(aliveIds, rolesRec);
+    const aliveTraitors = aliveIds.filter((id) => rolesRec[id] === "HAIN").length;
+    const aliveGuests = aliveIds.length - aliveTraitors;
+
     if (outcome === "MISAFIR_WINS") {
-      this.enterResultPhase("MISAFIR");
+      const burnedInfo = this.state.lastBurnedName
+        ? `Şömine oylamasında son Hain (${this.state.lastBurnedName}) yakalandığı için şatoda hiçbir Hain kalmadı!`
+        : "Şatodaki tüm Hainler ortaya çıkarılıp elendiği için Misafirler kurtuldu!";
+      this.enterResultPhase("MISAFIR", burnedInfo);
       return;
     }
     if (outcome === "HAIN_WINS") {
-      this.enterResultPhase("HAIN");
+      const hainInfo =
+        nextPhase === "DAY"
+          ? `Gece infazı sonrası canlı Hain sayısı (${aliveTraitors}) canlı Misafir sayısına (${aliveGuests}) eşitlendi ve Hainler şatoyu ele geçirdi!`
+          : `Şöminede masum bir Misafir (${this.state.lastBurnedName || "Davetli"}) elenince canlı Hain sayısı (${aliveTraitors}) Misafir sayısına (${aliveGuests}) ulaştı!`;
+      this.enterResultPhase("HAIN", hainInfo);
       return;
     }
     if (nextPhase === "NIGHT") {
@@ -2374,15 +2464,20 @@ export class SofraRoom extends Room<SofraState> {
     }
   }
 
-  private enterResultPhase(winner: "MISAFIR" | "HAIN") {
+  private enterResultPhase(winner: "MISAFIR" | "HAIN", reason?: string) {
     if (this.phaseTimer) this.phaseTimer.clear();
     this.state.phase = "RESULT";
     this.state.winnerTeam = winner;
-    this.state.phaseEndsAt = Date.now() + 18000;
+    this.state.winReason =
+      reason ||
+      (winner === "MISAFIR"
+        ? "Şatodaki tüm Hainler elendiği için Misafirler kazandı!"
+        : "Hainler sayıca üstünlüğü ele geçirip şatoya hâkim oldu!");
+    this.state.phaseEndsAt = Date.now() + 120000;
     this.state.announcement =
       winner === "HAIN"
-        ? "🔥 HAİNLER KAZANDI! 18 sn içinde yeni sofra otomatik kurulacak..."
-        : "✨ MİSAFİRLER KAZANDI! 18 sn içinde yeni sofra otomatik kurulacak...";
+        ? "🗡️ HAİNLER KAZANDI! Maskeler düştü — sonuçları inceleyip hazır olduğunuzda 'Yeni Oyun (Lobi)'ye geçebilirsiniz."
+        : "🕯️ MİSAFİRLER KAZANDI! Maskeler düştü — sonuçları inceleyip hazır olduğunuzda 'Yeni Oyun (Lobi)'ye geçebilirsiniz.";
 
     const revealedRoles: Array<{ id: string; nick: string; seat: number; role: PlayerRole; alive: boolean }> = [];
     this.state.players.forEach((p) => {
@@ -2410,20 +2505,24 @@ export class SofraRoom extends Room<SofraState> {
       chronicle: this.chronicleLog
     });
 
-    // 18 sn sonra otomatik yeni tura lobiye dön!
+    // Sonuç ekranı aceleyle kapanmasın: oyuncu 'Yeni Oyun (Lobi)' butonuna basana veya 120 sn dolana kadar açık kalır!
     this.phaseTimer = this.clock.setTimeout(() => {
       if (this.clients.length === 0) {
         this.disconnect();
         return;
       }
       this.resetToLobby();
-    }, 18000);
+    }, 120000);
   }
 
   private resetToLobby() {
     if (this.phaseTimer) this.phaseTimer.clear();
     this.state.phase = "LOBBY";
     this.state.winnerTeam = "";
+    this.state.winReason = "";
+    this.state.phaseEndsAt = 0;
+    this.state.announcement =
+      "Şato lobisinde davetliler bekleniyor... Hazır olduğunda '🔥 SOFRAYI BAŞLAT'a bas!";
     this.state.players.forEach((p) => {
       p.alive = true;
       p.ghost = false;

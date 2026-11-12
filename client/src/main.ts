@@ -2166,7 +2166,7 @@ class SofraGameApp {
     const picksKey = Array.from(this.traitorNightPicks.entries())
       .map(([k, v]) => `${k}>${v.targetSeat}`)
       .join(",");
-    const hash = `${phase}|${state.round}|${state.fastMode}|${state.autoStart}|${state.pot}|${state.lastBurnedFlame}|${this.lastVoteReveal.length}|${this.mobileLobbyTab}|${this.vault.gold}|${this.vault.selectedSeat}|${this.vault.coatColor}|${this.vault.hat}|${this.vault.mask}|${this.selectedVoteTargetId}|${this.selectedNightTargetId}|${this.selectedFinalChoice}|${trialKey}|${picksKey}|${this.nightConclaveLogs.length}|${this.nightWatchNote}|${Boolean(this.gameOverSummary)}|${playerSummary}`;
+    const hash = `${phase}|${state.round}|${state.fastMode}|${state.autoStart}|${state.pot}|${state.lastBurnedId}|${state.lastBurnedFlame}|${state.winReason}|${this.lastVoteReveal.length}|${this.mobileLobbyTab}|${this.vault.gold}|${this.vault.selectedSeat}|${this.vault.coatColor}|${this.vault.hat}|${this.vault.mask}|${this.selectedVoteTargetId}|${this.selectedNightTargetId}|${this.selectedFinalChoice}|${trialKey}|${picksKey}|${this.nightConclaveLogs.length}|${this.nightWatchNote}|${Boolean(this.gameOverSummary)}|${playerSummary}`;
 
     if (hash === this.lastCenterRenderHash) return;
     this.lastCenterRenderHash = hash;
@@ -2692,6 +2692,13 @@ class SofraGameApp {
     const flame = state.lastBurnedFlame;
     const isRed = flame === "RED";
     const isWhite = flame === "WHITE";
+    const burnedMe = Boolean(state.lastBurnedId && state.lastBurnedId === this.room?.sessionId);
+
+    const personalBanner = burnedMe
+      ? `<div style="margin-bottom:10px; padding:10px 14px; border-radius:10px; background:rgba(175,20,38,0.34); border:2px solid #ff4d5e; color:#ffdbe0; font-size:0.88rem; font-weight:bold;">
+           🚨 DİKKAT: SOFRADA EN ÇOK OYU SEN ALDIN VE ZARFIN ŞÖMİNEYE ATILDI! Artık 👻 Hayalet olarak şatoyu izleyebilirsin.
+         </div>`
+      : "";
 
     const tallyHtml =
       this.lastVoteReveal.length > 0
@@ -2715,6 +2722,7 @@ class SofraGameApp {
 
     panel.innerHTML = `
       <div style="text-align:center; padding:14px;">
+        ${personalBanner}
         <h2 style="font-size:1.35rem; color:${isRed ? "#ff3b4e" : isWhite ? "#a8d8ff" : "#d4af37"};">
           ${
             isRed
@@ -2913,9 +2921,13 @@ class SofraGameApp {
 
   private renderResultPanel(panel: HTMLElement, state: any): void {
     const guestsWon = state.winnerTeam === "MISAFIR";
-    const rolesList: Array<{ seat: number; nick: string; role: string; alive: boolean }> =
+    const rolesList: Array<{ id?: string; seat: number; nick: string; role: string; alive: boolean }> =
       this.gameOverSummary?.roles || [];
     const chronicle: string[] = this.gameOverSummary?.chronicle || [];
+    const myId = this.room?.sessionId;
+    const meState = myId ? state.players?.get(myId) : null;
+    const myRoleStr = this.myRole?.role === "HAIN" ? "🗡️ HAİN" : "🕯️ MİSAFİR";
+    const iWon = this.myRole?.role === state.winnerTeam;
 
     panel.innerHTML = `
       <div style="text-align:center; padding:10px;">
@@ -2923,7 +2935,24 @@ class SofraGameApp {
         <h2 style="font-size:1.42rem; margin:6px 0; color:${guestsWon ? "#7ab8ff" : "#ff4d5e"};">
           ${guestsWon ? "🕯️ MİSAFİRLER KAZANDI!" : "🗡️ HAİNLER SOFRAYI ELE GEÇİRDİ!"}
         </h2>
-        <p style="font-size:0.88rem; margin-bottom:10px;">${state.announcement}</p>
+
+        ${
+          state.winReason
+            ? `<div style="margin:8px auto 10px; max-width:640px; padding:9px 14px; border-radius:10px; background:rgba(212,175,55,0.14); border:1px solid var(--gold); color:var(--parchment); font-size:0.86rem; line-height:1.4;">
+                 <strong style="color:var(--gold);">📌 Maçın Bitme Sebebi:</strong> ${state.winReason}
+               </div>`
+            : `<p style="font-size:0.88rem; margin-bottom:10px;">${state.announcement}</p>`
+        }
+
+        ${
+          meState
+            ? `<div style="font-size:0.8rem; margin-bottom:10px; color:${iWon ? "#8ce99a" : "#ffa8a8"};">
+                 Senin Rolün: <strong>${myRoleStr}</strong> · Durumun: <strong>${
+                meState.alive ? "Hayatta Kaldın" : "Şöminede / Gece İnfazında Elendin"
+              }</strong> · Sonuç: <strong>${iWon ? "🏆 TAKIMIN KAZANDI!" : "💔 KAYBETTİN"}</strong>
+               </div>`
+            : ""
+        }
 
         ${
           rolesList.length > 0

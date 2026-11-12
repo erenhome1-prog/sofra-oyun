@@ -46,8 +46,8 @@ export class SofraState extends Schema {
   @type("boolean") hasPassword: boolean = false;
   @type("string") hostId: string = "";
   @type("boolean") fastMode: boolean = false;
-  @type("boolean") autoStart: boolean = true;
-  @type("string") announcement: string = "Şato lobisinde davetliler bekleniyor...";
+  @type("boolean") autoStart: boolean = false;
+  @type("string") announcement: string = "Şato lobisinde davetliler bekleniyor... Hazır olduğunda '🔥 SOFRAYI BAŞLAT'a bas!";
   @type("string") councilBoardNote: string = "Henüz Konsey Tahtasına şüpheli yazılmadı.";
   @type({ map: Player }) players = new MapSchema<Player>();
   @type({ map: DoorState }) doors = new MapSchema<DoorState>();
@@ -59,4 +59,5 @@ export class SofraState extends Schema {
   @type("string") lastTakenId: string = "";
   @type("string") lastTakenName: string = "";
   @type("string") winnerTeam: string = "";
+  @type("string") winReason: string = "";
 }
