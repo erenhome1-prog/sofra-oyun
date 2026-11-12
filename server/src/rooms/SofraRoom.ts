@@ -28,11 +28,13 @@ import {
   BondHighlight,
   BotMemory,
   PersonalQuest,
+  RoomPlayerBrief,
   createInitialBotMemory,
   createPuzzleChallenge,
   generateBotReply,
   generateNightTraitorChatLine,
   generateRoundQuests,
+  generateSmartBotReplyAsync,
   generateTableDebateLine,
   generateTrueDetectiveClue
 } from "../ai/botAI.js";
@@ -300,6 +302,23 @@ export class SofraRoom extends Room<SofraState> {
     });
     if (candidates.length === 0) return undefined;
     return candidates[Math.floor(Math.random() * candidates.length)];
+  }
+
+  private buildRoomPlayerBriefs(botId: string): RoomPlayerBrief[] {
+    const list: RoomPlayerBrief[] = [];
+    this.state.players.forEach((p) => {
+      list.push({
+        id: p.id,
+        seat: p.seat,
+        nick: p.nick,
+        charName: p.charName,
+        alive: p.alive,
+        roomName: detectRoomZone(p.x, p.z).name,
+        role: this.secretRoles.get(p.id) || "MISAFIR",
+        bondWithBot: Math.round(this.affinities.get(pairKey(botId, p.id)) || 0)
+      });
+    });
+    return list;
   }
 
   private registerMessageHandlers() {
@@ -979,13 +998,20 @@ export class SofraRoom extends Room<SofraState> {
         return;
       }
 
-      // Yakındaki (veya Sofradaki) bir Akıllı Bot bu mesaja doğal Türkçe cevap versin!
-      if (!sender.ghost && (this.state.phase === "DAY" || this.state.phase === "TABLE" || this.state.phase === "LOBBY")) {
+      // Yakındaki (veya Sofradaki) bir Akıllı Bot bu mesaja doğal Türkçe "Mini-AI" cevabı versin!
+      if (
+        !sender.ghost &&
+        (this.state.phase === "DAY" ||
+          this.state.phase === "TABLE" ||
+          this.state.phase === "VOTE" ||
+          this.state.phase === "TRIAL" ||
+          this.state.phase === "LOBBY")
+      ) {
         const nearbyBots: Player[] = [];
         this.state.players.forEach((bp) => {
           if (!this.aiControlledIds.has(bp.id) || !bp.alive) return;
           const d = Math.hypot(bp.x - sender.x, bp.z - sender.z);
-          if (this.state.phase !== "DAY" || d <= 12 || bp.roomId === sender.roomId) {
+          if (this.state.phase !== "DAY" || d <= 14 || bp.roomId === sender.roomId) {
             nearbyBots.push(bp);
             if (this.state.phase === "DAY" && d <= 8) {
               this.addAffinity(sender.id, bp.id, 4);
@@ -994,43 +1020,72 @@ export class SofraRoom extends Room<SofraState> {
         });
 
         if (nearbyBots.length > 0) {
-          // Mesajda bir botun adı veya koltuk numarası geçtiyse öncelikle o bot cevap versin!
           const lower = rawText.toLocaleLowerCase("tr-TR");
           const addressed =
             nearbyBots.find(
               (b) =>
-                lower.includes(b.charName.toLocaleLowerCase("tr-TR")) ||
+                lower.includes(b.nick.split("(")[0].trim().toLocaleLowerCase("tr-TR")) ||
+                lower.includes(b.charName.split("(")[0].trim().toLocaleLowerCase("tr-TR")) ||
                 lower.includes(`#${b.seat}`)
             ) || nearbyBots[Math.floor(Math.random() * nearbyBots.length)];
 
-          this.clock.setTimeout(() => {
+          this.clock.setTimeout(async () => {
             if (!addressed.alive) return;
             const role = this.secretRoles.get(addressed.id) || "MISAFIR";
-            const mem = this.botMemories.get(addressed.id) || createInitialBotMemory(addressed.seat);
-            const reply = generateBotReply({
+            let mem = this.botMemories.get(addressed.id);
+            if (!mem) {
+              mem = createInitialBotMemory(addressed.seat);
+              this.botMemories.set(addressed.id, mem);
+            }
+            const neckHolder = this.state.necklaceHolder
+              ? this.state.players.get(this.state.necklaceHolder)
+              : undefined;
+
+            const res = await generateSmartBotReplyAsync({
+              botId: addressed.id,
               botSeat: addressed.seat,
               botNick: addressed.nick,
               botRole: role,
               mem,
+              askerId: sender.id,
               askerNick: sender.nick,
+              askerRole: senderRole,
               rawQuestion: rawText,
+              phase: this.state.phase,
+              isPrivatePM: false,
+              bondWithAsker: Math.round(this.affinities.get(pairKey(sender.id, addressed.id)) || 0),
+              necklaceHolderNick: neckHolder ? `#${neckHolder.seat} ${neckHolder.nick}` : undefined,
+              sabotageCount: this.trialSabotageCount,
               scapegoat: this.pickScapegoatForBot(addressed.id, role),
-              topBond: this.getTopBondHighlight()
+              topBond: this.getTopBondHighlight(),
+              players: this.buildRoomPlayerBriefs(addressed.id)
             });
+
+            if (res.followAsker && this.state.phase === "DAY") {
+              mem.followTargetId = sender.id;
+              mem.followUntil = Date.now() + 28000;
+            }
+            if (res.persuadedVoteTargetId) {
+              mem.promisedVoteTargetId = res.persuadedVoteTargetId;
+              if (this.state.phase === "VOTE") {
+                this.votes.set(addressed.id, res.persuadedVoteTargetId);
+                addressed.votedForId = res.persuadedVoteTargetId;
+              }
+            }
 
             this.broadcast("chat_msg", {
               senderId: addressed.id,
               senderNick: addressed.nick,
               seat: addressed.seat,
-              text: reply,
+              text: res.text,
               channel: this.state.phase === "DAY" ? "YAKIN" : "SOFRA"
             });
-          }, 1200 + Math.random() * 900);
+          }, 950 + Math.random() * 750);
         }
       }
     });
 
-    // 11. KNIGHT ONLINE 1'E 1 ÖZEL FISILTI (PM / DM) -> ARKADAŞLIK BARINI GÜÇLÜ ARTIRIR + ZEKİ BOT CEVABI!
+    // 11. KNIGHT ONLINE 1'E 1 ÖZEL FISILTI (PM / DM) -> HER MESAFEDEN ÇALIŞIR + MİNİ-AI BOT CEVABI!
     this.onMessage("pm", (client, data: { targetId: string; text: string }) => {
       const sender = this.state.players.get(client.sessionId);
       const target = this.state.players.get(data?.targetId);
@@ -1046,49 +1101,42 @@ export class SofraRoom extends Room<SofraState> {
 
       if (this.state.phase === "NIGHT") {
         if (this.secretRoles.get(sender.id) !== "HAIN" || this.secretRoles.get(target.id) !== "HAIN") {
-          client.send("pm_error", { text: "Gece karanlığında kimseye fısıldayamazsın!" });
+          client.send("pm_error", { text: "Gece molasında yalnızca Hainler kendi aralarında konuşabilir!" });
           return;
         }
       }
 
+      let affinityGain = 7;
       if (this.state.phase === "DAY" && !sender.ghost) {
         const sameRoom = sender.roomId === target.roomId;
         const dist = Math.hypot(sender.x - target.x, sender.z - target.z);
         const sDoor = DOORS.find((d) => d.roomId === sender.roomId);
-        const tDoor = DOORS.find((d) => d.roomId === target.roomId);
         const sClosed = sDoor ? !this.state.doors.get(sDoor.id)?.open : false;
-        const tClosed = tDoor ? !this.state.doors.get(tDoor.id)?.open : false;
 
-        if ((sClosed || tClosed) && !sameRoom) {
-          client.send("pm_error", { text: "Kapalı özel odanın dışından içeridekine fısıldayamazsın!" });
-          return;
-        }
-        if (dist > 18 && !sameRoom) {
-          client.send("pm_error", { text: `${target.nick} uzakta (${Math.round(dist)}m)! Fısıldamak için yaklaş.` });
-          return;
-        }
-
-        if (!sClosed) {
-          this.clients.forEach((otherClient) => {
-            if (otherClient.sessionId === sender.id || otherClient.sessionId === target.id) return;
-            const observer = this.state.players.get(otherClient.sessionId);
-            if (!observer) return;
-            const obsDist = Math.hypot(observer.x - sender.x, observer.z - sender.z);
-            if (obsDist <= 11 && observer.roomId === sender.roomId) {
-              otherClient.send("chat_msg", {
-                senderId: sender.id,
-                senderNick: "GÖZLEM",
-                seat: sender.seat,
-                text: `👀 #${sender.seat} ${sender.nick}, #${target.seat} ${target.nick}'in kulağına gizlice fısıldadı...`,
-                channel: "ETKİ"
-              });
-            }
-          });
+        if (dist <= 14 || sameRoom) {
+          affinityGain = 13; // Yakın fısıltı Arkadaşlık Barını çok daha hızlı yükseltir!
+          if (!sClosed) {
+            this.clients.forEach((otherClient) => {
+              if (otherClient.sessionId === sender.id || otherClient.sessionId === target.id) return;
+              const observer = this.state.players.get(otherClient.sessionId);
+              if (!observer) return;
+              const obsDist = Math.hypot(observer.x - sender.x, observer.z - sender.z);
+              if (obsDist <= 11 && observer.roomId === sender.roomId) {
+                otherClient.send("chat_msg", {
+                  senderId: sender.id,
+                  senderNick: "GÖZLEM",
+                  seat: sender.seat,
+                  text: `👀 #${sender.seat} ${sender.nick}, #${target.seat} ${target.nick}'in kulağına gizlice fısıldadı...`,
+                  channel: "ETKİ"
+                });
+              }
+            });
+          }
         }
       }
 
       // EN ÖNEMLİ KURAL: Özel Fısıltı (PM) İkilinin Yakınlık / Arkadaşlık Barını Artırır!
-      this.addAffinity(sender.id, target.id, 11);
+      this.addAffinity(sender.id, target.id, affinityGain);
       this.syncSocialQuestProgress(sender.id);
       this.syncSocialQuestProgress(target.id);
 
@@ -1108,21 +1156,51 @@ export class SofraRoom extends Room<SofraState> {
       if (targetClient) {
         targetClient.send("pm_msg", payload);
       } else if (this.aiControlledIds.has(target.id) && target.alive) {
-        // Zeki Bot yalan, fitne veya doğru bilgiyle 1'e 1 fısıltıya cevap verir!
-        this.clock.setTimeout(() => {
+        // Zeki Mini-AI Bot hafızası, kişiliği, rolü ve bahsedilen oyunculara göre doğal cevap verir!
+        this.clock.setTimeout(async () => {
           if (!target.alive) return;
           const bRole = this.secretRoles.get(target.id) || "MISAFIR";
-          const mem = this.botMemories.get(target.id) || createInitialBotMemory(target.seat);
-          const reply = generateBotReply({
+          const sRole = this.secretRoles.get(sender.id) || "MISAFIR";
+          let mem = this.botMemories.get(target.id);
+          if (!mem) {
+            mem = createInitialBotMemory(target.seat);
+            this.botMemories.set(target.id, mem);
+          }
+          const neckHolder = this.state.necklaceHolder
+            ? this.state.players.get(this.state.necklaceHolder)
+            : undefined;
+
+          const res = await generateSmartBotReplyAsync({
+            botId: target.id,
             botSeat: target.seat,
             botNick: target.nick,
             botRole: bRole,
             mem,
+            askerId: sender.id,
             askerNick: sender.nick,
+            askerRole: sRole,
             rawQuestion: rawText,
+            phase: this.state.phase,
+            isPrivatePM: true,
+            bondWithAsker: Math.round(this.affinities.get(pairKey(sender.id, target.id)) || 0),
+            necklaceHolderNick: neckHolder ? `#${neckHolder.seat} ${neckHolder.nick}` : undefined,
+            sabotageCount: this.trialSabotageCount,
             scapegoat: this.pickScapegoatForBot(target.id, bRole),
-            topBond: this.getTopBondHighlight()
+            topBond: this.getTopBondHighlight(),
+            players: this.buildRoomPlayerBriefs(target.id)
           });
+
+          if (res.followAsker && this.state.phase === "DAY") {
+            mem.followTargetId = sender.id;
+            mem.followUntil = Date.now() + 28000;
+          }
+          if (res.persuadedVoteTargetId) {
+            mem.promisedVoteTargetId = res.persuadedVoteTargetId;
+            if (this.state.phase === "VOTE") {
+              this.votes.set(target.id, res.persuadedVoteTargetId);
+              target.votedForId = res.persuadedVoteTargetId;
+            }
+          }
 
           this.addAffinity(sender.id, target.id, 5);
           client.send("pm_msg", {
@@ -1132,10 +1210,10 @@ export class SofraRoom extends Room<SofraState> {
             toId: sender.id,
             toNick: sender.nick,
             toSeat: sender.seat,
-            text: reply,
+            text: res.text,
             ts: Date.now()
           });
-        }, 1250);
+        }, 900 + Math.random() * 650);
       }
     });
 
@@ -1804,7 +1882,13 @@ export class SofraRoom extends Room<SofraState> {
           if (nonTraitors.length > 0) choices = nonTraitors;
         }
         if (choices.length > 0) {
-          const pick = choices[Math.floor(Math.random() * choices.length)];
+          const mem = this.botMemories.get(bot.id);
+          const promised =
+            mem?.promisedVoteTargetId && choices.includes(mem.promisedVoteTargetId)
+              ? mem.promisedVoteTargetId
+              : undefined;
+          const pick = promised || choices[Math.floor(Math.random() * choices.length)];
+          if (mem) mem.promisedVoteTargetId = undefined;
           this.votes.set(bot.id, pick);
           bot.votedForId = pick;
           this.checkIfAllVoted();
@@ -2237,6 +2321,24 @@ export class SofraRoom extends Room<SofraState> {
         this.botBrains.set(bot.id, brain);
       }
 
+      const mem = this.botMemories.get(bot.id);
+      // Eğer oyuncu bota "yanıma gel / takip et" dediyse bot oyuncunun yanına yürür!
+      if (mem?.followTargetId && mem.followUntil && now < mem.followUntil) {
+        const leader = this.state.players.get(mem.followTargetId);
+        if (leader && leader.alive) {
+          const distToLeader = Math.hypot(leader.x - bot.x, leader.z - bot.z);
+          if (distToLeader > 2.3) {
+            brain.targetX = leader.x + (bot.seat % 2 === 0 ? 1.2 : -1.2);
+            brain.targetZ = leader.z + 1.1;
+            brain.waitUntil = 0;
+          } else {
+            bot.anim = "idle";
+            bot.rotY = Math.atan2(leader.x - bot.x, leader.z - bot.z);
+            return;
+          }
+        }
+      }
+
       if (now < brain.waitUntil) {
         bot.anim = "idle";
         return;
@@ -2288,7 +2390,6 @@ export class SofraRoom extends Room<SofraState> {
       bot.roomId = zInfo.id;
 
       // Botun gerçek oda ve gördüğü oyuncu hafızasını güncelle
-      const mem = this.botMemories.get(bot.id);
       if (mem) {
         mem.realLastRoom = zInfo.name;
         this.state.players.forEach((other) => {

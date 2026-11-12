@@ -138,7 +138,8 @@ class SofraGameApp {
     chronicle: string[];
   } | null = null;
 
-  // Menu idle rotation & FPS
+  // Menu idle rotation, PC zero-click mouse edge pan & FPS
+  private pcEdgePanDir = 0;
   private menuOrbitAngle = 0;
   private frameCount = 0;
   private fpsAccum = 0;
@@ -1095,6 +1096,12 @@ class SofraGameApp {
       this.scene.cycleBrightnessBoost();
     };
     document.getElementById("btn-hud-brightness")?.addEventListener("click", cycleLight);
+    document.getElementById("btn-force-landscape")?.addEventListener("click", () => this.enterLandscapeFullscreen());
+    document.getElementById("btn-menu-landscape")?.addEventListener("click", () => this.enterLandscapeFullscreen());
+    document.getElementById("btn-hud-landscape")?.addEventListener("click", () => this.enterLandscapeFullscreen());
+    document.getElementById("btn-dismiss-portrait")?.addEventListener("click", () => {
+      document.body.classList.add("allow-portrait");
+    });
     document.getElementById("btn-wheel-light")?.addEventListener("click", () => this.handleContextWheelClick());
     document.getElementById("btn-wheel-inspect")?.addEventListener("click", () => this.openInspectPickerModal());
 
@@ -1155,10 +1162,46 @@ class SofraGameApp {
     });
   }
 
+  private async enterLandscapeFullscreen(): Promise<void> {
+    try {
+      const docEl: any = document.documentElement;
+      if (!document.fullscreenElement) {
+        if (docEl.requestFullscreen) {
+          await docEl.requestFullscreen();
+        } else if (docEl.webkitRequestFullscreen) {
+          await docEl.webkitRequestFullscreen();
+        }
+      }
+      const orient: any = screen.orientation;
+      if (orient && typeof orient.lock === "function") {
+        await orient.lock("landscape");
+      }
+    } catch {
+      // iOS Safari tam ekran / yatay kilidi desteklemiyorsa sessizce geçer; kullanıcı telefonu yan çevirerek oynar.
+    }
+  }
+
   private setupInputAndLoLWheel(): void {
     window.addEventListener("keydown", (e) => {
-      if (document.activeElement?.tagName === "INPUT") return;
+      if (document.activeElement?.tagName === "INPUT") {
+        if (e.key === "Escape") {
+          (document.activeElement as HTMLElement).blur();
+        }
+        return;
+      }
       const k = e.key.toLowerCase();
+      if (k === "enter" && this.room) {
+        e.preventDefault();
+        if (document.pointerLockElement) {
+          document.exitPointerLock?.();
+        }
+        const chatInp = document.getElementById("chat-input") as HTMLInputElement | null;
+        chatInp?.focus();
+        return;
+      }
+      if (k === "alt" && document.pointerLockElement) {
+        document.exitPointerLock?.();
+      }
       this.keys.add(k);
       if (k === "e") {
         this.tryInteractNearestDoor();
@@ -1191,13 +1234,91 @@ class SofraGameApp {
     bindTurnBtn("btn-cam-left", 1);
     bindTurnBtn("btn-cam-right", -1);
 
-    // 1. Canvas Dokunmatik Kamera Bakışı (İzole lookPointerId)
+    // 1A. PC WEB: MOUSE BASMADAN (TIKLAMADAN) DOĞRUDAN FARE HAREKETİYLE SERBEST YÖNLENDİRME!
+    const canvas = this.scene.renderer.domElement;
+    let hasLastMouse = false;
+    let lastHoverX = 0;
+    let lastHoverY = 0;
+
+    window.addEventListener("mousemove", (e) => {
+      // 1) Eğer Pointer Lock aktifse sınırsız 360° döndür
+      if (document.pointerLockElement === canvas) {
+        if (this.scene.inspectTargetId) {
+          this.scene.inspectOrbitYaw -= e.movementX * 0.008;
+          return;
+        }
+        this.scene.cameraYaw -= e.movementX * 0.0036;
+        this.scene.cameraPitch = Math.max(0.15, Math.min(1.05, this.scene.cameraPitch + e.movementY * 0.0026));
+        return;
+      }
+
+      // 2) Pointer Lock yokken bile (hiçbir fare tuşuna basmadan!) Gündüz keşfinde fare hareketiyle yönlendir!
+      const phase = (this.room?.state as any)?.phase;
+      if (phase !== "DAY" || this.scene.inspectTargetId || document.activeElement?.tagName === "INPUT" || e.altKey) {
+        this.pcEdgePanDir = 0;
+        hasLastMouse = false;
+        return;
+      }
+
+      const targetEl = e.target as HTMLElement | null;
+      const overInteractiveUI = Boolean(
+        targetEl?.closest(
+          ".interactive, .ko-pm-window, .day-quest-box, .lol-wheel-cluster, .left-control-cluster, #puzzle-modal, #dm-picker-modal, #inspect-overlay"
+        )
+      );
+      if (overInteractiveUI) {
+        this.pcEdgePanDir = 0;
+        lastHoverX = e.clientX;
+        lastHoverY = e.clientY;
+        hasLastMouse = true;
+        return;
+      }
+
+      if (!hasLastMouse) {
+        lastHoverX = e.clientX;
+        lastHoverY = e.clientY;
+        hasLastMouse = true;
+        return;
+      }
+
+      const dx = typeof e.movementX === "number" && e.movementX !== 0 ? e.movementX : e.clientX - lastHoverX;
+      const dy = typeof e.movementY === "number" && e.movementY !== 0 ? e.movementY : e.clientY - lastHoverY;
+      lastHoverX = e.clientX;
+      lastHoverY = e.clientY;
+
+      this.scene.cameraYaw -= dx * 0.0056;
+      this.scene.cameraPitch = Math.max(0.15, Math.min(1.05, this.scene.cameraPitch + dy * 0.0036));
+
+      // Ekranın sol/sağ %8 kenarına gelindiğinde takılmadan dönmeye devam etsin!
+      if (e.clientX < window.innerWidth * 0.08) {
+        this.pcEdgePanDir = 1;
+      } else if (e.clientX > window.innerWidth * 0.92) {
+        this.pcEdgePanDir = -1;
+      } else {
+        this.pcEdgePanDir = 0;
+      }
+    });
+
+    // PC'de 3B sahneye bir kez tıklanırsa tam 360° sonsuz fare kilidi (Pointer Lock) de açılabilir (ESC/Enter ile çıkılır)
+    canvas.addEventListener("click", (e) => {
+      const isTouch = "ontouchstart" in window && navigator.maxTouchPoints > 0;
+      if (isTouch) return;
+      const phase = (this.room?.state as any)?.phase;
+      if (phase === "DAY" && !this.scene.inspectTargetId && !document.pointerLockElement) {
+        (canvas as any).requestPointerLock?.()?.catch?.(() => {});
+      }
+      void e;
+    });
+
+    // 1B. Mobil Dokunmatik & 360° İnceleme Sürükleme Bakışı (İzole lookPointerId)
     let lookPointerId: number | null = null;
     let lastLookX = 0;
     let lastLookY = 0;
-    const canvas = this.scene.renderer.domElement;
 
     canvas.addEventListener("pointerdown", (e) => {
+      if (e.pointerType === "mouse" && !this.scene.inspectTargetId && (this.room?.state as any)?.phase === "DAY") {
+        return;
+      }
       if (lookPointerId !== null) return;
       lookPointerId = e.pointerId;
       lastLookX = e.clientX;
@@ -2578,6 +2699,9 @@ class SofraGameApp {
     if (this.camTurnDir !== 0) {
       this.scene.cameraYaw += this.camTurnDir * 2.1 * dt;
     }
+    if (this.pcEdgePanDir !== 0 && state.phase === "DAY" && !document.pointerLockElement) {
+      this.scene.cameraYaw += this.pcEdgePanDir * 1.75 * dt;
+    }
 
     if (!this.room || state.phase !== "DAY") return;
 
@@ -2686,6 +2810,10 @@ class SofraGameApp {
     if (state && this.room) {
       if (state.phase !== this.lastPhase) {
         this.readyStatusText = "";
+        this.pcEdgePanDir = 0;
+        if (state.phase !== "DAY" && document.pointerLockElement) {
+          document.exitPointerLock?.();
+        }
         const readyBtn = document.getElementById("btn-ready-phase");
         if (readyBtn) readyBtn.textContent = "⏩ Hazırım";
         document.getElementById("puzzle-modal")?.classList.add("hidden");

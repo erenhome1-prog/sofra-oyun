@@ -1,0 +1,17 @@
+{
+  "name": "SOFRA: Kargalı Şato",
+  "short_name": "SOFRA",
+  "description": "3D Çok Oyunculu Gizem, Fısıltı ve Sosyal Çıkarım Oyunu",
+  "start_url": "/",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#0e0b16",
+  "theme_color": "#0e0b16",
+  "icons": [
+    {
+      "src": "/marka/muhur.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
