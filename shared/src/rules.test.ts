@@ -73,14 +73,30 @@ describe("SOFRA Oyun Kuralları ve Fizik Testleri", () => {
     ).toBe("HAIN_WINS");
   });
 
-  it("kapalı kapıdan ve yuvarlak masadan geçmeyi engeller", () => {
+  it("kapalı kapıdan ve yuvarlak masadan geçmeyi engeller; oda sahibine kendi özel odasını açar", () => {
     // Masa merkezine (0,0) girmeye çalışan oyuncuyu masa dışına iter
     const tableHit = resolveCastleCollision(0.5, 0.5, {});
     expect(tableHit.hit).toBe(true);
     expect(Math.hypot(tableHit.x, tableHit.z)).toBeGreaterThan(3.5);
 
-    // Yatak Odası 1 kapısı kapalıyken (-12, -4.5) geçişi engeller
-    const doorClosed = resolveCastleCollision(-12.0, -4.5, { door_yatak_1: false });
-    expect(doorClosed.hit).toBe(true);
+    // Oda #1 kapısı (-16.5, -7.5) kapalıyken başkasının (Koltuk #2) geçişini engeller
+    const strangerBlocked = resolveCastleCollision(
+      -16.5,
+      -7.5,
+      { door_yatak_1: false },
+      0.42,
+      { seat: 2, lockedDoors: { door_yatak_1: true } }
+    );
+    expect(strangerBlocked.hit).toBe(true);
+
+    // Oda #1 sahibi (Koltuk #1) kendi cebindeki anahtarla kilitli kapısından doğrudan geçebilir
+    const ownerAllowed = resolveCastleCollision(
+      -16.5,
+      -7.5,
+      { door_yatak_1: false },
+      0.42,
+      { seat: 1, lockedDoors: { door_yatak_1: true } }
+    );
+    expect(ownerAllowed.hit).toBe(false);
   });
 });

@@ -11,6 +11,8 @@ export interface DoorDef {
   id: string;
   label: string;
   roomId: string;
+  ownerSeat: number;
+  sealedByKahya?: boolean;
   x: number;
   z: number;
   width: number;
@@ -28,121 +30,218 @@ export interface RoomZone {
   minZ: number;
   maxZ: number;
   isPrivateBedroom?: boolean;
+  ownerSeat?: number;
 }
 
-/**
- * Kargalı Şato Haritası (~60m x 60m, baştan başa koşu ~25 sn)
- * Merkez (0, 0): Yemek Salonu ve 11 Sandalyeli Yuvarlak Sofra
- */
-export const ROOM_ZONES: RoomZone[] = [
-  { id: "yemek_salonu", name: "Yemek Salonu (Yuvarlak Sofra)", minX: -12, maxX: 12, minZ: -10, maxZ: 10 },
-  { id: "antre", name: "Antre / Giriş Holü", minX: -10, maxX: 10, minZ: 10, maxZ: 22 },
-  { id: "avlu", name: "Kargalı Avlu", minX: -14, maxX: 14, minZ: 22, maxZ: 34 },
-  { id: "kuzey_koridoru", name: "Kuzey Koridoru", minX: -12, maxX: 12, minZ: -20, maxZ: -10 },
-  { id: "saat_kulesi", name: "Saat Kulesi", minX: -7, maxX: 7, minZ: -32, maxZ: -20 },
-  { id: "kutuphane", name: "Kütüphane", minX: -26, maxX: -12, minZ: -22, maxZ: -10 },
-  { id: "mutfak", name: "Mutfak & Mahzen Girişi", minX: 12, maxX: 26, minZ: -22, maxZ: -10 },
-  { id: "yatak_1", name: "Yatak Odası 1 (Kuzeybatı)", minX: -24, maxX: -12, minZ: -9, maxZ: 0, isPrivateBedroom: true },
-  { id: "yatak_3", name: "Yatak Odası 3 (Güneybatı)", minX: -24, maxX: -12, minZ: 1, maxZ: 10, isPrivateBedroom: true },
-  { id: "yatak_2", name: "Yatak Odası 2 (Kuzeydoğu)", minX: 12, maxX: 24, minZ: -9, maxZ: 0, isPrivateBedroom: true },
-  { id: "yatak_4", name: "Yatak Odası 4 (Güneydoğu)", minX: 12, maxX: 24, minZ: 1, maxZ: 10, isPrivateBedroom: true }
+export interface CollisionActorContext {
+  seat?: number;
+  currentRoomId?: string;
+  lockedDoors?: Record<string, boolean>;
+  hasKahyaKey?: boolean;
+}
+
+export const PUZZLE_ALTARS: Array<{ id: string; label: string; x: number; z: number; kind: "RUNE" | "RIDDLE" | "CLOCK" }> = [
+  { id: "altar_rune", label: "🔮 Kadim Rün Kürsüsü", x: 16.2, z: -20.5, kind: "RUNE" },
+  { id: "altar_riddle", label: "📜 Kâhya'nın Bilmece Kürsüsü", x: 22.0, z: -20.5, kind: "RIDDLE" },
+  { id: "altar_clock", label: "🕰️ Şato Saati Şifresi", x: 22.0, z: -13.5, kind: "CLOCK" }
 ];
 
-export const DOORS: DoorDef[] = [
-  {
-    id: "door_yatak_1",
-    label: "Yatak Odası 1 Kapısı",
-    roomId: "yatak_1",
-    x: -12,
-    z: -4.5,
-    width: 0.5,
-    depth: 2.4,
-    hingeX: -12,
-    hingeZ: -5.7,
-    orientation: "vertical"
-  },
-  {
-    id: "door_yatak_3",
-    label: "Yatak Odası 3 Kapısı",
-    roomId: "yatak_3",
-    x: -12,
-    z: 5.5,
-    width: 0.5,
-    depth: 2.4,
-    hingeX: -12,
-    hingeZ: 4.3,
-    orientation: "vertical"
-  },
-  {
-    id: "door_yatak_2",
-    label: "Yatak Odası 2 Kapısı",
-    roomId: "yatak_2",
-    x: 12,
-    z: -4.5,
-    width: 0.5,
-    depth: 2.4,
-    hingeX: 12,
-    hingeZ: -5.7,
-    orientation: "vertical"
-  },
-  {
-    id: "door_yatak_4",
-    label: "Yatak Odası 4 Kapısı",
-    roomId: "yatak_4",
-    x: 12,
-    z: 5.5,
-    width: 0.5,
-    depth: 2.4,
-    hingeX: 12,
-    hingeZ: 4.3,
-    orientation: "vertical"
+export const COUNCIL_BOARD_POS = { x: -22.0, z: -17.0, label: "📋 Şüphe & Konsey Tahtası" };
+
+const SEAT_OWNER_NAMES: Record<number, string> = {
+  1: "Sinan",
+  2: "Lale",
+  3: "Kemal",
+  4: "Ufuk",
+  5: "Rıza",
+  6: "Davetli",
+  7: "Defne",
+  8: "Hüsnü",
+  9: "Peri",
+  10: "Zeynep",
+  11: "Kâhya (Mühürlü)",
+  12: "Yabancı"
+};
+
+function buildBedroomZonesAndDoors(): { zones: RoomZone[]; doors: DoorDef[]; walls: WallBox[] } {
+  const zones: RoomZone[] = [];
+  const doors: DoorDef[] = [];
+  const walls: WallBox[] = [];
+
+  // 6 satır: Z = -10 .. +20 (her oda 5m derinliğinde, kapı boşluğu 2.2m)
+  for (let i = 0; i < 6; i++) {
+    const zMin = -10 + i * 5;
+    const zMax = zMin + 5;
+    const zCenter = zMin + 2.5;
+
+    const westSeat = i + 1; // #1..#6
+    const eastSeat = i + 7; // #7..#12
+
+    zones.push({
+      id: `yatak_${westSeat}`,
+      name: `Oda #${westSeat} (${SEAT_OWNER_NAMES[westSeat]})`,
+      minX: -26,
+      maxX: -16.5,
+      minZ: zMin,
+      maxZ: zMax,
+      isPrivateBedroom: true,
+      ownerSeat: westSeat
+    });
+
+    zones.push({
+      id: `yatak_${eastSeat}`,
+      name: eastSeat === 11 ? "Oda #11 (Kâhya'nın Mühürlü Odası)" : `Oda #${eastSeat} (${SEAT_OWNER_NAMES[eastSeat]})`,
+      minX: 16.5,
+      maxX: 26,
+      minZ: zMin,
+      maxZ: zMax,
+      isPrivateBedroom: true,
+      ownerSeat: eastSeat
+    });
+
+    doors.push({
+      id: `door_yatak_${westSeat}`,
+      label: `Oda #${westSeat} Kapısı`,
+      roomId: `yatak_${westSeat}`,
+      ownerSeat: westSeat,
+      x: -16.5,
+      z: zCenter,
+      width: 0.45,
+      depth: 2.1,
+      hingeX: -16.5,
+      hingeZ: zCenter - 1.05,
+      orientation: "vertical"
+    });
+
+    doors.push({
+      id: `door_yatak_${eastSeat}`,
+      label: eastSeat === 11 ? "Kâhya'nın Mühürlü Kapısı (#11)" : `Oda #${eastSeat} Kapısı`,
+      roomId: `yatak_${eastSeat}`,
+      ownerSeat: eastSeat,
+      sealedByKahya: eastSeat === 11,
+      x: 16.5,
+      z: zCenter,
+      width: 0.45,
+      depth: 2.1,
+      hingeX: 16.5,
+      hingeZ: zCenter - 1.05,
+      orientation: "vertical"
+    });
+
+    // Yatak odaları arası yatay bölme duvarları
+    walls.push({
+      id: `west_bed_div_${i}`,
+      minX: -26,
+      maxX: -16.5,
+      minZ: zMax - 0.22,
+      maxZ: zMax + 0.22,
+      height: 4.5
+    });
+    walls.push({
+      id: `east_bed_div_${i}`,
+      minX: 16.5,
+      maxX: 26,
+      minZ: zMax - 0.22,
+      maxZ: zMax + 0.22,
+      height: 4.5
+    });
+
+    // Koridor cephesinde kapı üstü/yanı kısa duvar parçaları (kapı boşluğu zCenter ± 1.1m)
+    walls.push({
+      id: `west_corr_seg_a_${i}`,
+      minX: -16.75,
+      maxX: -16.25,
+      minZ: zMin,
+      maxZ: zCenter - 1.1,
+      height: 4.5
+    });
+    walls.push({
+      id: `west_corr_seg_b_${i}`,
+      minX: -16.75,
+      maxX: -16.25,
+      minZ: zCenter + 1.1,
+      maxZ: zMax,
+      height: 4.5
+    });
+
+    walls.push({
+      id: `east_corr_seg_a_${i}`,
+      minX: 16.25,
+      maxX: 16.75,
+      minZ: zMin,
+      maxZ: zCenter - 1.1,
+      height: 4.5
+    });
+    walls.push({
+      id: `east_corr_seg_b_${i}`,
+      minX: 16.25,
+      maxX: 16.75,
+      minZ: zCenter + 1.1,
+      maxZ: zMax,
+      height: 4.5
+    });
   }
+
+  return { zones, doors, walls };
+}
+
+const BEDROOM_DATA = buildBedroomZonesAndDoors();
+
+export const ROOM_ZONES: RoomZone[] = [
+  ...BEDROOM_DATA.zones,
+  { id: "toplanti_salonu", name: "Toplantı & Konsey Salonu", minX: -26, maxX: -12, minZ: -24, maxZ: -10 },
+  { id: "etkinlik_salonu", name: "Etkinlik & Bulmaca Salonu", minX: 12, maxX: 26, minZ: -24, maxZ: -10 },
+  { id: "bati_koridor", name: "Batı Yatak Koridoru (#1-#6)", minX: -16.5, maxX: -12, minZ: -10, maxZ: 20 },
+  { id: "dogu_koridor", name: "Doğu Yatak Koridoru (#7-#12)", minX: 12, maxX: 16.5, minZ: -10, maxZ: 20 },
+  { id: "yemek_salonu", name: "Yemek Salonu (Yuvarlak Sofra)", minX: -12, maxX: 12, minZ: -10, maxZ: 10 },
+  { id: "antre", name: "Antre / Giriş Holü", minX: -12, maxX: 12, minZ: 10, maxZ: 22 },
+  { id: "avlu", name: "Kargalı Avlu", minX: -16, maxX: 16, minZ: 22, maxZ: 34 },
+  { id: "kuzey_koridoru", name: "Kuzey Koridoru", minX: -12, maxX: 12, minZ: -22, maxZ: -10 },
+  { id: "saat_kulesi", name: "Saat Kulesi", minX: -8, maxX: 8, minZ: -32, maxZ: -22 }
 ];
 
-/**
- * Şato dış sınırları, oda bölmeleri ve ortadaki yuvarlak masa çarpışma kutuları
- */
+export const DOORS: DoorDef[] = BEDROOM_DATA.doors;
+
 export const CASTLE_WALLS: WallBox[] = [
-  // Dış sınır duvarları
-  { id: "outer_north", minX: -26, maxX: 26, minZ: -32.5, maxZ: -31.5, height: 6 },
-  { id: "outer_south", minX: -26, maxX: 26, minZ: 33.5, maxZ: 34.5, height: 6 },
+  // Şato dış sınır duvarları
+  { id: "outer_north", minX: -26.5, maxX: 26.5, minZ: -32.5, maxZ: -31.5, height: 6 },
+  { id: "outer_south", minX: -26.5, maxX: 26.5, minZ: 33.5, maxZ: 34.5, height: 6 },
   { id: "outer_west", minX: -26.5, maxX: -25.5, minZ: -32, maxZ: 34, height: 6 },
   { id: "outer_east", minX: 25.5, maxX: 26.5, minZ: -32, maxZ: 34, height: 6 },
 
-  // Batı yatak odaları ile Yemek Salonu arasındaki duvar (kapı boşlukları: z=[-5.7..-3.3] ve z=[4.3..6.7])
-  { id: "west_hall_1", minX: -12.3, maxX: -11.7, minZ: -10, maxZ: -5.7, height: 4.5 },
-  { id: "west_hall_2", minX: -12.3, maxX: -11.7, minZ: -3.3, maxZ: 4.3, height: 4.5 },
-  { id: "west_hall_3", minX: -12.3, maxX: -11.7, minZ: 6.7, maxZ: 10, height: 4.5 },
-  // Yatak 1 ile Yatak 3 ara duvarı
-  { id: "west_bed_div", minX: -25.5, maxX: -12, minZ: -0.3, maxZ: 0.3, height: 4.5 },
-  // Yatak 3 güney duvarı
-  { id: "west_bed_south", minX: -25.5, maxX: -12, minZ: 9.7, maxZ: 10.3, height: 4.5 },
+  // Yemek Salonu Batı & Doğu Kemerli Duvarları (Z = [-6.5..-2.8] ve [2.8..6.5] geniş kemer geçişleri)
+  { id: "hall_west_1", minX: -12.25, maxX: -11.75, minZ: -10, maxZ: -6.5, height: 4.8 },
+  { id: "hall_west_2", minX: -12.25, maxX: -11.75, minZ: -2.8, maxZ: 2.8, height: 4.8 },
+  { id: "hall_west_3", minX: -12.25, maxX: -11.75, minZ: 6.5, maxZ: 10, height: 4.8 },
 
-  // Doğu yatak odaları ile Yemek Salonu arasındaki duvar (kapı boşlukları: z=[-5.7..-3.3] ve z=[4.3..6.7])
-  { id: "east_hall_1", minX: 11.7, maxX: 12.3, minZ: -10, maxZ: -5.7, height: 4.5 },
-  { id: "east_hall_2", minX: 11.7, maxX: 12.3, minZ: -3.3, maxZ: 4.3, height: 4.5 },
-  { id: "east_hall_3", minX: 11.7, maxX: 12.3, minZ: 6.7, maxZ: 10, height: 4.5 },
-  // Yatak 2 ile Yatak 4 ara duvarı
-  { id: "east_bed_div", minX: 12, maxX: 25.5, minZ: -0.3, maxZ: 0.3, height: 4.5 },
-  // Yatak 4 güney duvarı
-  { id: "east_bed_south", minX: 12, maxX: 25.5, minZ: 9.7, maxZ: 10.3, height: 4.5 },
+  { id: "hall_east_1", minX: 11.75, maxX: 12.25, minZ: -10, maxZ: -6.5, height: 4.8 },
+  { id: "hall_east_2", minX: 11.75, maxX: 12.25, minZ: -2.8, maxZ: 2.8, height: 4.8 },
+  { id: "hall_east_3", minX: 11.75, maxX: 12.25, minZ: 6.5, maxZ: 10, height: 4.8 },
 
-  // Yemek Salonu Kuzey Duvarı (ortada Kuzey Koridoru geçidi x=[-3.2..3.2])
-  { id: "north_hall_L", minX: -12, maxX: -3.2, minZ: -10.3, maxZ: -9.7, height: 4.8 },
-  { id: "north_hall_R", minX: 3.2, maxX: 12, minZ: -10.3, maxZ: -9.7, height: 4.8 },
+  // Yemek Salonu Kuzey & Güney Duvarları
+  { id: "north_hall_L", minX: -12, maxX: -3.4, minZ: -10.25, maxZ: -9.75, height: 4.8 },
+  { id: "north_hall_R", minX: 3.4, maxX: 12, minZ: -10.25, maxZ: -9.75, height: 4.8 },
+  { id: "south_hall_L", minX: -12, maxX: -3.6, minZ: 9.75, maxZ: 10.25, height: 4.8 },
+  { id: "south_hall_R", minX: 3.6, maxX: 12, minZ: 9.75, maxZ: 10.25, height: 4.8 },
 
-  // Yemek Salonu Güney Duvarı (ortada Antre geçidi x=[-3.5..3.5])
-  { id: "south_hall_L", minX: -12, maxX: -3.5, minZ: 9.7, maxZ: 10.3, height: 4.8 },
-  { id: "south_hall_R", minX: 3.5, maxX: 12, minZ: 9.7, maxZ: 10.3, height: 4.8 }
+  // Kuzeybatı Toplantı Salonu & Kuzeydoğu Etkinlik/Bulmaca Salonu Duvarları (hem Kuzey Koridoruna hem Yatak Koridorlarına kemerli!)
+  { id: "council_north", minX: -26, maxX: -12, minZ: -24.25, maxZ: -23.75, height: 4.8 },
+  { id: "council_south_west", minX: -26, maxX: -16.2, minZ: -10.25, maxZ: -9.75, height: 4.8 },
+  { id: "council_east_1", minX: -12.25, maxX: -11.75, minZ: -24, maxZ: -19, height: 4.8 },
+  { id: "council_east_2", minX: -12.25, maxX: -11.75, minZ: -14.8, maxZ: -10, height: 4.8 },
+
+  { id: "puzzle_north", minX: 12, maxX: 26, minZ: -24.25, maxZ: -23.75, height: 4.8 },
+  { id: "puzzle_south_east", minX: 16.2, maxX: 26, minZ: -10.25, maxZ: -9.75, height: 4.8 },
+  { id: "puzzle_west_1", minX: 11.75, maxX: 12.25, minZ: -24, maxZ: -19, height: 4.8 },
+  { id: "puzzle_west_2", minX: 11.75, maxX: 12.25, minZ: -14.8, maxZ: -10, height: 4.8 },
+
+  // 12 Yatak Odası bölme ve koridor duvarları
+  ...BEDROOM_DATA.walls
 ];
 
 export const TABLE_RADIUS = 3.2;
-export const CHAIR_RING_RADIUS = 4.35;
+export const CHAIR_RING_RADIUS = 4.45;
 
-/**
- * 1..12 koltukların Yuvarlak Sofra etrafındaki koordinatlarını ve bakış açılarını hesaplar.
- * 11 numaralı sandalye kuzeyde (Şömine önünde, Kâhya'nın boş makamı) yer alır.
- */
 export function getSeatTransform(seat: number): { x: number; z: number; rotY: number } {
   const orderedSeats = [11, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12];
   const idx = Math.max(0, orderedSeats.indexOf(seat));
@@ -153,9 +252,6 @@ export function getSeatTransform(seat: number): { x: number; z: number; rotY: nu
   return { x, z, rotY };
 }
 
-/**
- * Antre doğuş noktaları
- */
 export function getAntreSpawn(seat: number): { x: number; z: number; rotY: number } {
   const row = seat <= 6 ? 0 : 1;
   const col = (seat - 1) % 6;
@@ -170,19 +266,22 @@ export function detectRoomZone(x: number, z: number): RoomZone {
       return r;
     }
   }
-  return ROOM_ZONES[0];
+  return ROOM_ZONES.find((r) => r.id === "yemek_salonu") || ROOM_ZONES[0];
 }
 
 /**
- * Oyuncu kapsülünün (radius=0.42) duvarlar, kapalı kapılar ve yuvarlak masa ile çarpışmasını çözer.
+ * Oyuncu kapsülünün duvarlar, yuvarlak masa ve KİŞİSEL ANAHTARLI YATAK ODASI KAPILARI ile çarpışmasını çözer.
+ * - Kendi koltuğunun yatak odası (`actor.seat === d.ownerSeat`) kilitli olsa bile kendi anahtarınla doğrudan girip çıkabilirsin!
+ * - İçerideki bir davetli kapı kilitlense bile dışarı çıkabilir (anti-hapis koruması).
  */
 export function resolveCastleCollision(
   nextX: number,
   nextZ: number,
   openDoors: Record<string, boolean>,
-  playerRadius = 0.42
+  playerRadius = 0.42,
+  actor?: CollisionActorContext
 ): { x: number; z: number; hit: boolean } {
-  let x = Math.max(-25.0, Math.min(25.0, nextX));
+  let x = Math.max(-25.2, Math.min(25.2, nextX));
   let z = Math.max(-31.0, Math.min(33.0, nextZ));
   let hit = false;
 
@@ -196,21 +295,30 @@ export function resolveCastleCollision(
     hit = true;
   }
 
-  // 2. Sabit duvar kutuları
   const allBoxes: WallBox[] = [...CASTLE_WALLS];
 
-  // 3. Kapalı kapıları çarpışma kutusu olarak ekle
+  // 2. Kişisel Oda Anahtarı & Kapı Kilit Matrisi
   for (const d of DOORS) {
     const isOpen = Boolean(openDoors[d.id]);
-    if (!isOpen) {
-      allBoxes.push({
-        id: d.id,
-        minX: d.x - d.width / 2,
-        maxX: d.x + d.width / 2,
-        minZ: d.z - d.depth / 2,
-        maxZ: d.z + d.depth / 2
-      });
+    if (isOpen) continue;
+
+    const isLocked = Boolean(actor?.lockedDoors?.[d.id]);
+    const isOwner = actor?.seat !== undefined && actor.seat === d.ownerSeat && !d.sealedByKahya;
+    const isKahyaUnlocked = Boolean(d.sealedByKahya && actor?.hasKahyaKey);
+    const isExitingFromInside = actor?.currentRoomId === d.roomId;
+
+    // Oda sahibi kendi özel odasına kapı kapalı/kilitli olsa bile anahtarıyla süzülüp geçebilir!
+    if (isOwner || isKahyaUnlocked || (isLocked && isExitingFromInside)) {
+      continue;
     }
+
+    allBoxes.push({
+      id: d.id,
+      minX: d.x - d.width / 2,
+      maxX: d.x + d.width / 2,
+      minZ: d.z - d.depth / 2,
+      maxZ: d.z + d.depth / 2
+    });
   }
 
   for (const b of allBoxes) {
@@ -227,14 +335,9 @@ export function resolveCastleCollision(
         x += (dx / d) * overlap;
         z += (dz / d) * overlap;
       } else {
-        // Tam merkezdeyse en yakın kenara it
         const leftPen = Math.abs(x - b.minX);
         const rightPen = Math.abs(b.maxX - x);
-        if (leftPen < rightPen) {
-          x = b.minX - playerRadius;
-        } else {
-          x = b.maxX + playerRadius;
-        }
+        x = leftPen < rightPen ? b.minX - playerRadius : b.maxX + playerRadius;
       }
     }
   }
@@ -244,14 +347,14 @@ export function resolveCastleCollision(
 
 export const BOT_WAYPOINTS: Array<{ x: number; z: number; room: string }> = [
   { x: 0, z: 16, room: "antre" },
-  { x: -6, z: 5, room: "yemek_salonu" },
-  { x: 6, z: -5, room: "yemek_salonu" },
-  { x: -18, z: -5, room: "yatak_1" },
-  { x: -18, z: 5.5, room: "yatak_3" },
-  { x: 18, z: -5, room: "yatak_2" },
-  { x: 18, z: 5.5, room: "yatak_4" },
-  { x: -18, z: -15, room: "kutuphane" },
-  { x: 18, z: -15, room: "mutfak" },
-  { x: 0, z: -25, room: "saat_kulesi" },
+  { x: -6.5, z: 5, room: "yemek_salonu" },
+  { x: 6.5, z: -5, room: "yemek_salonu" },
+  { x: -14.2, z: -5, room: "bati_koridor" },
+  { x: -14.2, z: 10, room: "bati_koridor" },
+  { x: 14.2, z: -5, room: "dogu_koridor" },
+  { x: 14.2, z: 10, room: "dogu_koridor" },
+  { x: -19, z: -17, room: "toplanti_salonu" },
+  { x: 18.5, z: -17, room: "etkinlik_salonu" },
+  { x: 0, z: -26, room: "saat_kulesi" },
   { x: 0, z: 27, room: "avlu" }
 ];

@@ -2,8 +2,9 @@ import { Schema, MapSchema, type } from "@colyseus/schema";
 
 export class DoorState extends Schema {
   @type("string") id: string = "";
+  @type("number") ownerSeat: number = 0;
   @type("boolean") open: boolean = false;
-  @type("boolean") locked: boolean = false;
+  @type("boolean") locked: boolean = true;
 }
 
 export class Player extends Schema {
@@ -20,9 +21,10 @@ export class Player extends Schema {
   @type("boolean") isBot: boolean = false;
   @type("string") roomId: string = "antre";
   @type("boolean") carryingGold: boolean = false;
+  @type("boolean") hasKahyaKey: boolean = false;
   @type("boolean") talking: boolean = false;
   @type("boolean") connected: boolean = true;
-  // Karakter özelleştirme alanları (Dizi karakteri veya oyuncunun kendi tasarımı)
+  @type("boolean") registered: boolean = false;
   @type("string") charName: string = "Sinan";
   @type("string") coatColor: string = "#1e2430";
   @type("string") accentColor: string = "#9b1c24";
@@ -33,25 +35,28 @@ export class Player extends Schema {
 
 /**
  * GÜVENLİK KURALI (02_TEKNIK_MIMARI §3.1):
- * Paylaşılan durumda (Schema) KESİNLİKLE rol (hain/misafir) alanı yer almaz.
- * Roller yalnızca sunucu belleğinde gizli Map içinde tutulur.
+ * Paylaşılan durumda (Schema) KESİNLİKLE rol (hain/misafir) veya oda şifresi yer almaz.
  */
 export class SofraState extends Schema {
   @type("string") phase: string = "LOBBY";
   @type("number") phaseEndsAt: number = 0;
   @type("number") round: number = 1;
   @type("string") code: string = "";
+  @type("string") roomTitle: string = "Kargalı Şato Sofrası";
+  @type("boolean") hasPassword: boolean = false;
   @type("string") hostId: string = "";
   @type("boolean") fastMode: boolean = false;
+  @type("boolean") autoStart: boolean = true;
   @type("string") announcement: string = "Şato lobisinde davetliler bekleniyor...";
+  @type("string") councilBoardNote: string = "Henüz Konsey Tahtasına şüpheli yazılmadı.";
   @type({ map: Player }) players = new MapSchema<Player>();
   @type({ map: DoorState }) doors = new MapSchema<DoorState>();
   @type("number") pot: number = 0;
   @type("string") necklaceHolder: string = "";
   @type("string") lastBurnedId: string = "";
   @type("string") lastBurnedName: string = "";
-  @type("string") lastBurnedFlame: string = ""; // "RED" (Hain) | "WHITE" (Misafir) | ""
+  @type("string") lastBurnedFlame: string = "";
   @type("string") lastTakenId: string = "";
   @type("string") lastTakenName: string = "";
-  @type("string") winnerTeam: string = ""; // "MISAFIR" | "HAIN" | ""
+  @type("string") winnerTeam: string = "";
 }

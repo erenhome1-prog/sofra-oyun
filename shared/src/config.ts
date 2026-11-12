@@ -14,17 +14,18 @@ export const SOFRA_CONFIG = {
   DOOR_INTERACT_DIST: 3.4,
   RECONNECT_TIMEOUT_SEC: 60,
   DURATIONS: {
-    ARRIVAL: 10,
-    DAY: 75,
-    TABLE: 35,
-    VOTE: 22,
-    TIE_VOTE: 15,
-    FIRE: 9,
-    NIGHT: 16,
-    MORNING: 7,
-    FINAL: 18
+    ARRIVAL: 12,
+    DAY: 300,
+    TRIAL: 60,
+    TABLE: 105,
+    VOTE: 40,
+    TIE_VOTE: 20,
+    FIRE: 10,
+    NIGHT: 120,
+    MORNING: 12,
+    FINAL: 30
   },
-  FAST_DIVISOR: 2.5,
+  FAST_DIVISOR: 3.5,
   COLORS: {
     SOFRA_RED: "#B2161E",
     GOLD: "#C9A24E",
@@ -36,6 +37,7 @@ export type GamePhase =
   | "LOBBY"
   | "ARRIVAL"
   | "DAY"
+  | "TRIAL"
   | "TABLE"
   | "VOTE"
   | "FIRE"
