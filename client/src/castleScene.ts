@@ -76,11 +76,17 @@ interface WorldFloatingSprite {
   dayOnly: boolean;
 }
 
+const CAMERA_MIN_DIST = 2.2;
+const CAMERA_MAX_DIST = 15.0;
+const INSPECT_MIN_DIST = 1.25;
+const INSPECT_MAX_DIST = 5.4;
+
 const CAMERA_ZOOM_PRESETS: ReadonlyArray<{ dist: number; pitch: number; label: string }> = [
   { dist: 7.6, pitch: 0.5, label: "🔭 Uzak" },
-  { dist: 10.4, pitch: 0.64, label: "🔭 Geniş" },
-  { dist: 5.8, pitch: 0.42, label: "🔭 Orta" },
-  { dist: 4.4, pitch: 0.34, label: "🔭 Yakın" }
+  { dist: 11.2, pitch: 0.64, label: "🔭 Geniş" },
+  { dist: 14.4, pitch: 0.76, label: "🔭 Kuşbakışı" },
+  { dist: 3.1, pitch: 0.28, label: "🔭 Yakın" },
+  { dist: 5.4, pitch: 0.4, label: "🔭 Orta" }
 ];
 
 function segmentIntersectsExpandedAABB(
@@ -169,9 +175,13 @@ export class CastleScene {
   public cameraYaw = 0;
   public cameraPitch = 0.5;
   public cameraDistance = 7.6;
+  public targetCameraDistance = 7.6;
   private zoomPresetIndex = 0;
   public inspectTargetId: string | null = null;
   public inspectOrbitYaw = 0;
+  public inspectPitch = 0.16;
+  public inspectDistance = 2.45;
+  public targetInspectDistance = 2.45;
   private cameraTarget = new THREE.Vector3(0, 1.5, 0);
 
   constructor(container: HTMLElement) {
@@ -237,22 +247,91 @@ export class CastleScene {
     this.activePhase = phase || "LOBBY";
   }
 
+  public resetInspectCamera(): void {
+    this.inspectOrbitYaw = 0;
+    this.inspectPitch = 0.16;
+    const defDist = window.innerWidth < window.innerHeight ? 2.85 : 2.45;
+    this.targetInspectDistance = defDist;
+    this.inspectDistance = defDist;
+  }
+
+  public getCameraZoomLabel(): string {
+    if (this.inspectTargetId) {
+      if (this.targetInspectDistance <= 1.85) return "🔍 Yakın";
+      if (this.targetInspectDistance >= 3.35) return "🔍 Uzak";
+      return "🔍 Orta";
+    }
+    if (this.targetCameraDistance >= 12.8) return "🔭 Kuşbakışı";
+    if (this.targetCameraDistance >= 9.6) return "🔭 Geniş";
+    if (this.targetCameraDistance >= 6.6) return "🔭 Uzak";
+    if (this.targetCameraDistance >= 4.4) return "🔭 Orta";
+    return "🔭 Yakın";
+  }
+
+  public getCameraZoomProgress(): number {
+    if (this.inspectTargetId) {
+      const ratio =
+        (INSPECT_MAX_DIST - this.targetInspectDistance) / (INSPECT_MAX_DIST - INSPECT_MIN_DIST);
+      return Math.round(Math.max(0, Math.min(1, ratio)) * 100);
+    }
+    const ratio =
+      (CAMERA_MAX_DIST - this.targetCameraDistance) / (CAMERA_MAX_DIST - CAMERA_MIN_DIST);
+    return Math.round(Math.max(0, Math.min(1, ratio)) * 100);
+  }
+
+  public setCameraZoomProgress(progress01: number): string {
+    const clamped = Math.max(0, Math.min(1, progress01));
+    if (this.inspectTargetId) {
+      this.targetInspectDistance =
+        INSPECT_MAX_DIST - clamped * (INSPECT_MAX_DIST - INSPECT_MIN_DIST);
+      return this.getCameraZoomLabel();
+    }
+    const prevT =
+      (this.targetCameraDistance - CAMERA_MIN_DIST) / (CAMERA_MAX_DIST - CAMERA_MIN_DIST);
+    this.targetCameraDistance =
+      CAMERA_MAX_DIST - clamped * (CAMERA_MAX_DIST - CAMERA_MIN_DIST);
+    const nextT =
+      (this.targetCameraDistance - CAMERA_MIN_DIST) / (CAMERA_MAX_DIST - CAMERA_MIN_DIST);
+    this.cameraPitch = Math.max(0.15, Math.min(1.05, this.cameraPitch + (nextT - prevT) * 0.48));
+    return this.getCameraZoomLabel();
+  }
+
   public cycleCameraZoom(): string {
+    if (this.inspectTargetId) {
+      if (this.targetInspectDistance > 3.1) {
+        this.targetInspectDistance = 1.55;
+      } else if (this.targetInspectDistance < 2.0) {
+        this.targetInspectDistance = 2.45;
+      } else {
+        this.targetInspectDistance = 3.95;
+      }
+      return this.getCameraZoomLabel();
+    }
     this.zoomPresetIndex = (this.zoomPresetIndex + 1) % CAMERA_ZOOM_PRESETS.length;
     const preset = CAMERA_ZOOM_PRESETS[this.zoomPresetIndex];
-    this.cameraDistance = preset.dist;
+    this.targetCameraDistance = preset.dist;
     this.cameraPitch = preset.pitch;
     return preset.label;
   }
 
   public adjustCameraZoom(deltaDist: number): string {
-    this.cameraDistance = Math.max(4.0, Math.min(11.6, this.cameraDistance + deltaDist));
-    const t = (this.cameraDistance - 4.0) / (11.6 - 4.0);
-    this.cameraPitch = Math.max(0.22, Math.min(0.95, 0.32 + t * 0.36));
-    if (this.cameraDistance >= 9.2) return "🔭 Geniş";
-    if (this.cameraDistance >= 6.8) return "🔭 Uzak";
-    if (this.cameraDistance >= 5.1) return "🔭 Orta";
-    return "🔭 Yakın";
+    if (this.inspectTargetId) {
+      this.targetInspectDistance = Math.max(
+        INSPECT_MIN_DIST,
+        Math.min(INSPECT_MAX_DIST, this.targetInspectDistance + deltaDist * 0.55)
+      );
+      return this.getCameraZoomLabel();
+    }
+    const prevT =
+      (this.targetCameraDistance - CAMERA_MIN_DIST) / (CAMERA_MAX_DIST - CAMERA_MIN_DIST);
+    this.targetCameraDistance = Math.max(
+      CAMERA_MIN_DIST,
+      Math.min(CAMERA_MAX_DIST, this.targetCameraDistance + deltaDist)
+    );
+    const nextT =
+      (this.targetCameraDistance - CAMERA_MIN_DIST) / (CAMERA_MAX_DIST - CAMERA_MIN_DIST);
+    this.cameraPitch = Math.max(0.15, Math.min(1.05, this.cameraPitch + (nextT - prevT) * 0.48));
+    return this.getCameraZoomLabel();
   }
 
   // ==========================================================================
@@ -2044,18 +2123,26 @@ export class CastleScene {
   }
 
   public updateCamera(playerX: number, playerZ: number, dt: number): void {
+    const smoothLerp = Math.min(1, dt * 13);
+    this.cameraDistance += (this.targetCameraDistance - this.cameraDistance) * smoothLerp;
+    this.inspectDistance += (this.targetInspectDistance - this.inspectDistance) * smoothLerp;
+
     if (this.inspectTargetId) {
       const rig = this.characterRigs.get(this.inspectTargetId);
       if (rig) {
-        const focus = new THREE.Vector3(rig.group.position.x, 1.32, rig.group.position.z);
+        const focusY = this.inspectDistance < 1.8 ? 1.52 : 1.32;
+        const focus = new THREE.Vector3(rig.group.position.x, focusY, rig.group.position.z);
         this.cameraTarget.lerp(focus, Math.min(1, dt * 14));
         this.playerLanternLight.position.set(focus.x, 2.6, focus.z);
 
         const viewAngle = rig.group.rotation.y + this.inspectOrbitYaw;
-        const dist = window.innerWidth < window.innerHeight ? 2.85 : 2.45;
-        const desiredX = focus.x + Math.sin(viewAngle) * dist;
-        const desiredZ = focus.z + Math.cos(viewAngle) * dist;
-        this.camera.position.lerp(new THREE.Vector3(desiredX, 1.68, desiredZ), Math.min(1, dt * 12));
+        const dist = this.inspectDistance;
+        const horizDist = dist * Math.cos(this.inspectPitch);
+        const vertDist = dist * Math.sin(this.inspectPitch);
+        const desiredX = focus.x + Math.sin(viewAngle) * horizDist;
+        const desiredZ = focus.z + Math.cos(viewAngle) * horizDist;
+        const desiredY = Math.max(0.95, focus.y + vertDist);
+        this.camera.position.lerp(new THREE.Vector3(desiredX, desiredY, desiredZ), Math.min(1, dt * 13));
         this.camera.lookAt(this.cameraTarget);
         return;
       }
@@ -2072,10 +2159,10 @@ export class CastleScene {
 
     let desiredX = this.cameraTarget.x + Math.sin(this.cameraYaw) * horizDist;
     let desiredZ = this.cameraTarget.z + Math.cos(this.cameraYaw) * horizDist;
-    const desiredY = Math.max(1.35, this.cameraTarget.y + vertDist);
+    const desiredY = Math.max(1.25, this.cameraTarget.y + vertDist);
 
-    desiredX = Math.max(-31.5, Math.min(31.5, desiredX));
-    desiredZ = Math.max(-37.5, Math.min(40.5, desiredZ));
+    desiredX = Math.max(-36.5, Math.min(36.5, desiredX));
+    desiredZ = Math.max(-42.5, Math.min(45.5, desiredZ));
 
     this.camera.position.set(desiredX, desiredY, desiredZ);
     this.camera.lookAt(this.cameraTarget);

@@ -204,8 +204,8 @@ class SofraGameApp {
   private lastRecordedBoardNote = "";
   private lastHandbookRenderHash = "";
 
-  // Menu idle rotation, PC zero-click mouse edge pan, auto-declutter timers & FPS
-  private pcEdgePanDir = 0;
+  // Menu idle rotation, camera zoom hold, auto-declutter timers & FPS
+  private camZoomDir = 0;
   private menuOrbitAngle = 0;
   private lastAnnouncementText = "";
   private announcementChangedAt = 0;
@@ -1488,13 +1488,18 @@ class SofraGameApp {
     const cycleLight = () => {
       this.scene.cycleBrightnessBoost();
     };
-    const updateZoomBtn = (label: string) => {
-      const zBtn = document.getElementById("btn-hud-zoom");
-      if (zBtn) zBtn.textContent = label;
-    };
     document.getElementById("btn-hud-zoom")?.addEventListener("click", () => {
-      updateZoomBtn(this.scene.cycleCameraZoom());
+      this.scene.cycleCameraZoom();
+      this.syncCameraZoomUI();
     });
+    this.bindHoldZoomButton(document.getElementById("btn-hud-zoom-in"), -1);
+    this.bindHoldZoomButton(document.getElementById("btn-hud-zoom-out"), 1);
+    const hudZoomSlider = document.getElementById("hud-zoom-slider") as HTMLInputElement | null;
+    hudZoomSlider?.addEventListener("input", () => {
+      this.scene.setCameraZoomProgress(Number(hudZoomSlider.value) / 100);
+      this.syncCameraZoomUI();
+    });
+    this.syncCameraZoomUI();
     document.getElementById("btn-open-handbook")?.addEventListener("click", () => this.toggleHandbookModal());
     document.getElementById("handbook-modal")?.addEventListener("click", (e) => {
       if ((e.target as HTMLElement)?.id === "handbook-modal") {
@@ -1592,9 +1597,39 @@ class SofraGameApp {
     }
   }
 
+  private syncCameraZoomUI(): void {
+    const label = this.scene.getCameraZoomLabel();
+    const prog = String(this.scene.getCameraZoomProgress());
+    const zBtn = document.getElementById("btn-hud-zoom");
+    if (zBtn) zBtn.textContent = label;
+    const hudSlider = document.getElementById("hud-zoom-slider") as HTMLInputElement | null;
+    if (hudSlider) hudSlider.value = prog;
+    const inspSlider = document.getElementById("inspect-zoom-slider") as HTMLInputElement | null;
+    if (inspSlider) inspSlider.value = prog;
+    const inspBadge = document.getElementById("inspect-zoom-badge");
+    if (inspBadge) inspBadge.textContent = label;
+  }
+
+  private bindHoldZoomButton(btn: HTMLElement | null, dir: number): void {
+    if (!btn) return;
+    btn.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      this.scene.adjustCameraZoom(dir * 0.45);
+      this.syncCameraZoomUI();
+      this.camZoomDir = dir;
+    });
+    const stop = () => {
+      if (this.camZoomDir === dir) this.camZoomDir = 0;
+    };
+    btn.addEventListener("pointerup", stop);
+    btn.addEventListener("pointercancel", stop);
+    btn.addEventListener("pointerleave", stop);
+  }
+
   private setupInputAndLoLWheel(): void {
     window.addEventListener("keydown", (e) => {
-      if (document.activeElement?.tagName === "INPUT") {
+      if (document.activeElement?.tagName === "INPUT" || document.activeElement?.tagName === "TEXTAREA") {
         if (e.key === "Escape") {
           (document.activeElement as HTMLElement).blur();
         }
@@ -1608,24 +1643,29 @@ class SofraGameApp {
       }
       if ((k === "b" || k === "j") && this.room) {
         e.preventDefault();
-        if (document.pointerLockElement) {
-          document.exitPointerLock?.();
-        }
         this.toggleHandbookModal();
         return;
       }
-      if (k === "v" && this.room) {
+      if (k === "v" && (this.room || this.previewSelfOnMenu)) {
         e.preventDefault();
-        const label = this.scene.cycleCameraZoom();
-        const zBtn = document.getElementById("btn-hud-zoom");
-        if (zBtn) zBtn.textContent = label;
+        this.scene.cycleCameraZoom();
+        this.syncCameraZoomUI();
         return;
+      }
+      if (!e.ctrlKey && !e.metaKey) {
+        if (e.key === "+" || e.key === "=" || e.code === "NumpadAdd" || e.key === "PageUp") {
+          e.preventDefault();
+          this.keys.add("__zoom_in__");
+          return;
+        }
+        if (e.key === "-" || e.key === "_" || e.code === "NumpadSubtract" || e.key === "PageDown") {
+          e.preventDefault();
+          this.keys.add("__zoom_out__");
+          return;
+        }
       }
       if (k === "enter" && this.room) {
         e.preventDefault();
-        if (document.pointerLockElement) {
-          document.exitPointerLock?.();
-        }
         const bChat = document.getElementById("ko-bottom-chat");
         if (bChat?.classList.contains("minimized")) {
           bChat.classList.remove("minimized");
@@ -1638,9 +1678,6 @@ class SofraGameApp {
       }
       if (k === "tab" && this.room) {
         e.preventDefault();
-        if (document.pointerLockElement) {
-          document.exitPointerLock?.();
-        }
         const puzModal = document.getElementById("puzzle-modal");
         if (puzModal && !puzModal.classList.contains("hidden")) {
           puzModal.classList.add("hidden");
@@ -1649,24 +1686,30 @@ class SofraGameApp {
         }
         return;
       }
-      if (k === "alt" && document.pointerLockElement) {
-        document.exitPointerLock?.();
-      }
       this.keys.add(k);
       if (k === "e") {
         this.tryInteractNearestDoor();
-      } else if (k === "q" || k === "arrowleft") {
-        this.scene.cameraYaw += 0.14;
-      } else if (k === "arrowright") {
-        this.scene.cameraYaw -= 0.14;
       }
     });
 
     window.addEventListener("keyup", (e) => {
-      this.keys.delete(e.key.toLowerCase());
+      const k = e.key.toLowerCase();
+      this.keys.delete(k);
+      if (e.key === "+" || e.key === "=" || e.code === "NumpadAdd" || e.key === "PageUp") {
+        this.keys.delete("__zoom_in__");
+      }
+      if (e.key === "-" || e.key === "_" || e.code === "NumpadSubtract" || e.key === "PageDown") {
+        this.keys.delete("__zoom_out__");
+      }
     });
 
-    // Sol Kamera Dönüş Tuşları (⟲ Sola Bak / Sağa Bak ⟳)
+    window.addEventListener("blur", () => {
+      this.keys.clear();
+      this.camTurnDir = 0;
+      this.camZoomDir = 0;
+    });
+
+    // Sol Kamera Dönüş & Yakınlaş/Uzaklaş Tuşları (🔍− / ⟲ Sola / Sağa ⟳ / 🔍+)
     const bindTurnBtn = (id: string, dir: number) => {
       const btn = document.getElementById(id);
       if (!btn) return;
@@ -1683,130 +1726,157 @@ class SofraGameApp {
     };
     bindTurnBtn("btn-cam-left", 1);
     bindTurnBtn("btn-cam-right", -1);
+    this.bindHoldZoomButton(document.getElementById("btn-cam-zoom-in"), -1);
+    this.bindHoldZoomButton(document.getElementById("btn-cam-zoom-out"), 1);
 
-    // 1A. PC WEB: MOUSE BASMADAN (TIKLAMADAN) DOĞRUDAN FARE HAREKETİYLE SERBEST YÖNLENDİRME!
+    // 1. STANDART WEB 3D & MOBİL KAMERA KONTROLÜ:
+    // - PC Web: İmleç her zaman serbest! Sol Tık veya Sağ Tık BASILI TUTUP SÜRÜKLEYİNCE kamera 360° döner; bırakınca sabit kalır.
+    // - Mobil Dokunmatik: 1 Parmak sürükleme 360° çevirir; 2 Parmak kıstırma/açma (Pinch-to-Zoom) yakınlaştırıp uzaklaştırır!
+    // - Fare Tekerleği / Trackpad: Her evrede ve 360° İnceleme modunda akıcı yakınlaştırır / uzaklaştırır.
     const canvas = this.scene.renderer.domElement;
-    let hasLastMouse = false;
-    let lastHoverX = 0;
-    let lastHoverY = 0;
+    canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+    canvas.addEventListener("gesturestart" as any, (e: Event) => e.preventDefault(), { passive: false });
+    canvas.addEventListener("gesturechange" as any, (e: Event) => e.preventDefault(), { passive: false });
 
-    window.addEventListener("mousemove", (e) => {
-      // 1) Eğer Pointer Lock aktifse sınırsız 360° döndür
-      if (document.pointerLockElement === canvas) {
-        if (this.scene.inspectTargetId) {
-          this.scene.inspectOrbitYaw -= e.movementX * 0.008;
-          return;
-        }
-        this.scene.cameraYaw -= e.movementX * 0.0036;
-        this.scene.cameraPitch = Math.max(0.15, Math.min(1.05, this.scene.cameraPitch + e.movementY * 0.0026));
-        return;
-      }
-
-      // 2) Pointer Lock yokken bile (hiçbir fare tuşuna basmadan!) Gündüz keşfinde fare hareketiyle yönlendir!
-      const phase = (this.room?.state as any)?.phase;
-      if (phase !== "DAY" || this.scene.inspectTargetId || document.activeElement?.tagName === "INPUT" || e.altKey) {
-        this.pcEdgePanDir = 0;
-        hasLastMouse = false;
-        return;
-      }
-
-      const targetEl = e.target as HTMLElement | null;
-      const overInteractiveUI = Boolean(
-        targetEl?.closest(
-          ".interactive, .ko-pm-window, .day-quest-box, .lol-wheel-cluster, .left-control-cluster, #puzzle-modal, #dm-picker-modal, #inspect-overlay, #handbook-modal"
-        )
-      );
-      if (overInteractiveUI) {
-        this.pcEdgePanDir = 0;
-        lastHoverX = e.clientX;
-        lastHoverY = e.clientY;
-        hasLastMouse = true;
-        return;
-      }
-
-      if (!hasLastMouse) {
-        lastHoverX = e.clientX;
-        lastHoverY = e.clientY;
-        hasLastMouse = true;
-        return;
-      }
-
-      const dx = typeof e.movementX === "number" && e.movementX !== 0 ? e.movementX : e.clientX - lastHoverX;
-      const dy = typeof e.movementY === "number" && e.movementY !== 0 ? e.movementY : e.clientY - lastHoverY;
-      lastHoverX = e.clientX;
-      lastHoverY = e.clientY;
-
-      this.scene.cameraYaw -= dx * 0.0056;
-      this.scene.cameraPitch = Math.max(0.15, Math.min(1.05, this.scene.cameraPitch + dy * 0.0036));
-
-      // Ekranın sol/sağ %8 kenarına gelindiğinde takılmadan dönmeye devam etsin!
-      if (e.clientX < window.innerWidth * 0.08) {
-        this.pcEdgePanDir = 1;
-      } else if (e.clientX > window.innerWidth * 0.92) {
-        this.pcEdgePanDir = -1;
-      } else {
-        this.pcEdgePanDir = 0;
-      }
-    });
-
-    // PC Fare Tekerleği ile Kamera Uzaklığı (Zoom) Ayarı
-    canvas.addEventListener(
-      "wheel",
-      (e) => {
-        if (!this.room || this.scene.inspectTargetId) return;
-        e.preventDefault();
-        const label = this.scene.adjustCameraZoom(e.deltaY > 0 ? 0.65 : -0.65);
-        const zBtn = document.getElementById("btn-hud-zoom");
-        if (zBtn) zBtn.textContent = label;
-      },
-      { passive: false }
-    );
-
-    // PC'de 3B sahneye bir kez tıklanırsa tam 360° sonsuz fare kilidi (Pointer Lock) de açılabilir (ESC/Enter ile çıkılır)
-    canvas.addEventListener("click", (e) => {
-      const isTouch = "ontouchstart" in window && navigator.maxTouchPoints > 0;
-      if (isTouch) return;
-      const phase = (this.room?.state as any)?.phase;
-      if (phase === "DAY" && !this.scene.inspectTargetId && !document.pointerLockElement) {
-        (canvas as any).requestPointerLock?.()?.catch?.(() => {});
-      }
-      void e;
-    });
-
-    // 1B. Mobil Dokunmatik & 360° İnceleme Sürükleme Bakışı (İzole lookPointerId)
+    const activeTouchPointers = new Map<number, { x: number; y: number }>();
     let lookPointerId: number | null = null;
     let lastLookX = 0;
     let lastLookY = 0;
+    let lastPinchDist: number | null = null;
 
     canvas.addEventListener("pointerdown", (e) => {
-      if (e.pointerType === "mouse" && !this.scene.inspectTargetId && (this.room?.state as any)?.phase === "DAY") {
+      if (e.pointerType === "mouse") {
+        // Yalnızca Sol Tık (0), Orta Tık (1) veya Sağ Tık (2) basılı tutulduğunda döndür!
+        if (e.button !== 0 && e.button !== 1 && e.button !== 2) return;
+        if (lookPointerId !== null) return;
+        lookPointerId = e.pointerId;
+        lastLookX = e.clientX;
+        lastLookY = e.clientY;
+        canvas.classList.add("dragging-cam");
         return;
       }
-      if (lookPointerId !== null) return;
-      lookPointerId = e.pointerId;
-      lastLookX = e.clientX;
-      lastLookY = e.clientY;
+
+      // Dokunmatik (Mobil / Tablet): 1 parmak = kamera bakışı, 2 parmak = kıstır/aç (Pinch Zoom)
+      activeTouchPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (activeTouchPointers.size >= 2) {
+        lookPointerId = null;
+        const pts = Array.from(activeTouchPointers.values());
+        lastPinchDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+        return;
+      }
+
+      if (lookPointerId === null) {
+        lookPointerId = e.pointerId;
+        lastLookX = e.clientX;
+        lastLookY = e.clientY;
+      }
     });
 
     window.addEventListener("pointermove", (e) => {
+      if (activeTouchPointers.has(e.pointerId)) {
+        activeTouchPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (activeTouchPointers.size >= 2) {
+          const pts = Array.from(activeTouchPointers.values());
+          const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+          if (lastPinchDist !== null && Math.abs(dist - lastPinchDist) > 0.35) {
+            // İki parmağı açmak (dist artışı) = Yakınlaş (-delta), kıstırmak = Uzaklaş (+delta)
+            const delta = -(dist - lastPinchDist) * 0.04;
+            this.scene.adjustCameraZoom(delta);
+            this.syncCameraZoomUI();
+          }
+          lastPinchDist = dist;
+          return;
+        }
+      }
+
       if (e.pointerId !== lookPointerId) return;
+
+      // Güvenlik: Fare tuşu pencere dışında bırakıldıysa (buttons === 0) sürüklemeyi anında kes!
+      if (e.pointerType === "mouse" && e.buttons === 0) {
+        lookPointerId = null;
+        canvas.classList.remove("dragging-cam");
+        return;
+      }
+
       const dx = e.clientX - lastLookX;
       const dy = e.clientY - lastLookY;
       lastLookX = e.clientX;
       lastLookY = e.clientY;
+
       if (this.scene.inspectTargetId) {
-        this.scene.inspectOrbitYaw -= dx * 0.012;
+        this.scene.inspectOrbitYaw -= dx * 0.011;
+        this.scene.inspectPitch = Math.max(-0.12, Math.min(0.65, this.scene.inspectPitch + dy * 0.005));
         return;
       }
-      this.scene.cameraYaw -= dx * 0.006;
-      this.scene.cameraPitch = Math.max(0.15, Math.min(1.05, this.scene.cameraPitch + dy * 0.0045));
+
+      const sens = e.pointerType === "mouse" ? 0.0055 : 0.0062;
+      const pitchSens = e.pointerType === "mouse" ? 0.004 : 0.0046;
+      this.scene.cameraYaw -= dx * sens;
+      this.scene.cameraPitch = Math.max(0.15, Math.min(1.05, this.scene.cameraPitch + dy * pitchSens));
     });
 
     const releaseLook = (e: PointerEvent) => {
-      if (e.pointerId === lookPointerId) lookPointerId = null;
+      if (activeTouchPointers.delete(e.pointerId)) {
+        if (activeTouchPointers.size < 2) {
+          lastPinchDist = null;
+        }
+        if (activeTouchPointers.size === 1) {
+          const [remId, remPos] = Array.from(activeTouchPointers.entries())[0];
+          lookPointerId = remId;
+          lastLookX = remPos.x;
+          lastLookY = remPos.y;
+          return;
+        }
+      }
+      if (e.pointerId === lookPointerId) {
+        lookPointerId = null;
+        canvas.classList.remove("dragging-cam");
+      }
     };
     window.addEventListener("pointerup", releaseLook);
     window.addEventListener("pointercancel", releaseLook);
+
+    // 1B. Global Fare Tekerleği & Trackpad Kıstırma ile Akıcı Yakınlaşma / Uzaklaşma
+    const isInsideScrollableUI = (startEl: HTMLElement | null): boolean => {
+      let el: HTMLElement | null = startEl;
+      while (el && el !== document.body && el !== document.documentElement) {
+        if (el.tagName === "INPUT" || el.tagName === "SELECT" || el.tagName === "TEXTAREA") {
+          return false;
+        }
+        const style = window.getComputedStyle(el);
+        if (
+          (style.overflowY === "auto" || style.overflowY === "scroll") &&
+          el.scrollHeight > el.clientHeight + 4
+        ) {
+          return true;
+        }
+        el = el.parentElement;
+      }
+      return false;
+    };
+
+    window.addEventListener(
+      "wheel",
+      (e) => {
+        if (!this.room && !this.previewSelfOnMenu) return;
+        const welcomeOpen = !document.getElementById("welcome-modal")?.classList.contains("hidden");
+        if (welcomeOpen) return;
+
+        // Laptop trackpad iki parmak kıstırma (ctrlKey) veya kaydırmasız alanda fare tekerleği -> 3D Kamera Zoom!
+        if (!e.ctrlKey && isInsideScrollableUI(e.target as HTMLElement | null)) {
+          return;
+        }
+
+        e.preventDefault();
+        const rawDelta = e.deltaMode === 1 ? e.deltaY * 32 : e.deltaY;
+        const step = e.ctrlKey
+          ? Math.max(-1.6, Math.min(1.6, rawDelta * 0.024))
+          : Math.max(-1.4, Math.min(1.4, rawDelta * 0.0085));
+        this.scene.adjustCameraZoom(step);
+        this.syncCameraZoomUI();
+      },
+      { passive: false }
+    );
 
     // 2. Sol Alt Hibrit Yön Okları (▲▼◄►) + Analog Joystick (İzole joyPointerId)
     const zone = document.getElementById("joystick-zone")!;
@@ -1928,7 +1998,8 @@ class SofraGameApp {
 
     this.previewSelfOnMenu = true;
     this.scene.inspectTargetId = "__preview_self__";
-    this.scene.inspectOrbitYaw = 0;
+    this.scene.resetInspectCamera();
+    this.syncCameraZoomUI();
 
     document.getElementById("main-menu-overlay")?.classList.add("hidden");
     const overlay = document.getElementById("inspect-overlay")!;
@@ -1937,6 +2008,8 @@ class SofraGameApp {
 
     const renderPreviewCard = () => {
       const charDef = CHARACTERS.find((c) => c.seat === this.vault.selectedSeat) ?? CHARACTERS[0];
+      const zoomProg = this.scene.getCameraZoomProgress();
+      const zoomLbl = this.scene.getCameraZoomLabel();
       card.innerHTML = `
         <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
           <div>
@@ -1952,13 +2025,28 @@ class SofraGameApp {
           </button>
         </div>
 
-        <div style="font-size:0.76rem; color:var(--text-muted);">
-          Ekranı parmağınla / fareyle sağa sola sürükleyerek karakterini 360° çevirebilirsin:
+        <div style="font-size:0.75rem; color:var(--text-muted);">
+          Sürükleyerek 360° çevir, iki parmakla / tekerlekle veya çubukla yakınlaş-uzaklaş:
         </div>
 
         <div style="display:flex; gap:6px;">
           <button class="btn" id="btn-spin-left-menu" style="flex:1;">⟲ Sola Çevir</button>
           <button class="btn" id="btn-spin-right-menu" style="flex:1;">Sağa Çevir ⟳</button>
+        </div>
+
+        <div class="inspect-zoom-row">
+          <button class="hud-zoom-step" id="btn-inspect-zoom-out" type="button" title="Uzaklaş">−</button>
+          <input
+            type="range"
+            id="inspect-zoom-slider"
+            class="inspect-zoom-slider"
+            min="0"
+            max="100"
+            value="${zoomProg}"
+            aria-label="Karakter Yakınlık Çubuğu"
+          />
+          <button class="hud-zoom-step" id="btn-inspect-zoom-in" type="button" title="Yakınlaş">+</button>
+          <span id="inspect-zoom-badge" style="font-size:0.72rem; color:var(--gold); min-width:58px; text-align:right;">${zoomLbl}</span>
         </div>
 
         <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
@@ -1977,6 +2065,13 @@ class SofraGameApp {
       document.getElementById("btn-spin-right-menu")?.addEventListener("click", () => {
         this.scene.inspectOrbitYaw += 0.55;
       });
+      this.bindHoldZoomButton(document.getElementById("btn-inspect-zoom-in"), -1);
+      this.bindHoldZoomButton(document.getElementById("btn-inspect-zoom-out"), 1);
+      const inspSlider = document.getElementById("inspect-zoom-slider") as HTMLInputElement | null;
+      inspSlider?.addEventListener("input", () => {
+        this.scene.setCameraZoomProgress(Number(inspSlider.value) / 100);
+        this.syncCameraZoomUI();
+      });
       card.querySelectorAll("[data-menu-col]").forEach((el) => {
         el.addEventListener("click", () => {
           this.vault.coatColor = (el as HTMLElement).dataset.menuCol!;
@@ -1987,6 +2082,7 @@ class SofraGameApp {
       document.getElementById("btn-close-menu-inspect")?.addEventListener("click", () => {
         this.previewSelfOnMenu = false;
         this.scene.inspectTargetId = null;
+        this.syncCameraZoomUI();
         overlay.classList.add("hidden");
         document.getElementById("main-menu-overlay")?.classList.remove("hidden");
       });
@@ -2064,7 +2160,8 @@ class SofraGameApp {
   }): void {
     this.previewSelfOnMenu = false;
     this.scene.inspectTargetId = data.id;
-    this.scene.inspectOrbitYaw = 0;
+    this.scene.resetInspectCamera();
+    this.syncCameraZoomUI();
     this.lastCenterRenderHash = "";
 
     const overlay = document.getElementById("inspect-overlay")!;
@@ -2072,6 +2169,8 @@ class SofraGameApp {
     overlay.classList.remove("hidden");
 
     const isMe = data.id === this.room?.sessionId;
+    const zoomProg = this.scene.getCameraZoomProgress();
+    const zoomLbl = this.scene.getCameraZoomLabel();
     const bondsHtml =
       !data.topBonds || data.topBonds.length === 0
         ? `<div style="font-size:0.78rem; color:var(--text-muted); font-style:italic; padding:6px 0;">
@@ -2127,6 +2226,21 @@ class SofraGameApp {
         }
       </div>
 
+      <div class="inspect-zoom-row">
+        <button class="hud-zoom-step" id="btn-inspect-zoom-out" type="button" title="Uzaklaş">−</button>
+        <input
+          type="range"
+          id="inspect-zoom-slider"
+          class="inspect-zoom-slider"
+          min="0"
+          max="100"
+          value="${zoomProg}"
+          aria-label="Karakter Yakınlık Çubuğu"
+        />
+        <button class="hud-zoom-step" id="btn-inspect-zoom-in" type="button" title="Yakınlaş">+</button>
+        <span id="inspect-zoom-badge" style="font-size:0.72rem; color:var(--gold); min-width:58px; text-align:right;">${zoomLbl}</span>
+      </div>
+
       <div style="border-top:1px solid var(--gold-soft); padding-top:6px;">
         <div style="font-size:0.75rem; color:var(--gold); font-weight:bold; margin-bottom:4px;">
           🤝 ARKADAŞLIK & FISILTI YAKINLIK BARLARI (KİM KİMLE YAKIN?):
@@ -2141,8 +2255,16 @@ class SofraGameApp {
     document.getElementById("btn-inspect-rot-r")?.addEventListener("click", () => {
       this.scene.inspectOrbitYaw += 0.55;
     });
+    this.bindHoldZoomButton(document.getElementById("btn-inspect-zoom-in"), -1);
+    this.bindHoldZoomButton(document.getElementById("btn-inspect-zoom-out"), 1);
+    const inspSlider = document.getElementById("inspect-zoom-slider") as HTMLInputElement | null;
+    inspSlider?.addEventListener("input", () => {
+      this.scene.setCameraZoomProgress(Number(inspSlider.value) / 100);
+      this.syncCameraZoomUI();
+    });
     document.getElementById("btn-inspect-dm")?.addEventListener("click", () => {
       this.scene.inspectTargetId = null;
+      this.syncCameraZoomUI();
       overlay.classList.add("hidden");
       this.lastCenterRenderHash = "";
       this.openPMThread(data.id, data.nick, data.seat);
@@ -2159,6 +2281,7 @@ class SofraGameApp {
     });
     document.getElementById("btn-close-inspect")?.addEventListener("click", () => {
       this.scene.inspectTargetId = null;
+      this.syncCameraZoomUI();
       overlay.classList.add("hidden");
       this.lastCenterRenderHash = "";
     });
@@ -2808,9 +2931,6 @@ class SofraGameApp {
 
   public openHandbookModal(mode?: "book" | "clues" | "suspects" | "actions"): void {
     if (!this.room) return;
-    if (document.pointerLockElement) {
-      document.exitPointerLock?.();
-    }
     if (mode) this.handbookViewMode = mode;
     this.handbookOpen = true;
     this.unreadClueCount = 0;
@@ -4900,11 +5020,11 @@ class SofraGameApp {
   }
 
   private updateLocalDayMovement(dt: number, state: any): void {
-    if (this.camTurnDir !== 0) {
-      this.scene.cameraYaw += this.camTurnDir * 2.1 * dt;
-    }
-    if (this.pcEdgePanDir !== 0 && state.phase === "DAY" && !document.pointerLockElement) {
-      this.scene.cameraYaw += this.pcEdgePanDir * 1.75 * dt;
+    let turnDir = this.camTurnDir;
+    if (this.keys.has("arrowleft") || this.keys.has("q")) turnDir += 1;
+    if (this.keys.has("arrowright")) turnDir -= 1;
+    if (turnDir !== 0) {
+      this.scene.cameraYaw += Math.max(-1, Math.min(1, turnDir)) * 2.1 * dt;
     }
 
     if (!this.room || state.phase !== "DAY") return;
@@ -5010,19 +5130,23 @@ class SofraGameApp {
       this.fpsAccum = 0;
     }
 
+    let activeZoomDir = this.camZoomDir;
+    if (this.keys.has("__zoom_in__")) activeZoomDir = -1;
+    else if (this.keys.has("__zoom_out__")) activeZoomDir = 1;
+    if (activeZoomDir !== 0 && (this.room || this.previewSelfOnMenu)) {
+      this.scene.adjustCameraZoom(activeZoomDir * 7.6 * dt);
+      this.syncCameraZoomUI();
+    }
+
     const state: any = this.room?.state;
     if (state && this.room) {
       this.scene.setActivePhase(state.phase);
       if (state.phase !== this.lastPhase) {
         this.readyStatusText = "";
-        this.pcEdgePanDir = 0;
         this.announcementChangedAt = now;
         if (state.phase === "DAY") {
           this.dayPhaseEnteredAt = now;
           document.getElementById("pc-mouse-hint")?.classList.remove("hint-faded");
-        }
-        if (state.phase !== "DAY" && document.pointerLockElement) {
-          document.exitPointerLock?.();
         }
         const readyBtn = document.getElementById("btn-ready-phase");
         if (readyBtn) readyBtn.textContent = "⏩ Hazırım";
@@ -5034,6 +5158,7 @@ class SofraGameApp {
         // ÇOK ÖNEMLİ: Evre her değiştiğinde açık kalan 360° İncele kartını kapat ki Oylama / Gece İnfazı seçim ekranı ASLA gizli kalmasın!
         if (this.scene.inspectTargetId) {
           this.scene.inspectTargetId = null;
+          this.syncCameraZoomUI();
           document.getElementById("inspect-overlay")?.classList.add("hidden");
         }
 

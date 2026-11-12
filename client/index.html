@@ -54,6 +54,16 @@
         touch-action: none;
       }
 
+      #canvas-container canvas {
+        display: block;
+        touch-action: none;
+        cursor: grab;
+      }
+
+      #canvas-container canvas.dragging-cam {
+        cursor: grabbing;
+      }
+
       .hidden {
         display: none !important;
       }
@@ -475,6 +485,78 @@
         border: 1px solid var(--gold-soft);
         border-radius: 9px;
         padding: 3px 7px;
+      }
+
+      .hud-zoom-group {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        background: rgba(28, 20, 40, 0.88);
+        border: 1px solid rgba(226, 189, 83, 0.42);
+        border-radius: 8px;
+        padding: 2px 4px;
+      }
+
+      .hud-zoom-step {
+        background: linear-gradient(180deg, #422e1d, #22170e);
+        color: var(--gold);
+        border: 1px solid rgba(226, 189, 83, 0.55);
+        border-radius: 6px;
+        width: 24px;
+        height: 24px;
+        padding: 0;
+        font-family: inherit;
+        font-size: 0.88rem;
+        font-weight: bold;
+        line-height: 1;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        cursor: pointer;
+        touch-action: none;
+      }
+
+      .hud-zoom-step:active {
+        transform: scale(0.92);
+        background: linear-gradient(180deg, #6b492c, #332114);
+      }
+
+      .hud-zoom-slider {
+        width: 62px;
+        height: 5px;
+        padding: 0;
+        border: none;
+        background: rgba(255, 255, 255, 0.18);
+        border-radius: 99px;
+        accent-color: #e2bd53;
+        cursor: pointer;
+      }
+
+      .inspect-zoom-row {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        background: rgba(26, 19, 38, 0.88);
+        border: 1px solid var(--gold-soft);
+        border-radius: 9px;
+        padding: 5px 8px;
+      }
+
+      .inspect-zoom-slider {
+        flex: 1;
+        height: 6px;
+        padding: 0;
+        border: none;
+        background: rgba(255, 255, 255, 0.2);
+        border-radius: 99px;
+        accent-color: #e2bd53;
+        cursor: pointer;
+      }
+
+      @media (max-width: 900px) {
+        .hud-zoom-slider {
+          display: none;
+        }
       }
 
       .gold-badge {
@@ -2065,9 +2147,28 @@
           >
             📖 Kitapçık <span id="handbook-badge" class="handbook-badge">0</span>
           </button>
-          <button class="btn" id="btn-hud-zoom" title="Kamera Uzaklığı (Kısayol: V veya Fare Tekerleği)">
-            🔭 Uzak
-          </button>
+          <div class="hud-zoom-group" title="Kamera Yakınlaş / Uzaklaş (Fare Tekerleği, İki Parmak veya +/- Tuşları)">
+            <button class="hud-zoom-step" id="btn-hud-zoom-out" type="button" title="Uzaklaş (-)">−</button>
+            <input
+              type="range"
+              id="hud-zoom-slider"
+              class="hud-zoom-slider"
+              min="0"
+              max="100"
+              value="58"
+              aria-label="Kamera Yakınlık Ayarı"
+            />
+            <button class="hud-zoom-step" id="btn-hud-zoom-in" type="button" title="Yakınlaş (+)">+</button>
+            <button
+              class="btn"
+              id="btn-hud-zoom"
+              type="button"
+              style="padding: 3px 7px; font-size: 0.71rem;"
+              title="Hazır Kamera Açıları (Kısayol: V)"
+            >
+              🔭 Uzak
+            </button>
+          </div>
           <span class="gold-badge" id="gold-balance-label">🪙 100</span>
           <button class="btn" id="btn-watch-ad" title="Reklam İzle +50 Altın">🎬+50</button>
           <button class="btn" id="btn-hud-landscape" title="Tam Ekran & Yatay Mod">⛶</button>
@@ -2117,7 +2218,7 @@
          5. GÜNDÜZ KONTROLLERİ: SOL YÖN OKLARI + SAĞ WILD RIFT KOŞU ÇARKI
          ========================================================= -->
     <div id="day-action-hud">
-      <div id="pc-mouse-hint">🖱️ Fare: Bakış · Tekerlek/V: Uzaklık · B: Kitapçık · Enter: Sohbet · Tab: İncele</div>
+      <div id="pc-mouse-hint">🖱️ Sol/Sağ Tık Basılı Sürükle: Kamera Çevir · Tekerlek / + -: Yakınlaş-Uzaklaş · WASD: Yürü · B: Kitapçık</div>
       <div class="day-room-pill" id="zone-label">📍 Antre</div>
 
       <!-- Gündüz Kişisel Gizli Görevler Takip Kutusu (Varsayılan Kompakt) -->
@@ -2142,11 +2243,13 @@
         ></div>
       </div>
 
-      <!-- Sol Alt: Kamera Bakış + Yön Okları (▲▼◄►) & Analog Joystick -->
+      <!-- Sol Alt: Kamera Bakış + Yakınlaş/Uzaklaş + Yön Okları (▲▼◄►) & Analog Joystick -->
       <div class="left-control-cluster">
         <div class="cam-turn-row">
-          <button class="cam-turn-btn" id="btn-cam-left">⟲ Sola Bak</button>
-          <button class="cam-turn-btn" id="btn-cam-right">Sağa Bak ⟳</button>
+          <button class="cam-turn-btn" id="btn-cam-zoom-out" title="Uzaklaş">🔍−</button>
+          <button class="cam-turn-btn" id="btn-cam-left">⟲ Sola</button>
+          <button class="cam-turn-btn" id="btn-cam-right">Sağa ⟳</button>
+          <button class="cam-turn-btn" id="btn-cam-zoom-in" title="Yakınlaş">🔍+</button>
         </div>
         <div class="joystick-zone" id="joystick-zone">
           <span class="dpad-arrow dpad-up">▲</span>
