@@ -11,6 +11,7 @@ import {
   assignRoles,
   detectRoomZone,
   evaluateWinCondition,
+  filterProfanityTR,
   generateRoomCode,
   getAntreSpawn,
   getSeatTransform,
@@ -139,6 +140,10 @@ export class SofraRoom extends Room<SofraState> {
   private sealedNightTraitors = new Set<string>();
   private nightWatchedPlayers = new Set<string>();
   private chronicleLog: string[] = [];
+  private kahyaBellUsedRound = 0;
+  private lastLightSabotageAt = 0;
+  private noteSabotageUsedRound = new Map<string, number>();
+  private ghostHauntCooldown = new Map<string, number>();
 
   // BOT YAPAY ZEKÂ HAFIZASI
   private aiControlledIds = new Set<string>();
@@ -188,7 +193,7 @@ export class SofraRoom extends Room<SofraState> {
       code = generateRoomCode();
     }
 
-    const cleanTitle = String(options?.roomTitle || "").trim().slice(0, 28);
+    const cleanTitle = filterProfanityTR(String(options?.roomTitle || "").trim()).slice(0, 28);
     const cleanPass = String(options?.roomPassword || "").trim().slice(0, 24);
 
     this.roomPassword = cleanPass;
@@ -652,7 +657,9 @@ export class SofraRoom extends Room<SofraState> {
       if (!sender || !sender.alive || sender.ghost || !target || !target.alive || sender.id === target.id) return;
       if (this.state.phase !== "TABLE" && this.state.phase !== "VOTE") return;
 
-      const cleanReason = String(data?.reason || "Hareketleri ve fısıltıları çok şüpheli!").trim().slice(0, 90);
+      const cleanReason = filterProfanityTR(
+        String(data?.reason || "Hareketleri ve fısıltıları çok şüpheli!").trim()
+      ).slice(0, 90);
       this.addAffinity(sender.id, target.id, -10);
 
       this.broadcast("chat_msg", {
@@ -906,7 +913,7 @@ export class SofraRoom extends Room<SofraState> {
     this.onMessage("chat", (client, data: { text: string; channel?: string }) => {
       const sender = this.state.players.get(client.sessionId);
       if (!sender) return;
-      const rawText = String(data?.text || "").trim().slice(0, 140);
+      const rawText = filterProfanityTR(String(data?.text || "").trim().slice(0, 140));
       if (!rawText) return;
 
       const senderRole = this.secretRoles.get(sender.id) || "MISAFIR";
@@ -1091,7 +1098,7 @@ export class SofraRoom extends Room<SofraState> {
       const target = this.state.players.get(data?.targetId);
       if (!sender || !target || sender.id === target.id) return;
 
-      const rawText = String(data?.text || "").trim().slice(0, 140);
+      const rawText = filterProfanityTR(String(data?.text || "").trim().slice(0, 140));
       if (!rawText) return;
 
       if ((sender.ghost || !sender.alive) && target.alive && !target.ghost) {
@@ -1227,6 +1234,143 @@ export class SofraRoom extends Room<SofraState> {
     this.onMessage("back_to_lobby", (client) => {
       if (this.state.hostId !== client.sessionId) return;
       this.resetToLobby();
+    });
+
+    // 14. KÂHYA ZİLİ EKONOMİSİ (50🪙 Ortak Hazineden Harcayarak 2 Koltuğun Aynı Takımda Olup Olmadığını Öğren!)
+    this.onMessage("ask_kahya", (client, data: { seatA: number; seatB: number }) => {
+      const p = this.state.players.get(client.sessionId);
+      if (!p || !p.alive || p.ghost) return;
+      if (this.state.phase !== "DAY" && this.state.phase !== "TABLE") return;
+
+      if (this.kahyaBellUsedRound === this.state.round) {
+        client.send("puzzle_feedback", {
+          ok: false,
+          text: "🔔 Kâhya Zili bu gün içinde zaten çalındı! Yeni gün başladığında tekrar sorabilirsin."
+        });
+        return;
+      }
+      if (this.state.pot < 50) {
+        client.send("puzzle_feedback", {
+          ok: false,
+          text: `🔔 Ortak Şato Hazinesinde en az 50🪙 olmalı! (Şu an: ${this.state.pot}🪙 — Görev ve bulmaca çözerek hazineyi büyütün.)`
+        });
+        return;
+      }
+
+      const seatA = Number(data?.seatA);
+      const seatB = Number(data?.seatB);
+      if (!seatA || !seatB || seatA === seatB) return;
+
+      const playersArr = Array.from(this.state.players.values());
+      const pA = playersArr.find((x) => x.seat === seatA);
+      const pB = playersArr.find((x) => x.seat === seatB);
+      if (!pA || !pB) return;
+
+      this.state.pot = Math.max(0, this.state.pot - 50);
+      this.kahyaBellUsedRound = this.state.round;
+
+      const roleA = this.secretRoles.get(pA.id) || "MISAFIR";
+      const roleB = this.secretRoles.get(pB.id) || "MISAFIR";
+      const sameTeam = roleA === roleB;
+
+      this.broadcast("chat_msg", {
+        senderId: "",
+        senderNick: "KÂHYA ZİLİ",
+        seat: 11,
+        text: `🔔 Ortak Hazineden 50🪙 ödendi! Kâhya bir davetlinin kulağına iki koltuk hakkındaki gerçeği fısıldadı...`,
+        channel: "ETKİ"
+      });
+
+      client.send("kahya_answer", {
+        sameTeam,
+        text: sameTeam
+          ? `🔔 Kâhya'nın Gizli Yanıtı: Koltuk #${pA.seat} (${pA.nick}) ile Koltuk #${pB.seat} (${pB.nick}) AYNI TAKIMDA! (İkisi de Misafir VEYA ikisi de Hain!)`
+          : `🔔 Kâhya'nın Gizli Yanıtı: Koltuk #${pA.seat} (${pA.nick}) ile Koltuk #${pB.seat} (${pB.nick}) FARKLI TAKIMDA! (İkisinden biri kesinlikle HAİN!)`
+      });
+    });
+
+    // 15. GÜNDÜZ HAİN SABOTAJI A: MUMLARI SÖNDÜR (12 Saniye Şato Karartması, 75 sn Bekleme Süresi)
+    this.onMessage("sabotage_lights", (client) => {
+      if (this.state.phase !== "DAY") return;
+      const p = this.state.players.get(client.sessionId);
+      if (!p || !p.alive || p.ghost) return;
+      if (this.secretRoles.get(p.id) !== "HAIN") return;
+
+      const now = Date.now();
+      const remSec = Math.ceil((75000 - (now - this.lastLightSabotageAt)) / 1000);
+      if (remSec > 0) {
+        client.send("puzzle_feedback", {
+          ok: false,
+          text: `🕯️ Şato şamdanları yeni yakıldı! Tekrar karartmak için ${remSec} saniye beklemelisin.`
+        });
+        return;
+      }
+
+      this.lastLightSabotageAt = now;
+      this.broadcast("blackout_event", { durationSec: 12 });
+      this.broadcast("chat_msg", {
+        senderId: "",
+        senderNick: "KARARTMA",
+        seat: 11,
+        text: "🕯️ ŞATODA KARARTMA! Gizli bir el avize ve şamdanları söndürdü — 12 saniye zifiri karanlık!",
+        channel: "SABOTAJ"
+      });
+    });
+
+    // 16. GÜNDÜZ HAİN SABOTAJI B: SAHTE İSİMSİZ NOT BIRAK (Tur Başına 1 Kez)
+    this.onMessage("sabotage_note", (client, data: { targetId: string; note: string }) => {
+      if (this.state.phase !== "DAY") return;
+      const p = this.state.players.get(client.sessionId);
+      const target = this.state.players.get(data?.targetId);
+      if (!p || !p.alive || p.ghost || !target || target.id === p.id) return;
+      if (this.secretRoles.get(p.id) !== "HAIN") return;
+
+      if (this.noteSabotageUsedRound.get(p.id) === this.state.round) {
+        client.send("puzzle_feedback", {
+          ok: false,
+          text: "📜 Bu gündüz turunda zaten sahte bir isimsiz not bıraktın!"
+        });
+        return;
+      }
+
+      const cleanNote = filterProfanityTR(
+        String(data?.note || "Yanındaki kişiye sakın güvenme, zarfı kan kokuyor!").trim().slice(0, 75)
+      );
+      if (!cleanNote) return;
+
+      this.noteSabotageUsedRound.set(p.id, this.state.round);
+
+      const targetClient = this.clients.find((c) => c.sessionId === target.id);
+      if (targetClient) {
+        targetClient.send("anonymous_note", {
+          text: cleanNote
+        });
+      }
+
+      client.send("puzzle_feedback", {
+        ok: true,
+        text: `📜 İsimsiz mühürsüz not gizlice #${target.seat} ${target.nick}'in cebine bırakıldı!`
+      });
+    });
+
+    // 17. HAYALET ETKİLEŞİMİ: MUMLARI TİTRET (Elenen Oyuncular Oyundan Kopmasın!)
+    this.onMessage("ghost_haunt", (client) => {
+      const p = this.state.players.get(client.sessionId);
+      if (!p || (p.alive && !p.ghost)) return;
+
+      const now = Date.now();
+      const last = this.ghostHauntCooldown.get(p.id) || 0;
+      if (now - last < 12000) return;
+      this.ghostHauntCooldown.set(p.id, now);
+
+      this.broadcast("ghost_flicker", { seat: p.seat });
+      this.broadcast("chat_msg", {
+        senderId: "",
+        senderNick: "RUHLAR",
+        seat: p.seat,
+        text: "👻 Şamdanların alevi buz gibi bir rüzgârla titredi... Elenen bir davetlinin ruhu işaret veriyor!",
+        channel: "ETKİ"
+      });
     });
   }
 
@@ -1579,6 +1723,10 @@ export class SofraRoom extends Room<SofraState> {
     this.solvedPuzzleRound.clear();
     this.playerQuests.clear();
     this.chronicleLog = [];
+    this.kahyaBellUsedRound = 0;
+    this.lastLightSabotageAt = 0;
+    this.noteSabotageUsedRound.clear();
+    this.ghostHauntCooldown.clear();
 
     // Herkesin özel yatak odası kilitli başlar (yalnız kendi anahtarına açık!)
     this.state.doors.forEach((d) => {
@@ -1928,14 +2076,20 @@ export class SofraRoom extends Room<SofraState> {
 
     const tally = tallyVotes(voteObj, eligible);
 
-    const revealList: Array<{ voterNick: string; targetNick: string; targetSeat: number }> = [];
+    const revealList: Array<{ voterSeat: number; voterNick: string; targetNick: string; targetSeat: number }> = [];
     this.votes.forEach((targetId, voterId) => {
       const vP = this.state.players.get(voterId);
       const tP = this.state.players.get(targetId);
       if (vP && tP) {
-        revealList.push({ voterNick: vP.nick, targetNick: tP.nick, targetSeat: tP.seat });
+        revealList.push({
+          voterSeat: vP.seat,
+          voterNick: vP.nick,
+          targetNick: tP.nick,
+          targetSeat: tP.seat
+        });
       }
     });
+    revealList.sort((a, b) => a.voterSeat - b.voterSeat);
     this.broadcast("vote_reveal", { votes: revealList, counts: tally.countsByTarget });
 
     if (tally.isTie && this.tieCandidates.length === 0 && tally.topTargets.length > 1) {

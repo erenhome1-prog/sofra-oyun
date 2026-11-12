@@ -1147,14 +1147,17 @@
       }
 
       /* =========================================================
-         MOBİL WEB YATAY (LANDSCAPE) EKRAN ZORUNLULUĞU & YATAY HUD DÜZENİ
+         MOBİL WEB YATAY (LANDSCAPE) EKRAN ZORUNLULUĞU & OTOMATİK AÇILMA KAPISI
          ========================================================= */
       #portrait-rotate-overlay {
         display: none;
         position: fixed;
         inset: 0;
-        z-index: 120;
-        background: radial-gradient(circle at center, rgba(38, 12, 24, 0.97), rgba(9, 6, 15, 0.99));
+        width: 100vw;
+        height: 100vh;
+        height: 100dvh;
+        z-index: 9999;
+        background: radial-gradient(circle at center, rgba(42, 12, 24, 0.98), rgba(7, 5, 13, 0.995));
         padding: 24px;
         flex-direction: column;
         align-items: center;
@@ -1167,27 +1170,64 @@
         0% {
           transform: rotate(0deg);
         }
-        60%,
+        55%,
         100% {
           transform: rotate(-90deg);
         }
       }
 
       .rotate-phone-icon {
-        font-size: 3.4rem;
+        font-size: 3.8rem;
         display: inline-block;
-        animation: phoneTiltAnim 1.8s ease-in-out infinite alternate;
+        animation: phoneTiltAnim 1.6s ease-in-out infinite alternate;
       }
 
-      /* Telefonda dikey tutulduğunda otomatik Yatay Ekran uyarısını göster! */
-      @media (max-width: 920px) and (orientation: portrait) {
-        body:not(.allow-portrait) #portrait-rotate-overlay {
+      /* Mobil / dokunmatik cihaz dikey (portrait) tutulduğunda ekranı kilitle, yataya çevrilince ANINDA otomatik aç! */
+      body.force-rotate-gate #portrait-rotate-overlay {
+        display: flex !important;
+      }
+
+      body.is-landscape #portrait-rotate-overlay {
+        display: none !important;
+      }
+
+      @media (pointer: coarse) and (orientation: portrait) {
+        body:not(.is-landscape) #portrait-rotate-overlay {
           display: flex;
+        }
+      }
+
+      @media (orientation: landscape) {
+        #portrait-rotate-overlay {
+          display: none !important;
         }
       }
 
       /* Telefonda YATAY (Landscape) Web Görünümü: Ekran yüksekliği 560px altındayken milimetrik MOBA düzeni */
       @media (max-height: 560px) and (orientation: landscape) {
+        .env-3d-box {
+          height: 158px;
+          margin-bottom: 8px;
+        }
+        .env-3d-box.opening .env-rising-letter {
+          transform: translateY(-46px) scale(1.02);
+        }
+        .seal-button {
+          width: 68px;
+          height: 68px;
+        }
+        .envelope-card {
+          max-height: 94dvh;
+          padding: 10px 14px;
+        }
+        .inspect-card {
+          max-height: 82dvh;
+          padding: 8px 12px;
+        }
+        .puzzle-card {
+          max-height: 92dvh;
+          padding: 10px 12px;
+        }
         #hud {
           padding: 4px max(8px, env(safe-area-inset-right)) 4px max(8px, env(safe-area-inset-left));
           gap: 3px;
@@ -1311,32 +1351,38 @@
   <body>
     <div id="canvas-container"></div>
 
-    <!-- MOBİL WEB YATAY (LANDSCAPE) ÇEVİRME & TAM EKRAN KİLİDİ EKRANI -->
+    <!-- MOBİL WEB YATAY (LANDSCAPE) OTOMATİK AÇILAN KİLİT EKRANI -->
     <div id="portrait-rotate-overlay" class="interactive">
       <div class="rotate-phone-icon">📱</div>
-      <h2 style="color: var(--gold); font-size: 1.3rem; letter-spacing: 1px;">
-        TELEFONUNUZU YATAY ÇEVİRİN
+      <h2 style="color: var(--gold); font-size: 1.4rem; letter-spacing: 1.2px;">
+        TELEFONU YATAYA ÇEVİRİN
       </h2>
-      <p style="font-size: 0.9rem; color: var(--parchment); max-width: 340px; line-height: 1.45;">
-        <strong>SOFRA: Kargalı Şato</strong> telefonda web üzerinden tam ekran <strong>YATAY (Landscape)</strong> oynanış için tasarlandı!
+      <p style="font-size: 0.92rem; color: var(--parchment); max-width: 340px; line-height: 1.48;">
+        Telefonunuzu <strong>yan (yatay)</strong> çevirdiğiniz anda <strong>SOFRA: Kargalı Şato</strong> otomatik olarak tam ekran açılacaktır!
       </p>
+      <div
+        style="
+          padding: 8px 14px;
+          border-radius: 99px;
+          border: 1px solid var(--gold-soft);
+          background: rgba(226, 189, 83, 0.12);
+          color: #ffe394;
+          font-size: 0.8rem;
+          font-weight: bold;
+        "
+      >
+        🔄 Yan Çevir ➔ Otomatik Açılır
+      </div>
       <button
         class="btn btn-crimson"
         id="btn-force-landscape"
-        style="padding: 12px 20px; font-size: 0.95rem; width: min(300px, 88vw);"
+        style="padding: 11px 18px; font-size: 0.88rem; width: min(290px, 86vw); margin-top: 4px;"
       >
-        ⛶ TAM EKRAN YATAY MODA GEÇ
+        ⛶ Tam Ekran Yatay Kilitle (Android)
       </button>
-      <span style="font-size: 0.74rem; color: var(--text-muted); max-width: 310px;">
-        (iPhone Safari kullanıyorsanız ekran döndürme kilidini açıp telefonu yan çevirmeniz yeterlidir)
+      <span style="font-size: 0.73rem; color: var(--text-muted); max-width: 310px;">
+        (iPhone / Safari kullanıyorsanız Denetim Merkezi'nden Ekran Döndürme Kilidini açıp telefonu yan çevirin)
       </span>
-      <button
-        class="btn"
-        id="btn-dismiss-portrait"
-        style="margin-top: 6px; font-size: 0.72rem; opacity: 0.78;"
-      >
-        Şimdilik Dikey Devam Et
-      </button>
     </div>
 
     <!-- =========================================================
@@ -1691,7 +1737,7 @@
          5. GÜNDÜZ KONTROLLERİ: SOL YÖN OKLARI + SAĞ WILD RIFT KOŞU ÇARKI
          ========================================================= -->
     <div id="day-action-hud">
-      <div id="pc-mouse-hint">🖱️ Fareyi oynatarak yön ver (Sohbet: Enter · İmleç: Alt/ESC)</div>
+      <div id="pc-mouse-hint">🖱️ Fareyi oynatarak yön ver (Sohbet: Enter · Oyuncu & Bar: Tab · İmleç: Alt)</div>
       <div class="day-room-pill" id="zone-label">📍 Antre</div>
 
       <!-- Gündüz Kişisel Gizli Görevler Takip Kutusu -->
@@ -1709,6 +1755,10 @@
           class="quest-items-list"
           id="day-quest-list"
           style="display: flex; flex-direction: column; gap: 6px; margin-top: 6px; font-size: 0.73rem;"
+        ></div>
+        <div
+          id="day-extra-actions"
+          style="display: flex; flex-wrap: wrap; gap: 5px; margin-top: 6px;"
         ></div>
       </div>
 

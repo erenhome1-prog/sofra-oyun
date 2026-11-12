@@ -22,11 +22,26 @@ export function normalizeRoomCode(rawInput: string): string {
   return trimmed;
 }
 
+const TR_PROFANITY_PATTERNS: RegExp[] = [
+  /\b(amk|aq|sikik|sikeyim|sikerim|siktir|orospu|piç|pic|yarrak|yarak|götveren|gotveren|kahpe|ibne|pezevenk|ananı|anani)\b/giu
+];
+
+/**
+ * Türkçe sohbet ve takma ad küfür filtresi (01_OYUN_TASARIMI §8).
+ */
+export function filterProfanityTR(raw: string): string {
+  let out = raw || "";
+  for (const rx of TR_PROFANITY_PATTERNS) {
+    out = out.replace(rx, "***");
+  }
+  return out;
+}
+
 /**
  * Türkçe karakterleri (ş, ğ, ı, İ, ç, ö, ü) koruyarak takma adı temizler ve doğrular.
  */
 export function sanitizeNickname(rawNick: string): string {
-  const cleaned = (rawNick || "")
+  const cleaned = filterProfanityTR(rawNick || "")
     .replace(/[^\p{L}\p{N}_\-\s.]/gu, "")
     .replace(/\s+/g, " ")
     .trim()

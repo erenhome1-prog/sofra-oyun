@@ -71,6 +71,8 @@ export class CastleScene {
   private emberVelocities: number[] = [];
   private fireMode: "normal" | "red" | "white" = "normal";
   private fireModeTimer = 0;
+  private blackoutTimer = 0;
+  private ghostFlickerTimer = 0;
 
   private dustPoints!: THREE.Points;
   private doorPivots = new Map<string, { pivot: THREE.Group; targetAngle: number; closedAngle: number }>();
@@ -119,14 +121,26 @@ export class CastleScene {
     this.onResize();
 
     window.addEventListener("resize", () => this.onResize());
+    window.addEventListener("orientationchange", () => this.forceResize());
+    screen.orientation?.addEventListener?.("change", () => this.forceResize());
+    window.visualViewport?.addEventListener?.("resize", () => this.onResize());
+  }
+
+  public forceResize(): void {
+    this.onResize();
+    for (const delay of [80, 200, 420, 700]) {
+      window.setTimeout(() => this.onResize(), delay);
+    }
   }
 
   private onResize(): void {
-    const aspect = window.innerWidth / Math.max(1, window.innerHeight);
+    const w = Math.max(1, window.innerWidth);
+    const h = Math.max(1, window.innerHeight);
+    const aspect = w / h;
     this.camera.aspect = aspect;
     this.camera.fov = aspect < 1 ? 76 : 62;
     this.camera.updateProjectionMatrix();
-    this.renderer.setSize(window.innerWidth, window.innerHeight);
+    this.renderer.setSize(w, h);
   }
 
   private buildLighting(): void {
@@ -184,6 +198,10 @@ export class CastleScene {
 
   public cycleBrightnessBoost(): string {
     this.brightnessMode = (this.brightnessMode + 1) % 3;
+    return this.applyBrightnessPreset();
+  }
+
+  private applyBrightnessPreset(): string {
     if (this.brightnessMode === 2) {
       this.renderer.toneMappingExposure = 2.35;
       this.ambientLight.intensity = 2.1;
@@ -203,6 +221,14 @@ export class CastleScene {
       this.playerLanternLight.intensity = 2.0;
       return "🕯️ Loş Şato";
     }
+  }
+
+  public triggerBlackout(durationSec: number): void {
+    this.blackoutTimer = Math.max(this.blackoutTimer, durationSec);
+  }
+
+  public triggerGhostFlicker(): void {
+    this.ghostFlickerTimer = 2.6;
   }
 
   private buildCastleArchitecture(): void {
@@ -520,7 +546,7 @@ export class CastleScene {
 
       const plate = new THREE.Mesh(
         new THREE.CylinderGeometry(0.26, 0.18, 0.045, 20),
-        isKahya ? ringMat : plateMat
+        isKahya ? ringMat : plateMat.clone()
       );
       plate.position.set(px, 1.085, pz);
       tableGroup.add(plate);
@@ -639,17 +665,23 @@ export class CastleScene {
     const activeIds = new Set<string>();
 
     // Reset plate inversions first
-    for (const [, plate] of this.plateMeshes) {
+    for (const [seat, plate] of this.plateMeshes) {
       plate.rotation.x = 0;
+      if (seat !== 11) {
+        (plate.material as THREE.MeshStandardMaterial).color.setHex(0xe6dec8);
+      }
     }
 
     for (const ch of characters) {
       activeIds.add(ch.sessionId);
 
-      // Invert plate on the table if this seat was eliminated
+      // Invert & darken porcelain plate on the table if this seat was eliminated
       if (!ch.alive && this.plateMeshes.has(ch.seat)) {
         const plate = this.plateMeshes.get(ch.seat)!;
         plate.rotation.x = Math.PI;
+        if (ch.seat !== 11) {
+          (plate.material as THREE.MeshStandardMaterial).color.setHex(0x4a1620);
+        }
       }
 
       let rig = this.characterRigs.get(ch.sessionId);
@@ -1014,12 +1046,40 @@ export class CastleScene {
   }
 
   public render(dt: number, elapsedTime: number): void {
-    // Flicker candles
-    for (const c of this.candleLights) {
-      c.light.intensity =
-        c.baseIntensity +
-        Math.sin(elapsedTime * 7.5 + c.phase) * 0.18 +
-        Math.cos(elapsedTime * 13.0 + c.phase) * 0.08;
+    // Blackout sabotage or Ghost candle haunt effects
+    const wasBlackout = this.blackoutTimer > 0;
+    if (this.blackoutTimer > 0) {
+      this.blackoutTimer = Math.max(0, this.blackoutTimer - dt);
+      this.renderer.toneMappingExposure = 0.65;
+      this.ambientLight.intensity = 0.16;
+      this.hemiLight.intensity = 0.18;
+      this.playerLanternLight.intensity = 1.15;
+      for (const c of this.candleLights) {
+        c.light.intensity = 0.08;
+      }
+      if (this.blackoutTimer === 0 && wasBlackout) {
+        this.applyBrightnessPreset();
+      }
+    } else if (this.ghostFlickerTimer > 0) {
+      this.ghostFlickerTimer = Math.max(0, this.ghostFlickerTimer - dt);
+      for (const c of this.candleLights) {
+        const pulse = Math.sin(elapsedTime * 38 + c.phase) > 0 ? 0.25 : 1.55;
+        c.light.intensity = c.baseIntensity * pulse;
+        c.light.color.setHex(this.ghostFlickerTimer > 0.1 ? 0x9ed4ff : 0xffae52);
+      }
+      if (this.ghostFlickerTimer === 0) {
+        for (const c of this.candleLights) {
+          c.light.color.setHex(0xffae52);
+        }
+      }
+    } else {
+      // Normal warm candle flicker
+      for (const c of this.candleLights) {
+        c.light.intensity =
+          c.baseIntensity +
+          Math.sin(elapsedTime * 7.5 + c.phase) * 0.18 +
+          Math.cos(elapsedTime * 13.0 + c.phase) * 0.08;
+      }
     }
 
     // Fireplace mode color & particles

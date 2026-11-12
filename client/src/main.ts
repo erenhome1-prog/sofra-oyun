@@ -83,8 +83,16 @@ class SofraGameApp {
   private lastCenterRenderHash = "";
   private mobileLobbyTab: "seats" | "custom" = "seats";
 
-  // Knight Online PM Threads
+  // Knight Online PM Threads & 1-Tık Susturma (Mute)
   private pmThreads = new Map<string, PMThread>();
+  private mutedPlayerIds = new Set<string>();
+  private lastVoteReveal: Array<{
+    voterSeat: number;
+    voterNick: string;
+    targetSeat: number;
+    targetNick: string;
+  }> = [];
+  private lastDayExtraKey = "";
 
   // Local player movement, camera turn & stamina
   private localX = 0;
@@ -156,6 +164,7 @@ class SofraGameApp {
     this.client = new Client(wsUrl);
 
     this.vault = this.loadVault();
+    this.setupMobileOrientationGate();
     this.setupWelcomeEnvelopeCinema();
     this.setupMainMenu();
     this.setupHUDActions();
@@ -163,6 +172,53 @@ class SofraGameApp {
     this.checkResumeOrDeepLink();
 
     requestAnimationFrame((t) => this.animate(t));
+  }
+
+  private setupMobileOrientationGate(): void {
+    const syncOrientationState = () => {
+      const isTouchMobile =
+        window.matchMedia("(pointer: coarse)").matches ||
+        /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+
+      const isLandscape = window.innerWidth >= window.innerHeight;
+
+      if (!isTouchMobile) {
+        document.body.classList.remove("force-rotate-gate");
+        document.body.classList.add("is-landscape");
+        return;
+      }
+
+      if (isLandscape) {
+        // Telefon yataya çevrildiği anda hiçbir tuşa basmadan ekran otomatik açılır!
+        const wasLocked = document.body.classList.contains("force-rotate-gate");
+        document.body.classList.remove("force-rotate-gate");
+        document.body.classList.add("is-landscape");
+        if (wasLocked) {
+          this.scene.forceResize();
+          this.lastCenterRenderHash = "";
+        }
+      } else {
+        // Telefon dikey tutulduğunda "TELEFONU YATAYA ÇEVİRİN" ekranı çıkar
+        document.body.classList.add("force-rotate-gate");
+        document.body.classList.remove("is-landscape");
+      }
+    };
+
+    syncOrientationState();
+    window.addEventListener("resize", syncOrientationState);
+    window.addEventListener("orientationchange", () => {
+      syncOrientationState();
+      for (const ms of [90, 220, 450]) {
+        window.setTimeout(syncOrientationState, ms);
+      }
+    });
+    screen.orientation?.addEventListener?.("change", () => {
+      syncOrientationState();
+      for (const ms of [90, 220, 450]) {
+        window.setTimeout(syncOrientationState, ms);
+      }
+    });
+    window.visualViewport?.addEventListener?.("resize", syncOrientationState);
   }
 
   private loadVault(): VaultData {
@@ -613,6 +669,8 @@ class SofraGameApp {
     this.nightConclaveLogs = [];
     this.nightWatchNote = "";
     this.gameOverSummary = null;
+    this.lastVoteReveal = [];
+    this.lastDayExtraKey = "";
     sessionStorage.setItem("sofra_reconnect_token", room.reconnectionToken);
 
     document.getElementById("main-menu-overlay")?.classList.add("hidden");
@@ -642,6 +700,7 @@ class SofraGameApp {
     room.onMessage(
       "chat_msg",
       (msg: { senderId: string; senderNick: string; seat?: number; channel: string; text: string }) => {
+        if (msg.senderId && this.mutedPlayerIds.has(msg.senderId)) return;
         this.appendChatMessage(msg.senderId, msg.senderNick, msg.channel, msg.text);
         if (msg.channel === "HAİN MECLİSİ") {
           this.nightConclaveLogs.push(`${msg.senderNick}: ${msg.text}`);
@@ -666,6 +725,7 @@ class SofraGameApp {
         text: string;
       }) => {
         const fromMe = pm.fromId === room.sessionId;
+        if (!fromMe && this.mutedPlayerIds.has(pm.fromId)) return;
         const peerId = fromMe ? pm.toId : pm.fromId;
         const peerNick = fromMe ? pm.toNick : pm.fromNick;
         const peerSeat = fromMe ? pm.toSeat : pm.fromSeat;
@@ -820,6 +880,46 @@ class SofraGameApp {
       this.lastCenterRenderHash = "";
     });
 
+    // 🗳️ ŞÖMİNE ÖNCESİ KİM KİME OY VERDİ AÇIKLAMASI
+    room.onMessage(
+      "vote_reveal",
+      (d: {
+        votes: Array<{ voterSeat: number; voterNick: string; targetSeat: number; targetNick: string }>;
+      }) => {
+        this.lastVoteReveal = d.votes || [];
+        this.lastCenterRenderHash = "";
+      }
+    );
+
+    // 🕯️ GÜNDÜZ HAİN SABOTAJI: 12 SANİYE ŞATO KARARTMASI
+    room.onMessage("blackout_event", (d: { durationSec: number }) => {
+      this.scene.triggerBlackout(d?.durationSec || 12);
+      sfx.playFireWhoosh(true);
+      this.showExecutionToast(
+        "🕯️ ŞATODA KARARTMA SABOTAJI!",
+        "Gizli bir Hain avizeleri ve şamdanları söndürdü! 12 saniye boyunca karanlıkta kimseye sırtını dönme!",
+        true
+      );
+    });
+
+    // 📜 GÜNDÜZ HAİN SABOTAJI: İSİMSİZ SAHTE NOT
+    room.onMessage("anonymous_note", (d: { text: string }) => {
+      sfx.playSealBreak();
+      this.showExecutionToast("📜 CEBİNE İSİMSİZ BİR NOT BIRAKILDI!", `"${d.text}"`, true);
+    });
+
+    // 🔔 KÂHYA ZİLİ GİZLİ TAKIM YANITI
+    room.onMessage("kahya_answer", (d: { sameTeam: boolean; text: string }) => {
+      sfx.playGoldChime();
+      this.showPuzzleFeedbackModal(d.text, true);
+    });
+
+    // 👻 HAYALET ŞAMDAN TİTRETMESİ
+    room.onMessage("ghost_flicker", () => {
+      this.scene.triggerGhostFlicker();
+      sfx.playSealBreak();
+    });
+
     room.onStateChange((state: any) => {
       sessionStorage.setItem("sofra_reconnect_token", room.reconnectionToken);
       const me = state.players?.get(room.sessionId);
@@ -933,12 +1033,16 @@ class SofraGameApp {
     container.innerHTML = "";
 
     for (const [peerId, th] of this.pmThreads.entries()) {
+      const isMuted = this.mutedPlayerIds.has(peerId);
       const win = document.createElement("div");
       win.className = "ko-pm-window";
       win.innerHTML = `
         <div class="ko-pm-header ${th.unread ? "unread-pulse" : ""}">
           <span>🤫 [PM] #${th.peerSeat} ${th.peerNick}</span>
-          <div style="display:flex; gap:6px;">
+          <div style="display:flex; gap:5px;">
+            <button class="btn" data-pm-mute="${peerId}" title="${isMuted ? "Sesi Aç" : "Sustur"}" style="padding:1px 6px; font-size:0.72rem;">${
+        isMuted ? "🔇" : "🔊"
+      }</button>
             <button class="btn" data-pm-min="${peerId}" style="padding:1px 7px; font-size:0.72rem;">${
         th.minimized ? "▢" : "—"
       }</button>
@@ -971,6 +1075,19 @@ class SofraGameApp {
       const msgBox = win.querySelector(".ko-pm-messages") as HTMLElement;
       if (msgBox) msgBox.scrollTop = msgBox.scrollHeight;
     }
+
+    container.querySelectorAll("[data-pm-mute]").forEach((el) => {
+      el.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const id = (el as HTMLElement).dataset.pmMute!;
+        if (this.mutedPlayerIds.has(id)) {
+          this.mutedPlayerIds.delete(id);
+        } else {
+          this.mutedPlayerIds.add(id);
+        }
+        this.renderPMWindows();
+      });
+    });
 
     container.querySelectorAll("[data-pm-min]").forEach((el) => {
       el.addEventListener("click", (e) => {
@@ -1099,9 +1216,6 @@ class SofraGameApp {
     document.getElementById("btn-force-landscape")?.addEventListener("click", () => this.enterLandscapeFullscreen());
     document.getElementById("btn-menu-landscape")?.addEventListener("click", () => this.enterLandscapeFullscreen());
     document.getElementById("btn-hud-landscape")?.addEventListener("click", () => this.enterLandscapeFullscreen());
-    document.getElementById("btn-dismiss-portrait")?.addEventListener("click", () => {
-      document.body.classList.add("allow-portrait");
-    });
     document.getElementById("btn-wheel-light")?.addEventListener("click", () => this.handleContextWheelClick());
     document.getElementById("btn-wheel-inspect")?.addEventListener("click", () => this.openInspectPickerModal());
 
@@ -1197,6 +1311,19 @@ class SofraGameApp {
         }
         const chatInp = document.getElementById("chat-input") as HTMLInputElement | null;
         chatInp?.focus();
+        return;
+      }
+      if (k === "tab" && this.room) {
+        e.preventDefault();
+        if (document.pointerLockElement) {
+          document.exitPointerLock?.();
+        }
+        const puzModal = document.getElementById("puzzle-modal");
+        if (puzModal && !puzModal.classList.contains("hidden")) {
+          puzModal.classList.add("hidden");
+        } else {
+          this.openInspectPickerModal();
+        }
         return;
       }
       if (k === "alt" && document.pointerLockElement) {
@@ -1638,12 +1765,15 @@ class SofraGameApp {
         <button class="btn btn-crimson" id="btn-close-inspect" style="padding:4px 10px;">✕ Kapat</button>
       </div>
 
-      <div style="display:flex; gap:6px;">
-        <button class="btn" id="btn-inspect-rot-l" style="flex:1; padding:5px;">⟲ 360° Sola Çevir</button>
-        <button class="btn" id="btn-inspect-rot-r" style="flex:1; padding:5px;">Sağa Çevir ⟳</button>
+      <div style="display:flex; gap:6px; flex-wrap:wrap;">
+        <button class="btn" id="btn-inspect-rot-l" style="flex:1; padding:5px;">⟲ 360° Sola</button>
+        <button class="btn" id="btn-inspect-rot-r" style="flex:1; padding:5px;">Sağa ⟳</button>
         ${
           !isMe
-            ? `<button class="btn" id="btn-inspect-dm" style="border-color:#c98bff; color:#e3b3ff; padding:5px 10px;">🤫 DM</button>`
+            ? `<button class="btn" id="btn-inspect-dm" style="border-color:#c98bff; color:#e3b3ff; padding:5px 10px;">🤫 DM</button>
+               <button class="btn" id="btn-inspect-mute" style="padding:5px 9px;">${
+                 this.mutedPlayerIds.has(data.id) ? "🔊 Sesi Aç" : "🔇 Sustur"
+               }</button>`
             : ""
         }
       </div>
@@ -1667,6 +1797,16 @@ class SofraGameApp {
       overlay.classList.add("hidden");
       this.lastCenterRenderHash = "";
       this.openPMThread(data.id, data.nick, data.seat);
+    });
+    document.getElementById("btn-inspect-mute")?.addEventListener("click", (e) => {
+      if (this.mutedPlayerIds.has(data.id)) {
+        this.mutedPlayerIds.delete(data.id);
+        (e.currentTarget as HTMLElement).textContent = "🔇 Sustur";
+      } else {
+        this.mutedPlayerIds.add(data.id);
+        (e.currentTarget as HTMLElement).textContent = "🔊 Sesi Aç";
+      }
+      this.renderPMWindows();
     });
     document.getElementById("btn-close-inspect")?.addEventListener("click", () => {
       this.scene.inspectTargetId = null;
@@ -1707,6 +1847,171 @@ class SofraGameApp {
       `
       )
       .join("");
+  }
+
+  private renderDayExtraActions(state: any): void {
+    const box = document.getElementById("day-extra-actions");
+    if (!box || !this.room) return;
+    const me = state.players?.get(this.room.sessionId);
+    const isHain = this.myRole?.role === "HAIN";
+    const isGhost = !me?.alive || Boolean(me?.ghost);
+    const canAskKahya = !isGhost && (state.pot || 0) >= 50;
+
+    const key = `${state.round}|${isHain}|${isGhost}|${canAskKahya}|${state.pot || 0}`;
+    if (key === this.lastDayExtraKey) return;
+    this.lastDayExtraKey = key;
+
+    const btns: string[] = [];
+    if (!isGhost && isHain) {
+      btns.push(
+        `<button class="btn btn-crimson" id="btn-day-sabotage" style="flex:1; padding:4px 7px; font-size:0.7rem;">🗡️ Sabotaj</button>`
+      );
+    }
+    if (canAskKahya) {
+      btns.push(
+        `<button class="btn" id="btn-day-kahya-bell" style="flex:1; padding:4px 7px; font-size:0.7rem;">🔔 Kâhya Zili (50🪙)</button>`
+      );
+    }
+    if (isGhost) {
+      btns.push(
+        `<button class="btn" id="btn-day-ghost-haunt" style="flex:1; padding:5px 8px; font-size:0.72rem; border-color:#9ed4ff; color:#cbe8ff;">👻 Mumları Titret</button>`
+      );
+    }
+
+    box.innerHTML = btns.join("");
+
+    document.getElementById("btn-day-sabotage")?.addEventListener("click", () => {
+      this.openSabotageModal();
+    });
+    document.getElementById("btn-day-kahya-bell")?.addEventListener("click", () => {
+      this.openKahyaAskModal();
+    });
+    document.getElementById("btn-day-ghost-haunt")?.addEventListener("click", () => {
+      this.room?.send("ghost_haunt");
+      sfx.playSealBreak();
+    });
+  }
+
+  private openSabotageModal(): void {
+    const state: any = this.room?.state;
+    if (!state || !this.room) return;
+    const modal = document.getElementById("puzzle-modal")!;
+    const card = document.getElementById("puzzle-card-content")!;
+
+    const others: Array<{ id: string; seat: number; nick: string }> = [];
+    state.players?.forEach((p: any, sid: string) => {
+      if (sid !== this.room?.sessionId && p.alive) {
+        others.push({ id: sid, seat: p.seat, nick: p.nick });
+      }
+    });
+    others.sort((a, b) => a.seat - b.seat);
+
+    card.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <strong style="color:#ff4d5e;">🗡️ GİZLİ HAİN SABOTAJ MENÜSÜ</strong>
+        <button class="btn" id="btn-close-sabotage" style="padding:3px 8px;">✕</button>
+      </div>
+      <div style="background:rgba(155,18,32,0.2); border:1px solid #ff4d5e; border-radius:10px; padding:10px;">
+        <div style="font-size:0.8rem; font-weight:bold; color:#ffb3bc; margin-bottom:5px;">
+          1. Şato Karartması (12 Saniye)
+        </div>
+        <p style="font-size:0.75rem; color:var(--text-muted); margin-bottom:7px;">
+          Tüm avize ve şamdanları aniden söndürerek şatoda panik yarat (75 sn bekleme süresi):
+        </p>
+        <button class="btn btn-crimson" id="btn-trigger-blackout" style="width:100%;">
+          🕯️ Mumları Söndür (12 sn Karartma)
+        </button>
+      </div>
+      <div style="background:rgba(28,18,40,0.9); border:1px solid var(--gold-soft); border-radius:10px; padding:10px;">
+        <div style="font-size:0.8rem; font-weight:bold; color:var(--gold); margin-bottom:5px;">
+          2. İsimsiz Sahte Not Bırak (Turda 1 Kez)
+        </div>
+        <select id="sabotage-note-target" style="width:100%; margin-bottom:6px;">
+          ${others.map((o) => `<option value="${o.id}">#${o.seat} ${o.nick}</option>`).join("")}
+        </select>
+        <input
+          type="text"
+          id="sabotage-note-text"
+          maxlength="75"
+          placeholder="Örn: Yanındaki kişiye güvenme, zarfı kanlı!"
+          style="width:100%; margin-bottom:6px;"
+        />
+        <button class="btn" id="btn-send-fake-note" style="width:100%;">
+          📜 İsimsiz Notu Gizlice Cebine Bırak
+        </button>
+      </div>
+    `;
+    modal.classList.remove("hidden");
+
+    document.getElementById("btn-close-sabotage")?.addEventListener("click", () => {
+      modal.classList.add("hidden");
+    });
+    document.getElementById("btn-trigger-blackout")?.addEventListener("click", () => {
+      modal.classList.add("hidden");
+      this.room?.send("sabotage_lights");
+    });
+    document.getElementById("btn-send-fake-note")?.addEventListener("click", () => {
+      const sel = document.getElementById("sabotage-note-target") as HTMLSelectElement | null;
+      const inp = document.getElementById("sabotage-note-text") as HTMLInputElement | null;
+      const targetId = sel?.value || "";
+      const note = inp?.value.trim() || "Yanındaki kişiye sakın güvenme, zarfı kan kokuyor!";
+      if (!targetId) return;
+      modal.classList.add("hidden");
+      this.room?.send("sabotage_note", { targetId, note });
+    });
+  }
+
+  private openKahyaAskModal(): void {
+    const state: any = this.room?.state;
+    if (!state || !this.room) return;
+    const modal = document.getElementById("puzzle-modal")!;
+    const card = document.getElementById("puzzle-card-content")!;
+
+    const seats: Array<{ seat: number; nick: string }> = [];
+    state.players?.forEach((p: any) => {
+      if (p.alive) seats.push({ seat: p.seat, nick: p.nick });
+    });
+    seats.sort((a, b) => a.seat - b.seat);
+
+    if (seats.length < 2) return;
+
+    card.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <strong style="color:var(--gold);">🔔 KÂHYA ZİLİ — TAKIM SORGUSU (50🪙)</strong>
+        <button class="btn" id="btn-close-kahya-ask" style="padding:3px 8px;">✕</button>
+      </div>
+      <p style="font-size:0.78rem; color:var(--parchment); line-height:1.45;">
+        Ortak Şato Hazinesinden <strong>50🪙</strong> harcayarak seçtiğin iki koltuğun <strong>AYNI TAKIMDA</strong> mı yoksa <strong>FARKLI TAKIMDA</strong> mı olduğunu gizlice öğren!
+      </p>
+      <div style="display:flex; flex-direction:column; gap:6px;">
+        <label style="font-size:0.74rem; color:var(--gold);">1. Koltuk:</label>
+        <select id="kahya-seat-a">
+          ${seats.map((s, i) => `<option value="${s.seat}" ${i === 0 ? "selected" : ""}>#${s.seat} ${s.nick}</option>`).join("")}
+        </select>
+        <label style="font-size:0.74rem; color:var(--gold);">2. Koltuk:</label>
+        <select id="kahya-seat-b">
+          ${seats.map((s, i) => `<option value="${s.seat}" ${i === 1 ? "selected" : ""}>#${s.seat} ${s.nick}</option>`).join("")}
+        </select>
+      </div>
+      <button class="btn btn-emerald" id="btn-confirm-kahya-ask" style="width:100%; padding:9px;">
+        🔔 50🪙 Öde & Kâhya'ya Gizlice Sor
+      </button>
+    `;
+    modal.classList.remove("hidden");
+
+    document.getElementById("btn-close-kahya-ask")?.addEventListener("click", () => {
+      modal.classList.add("hidden");
+    });
+    document.getElementById("btn-confirm-kahya-ask")?.addEventListener("click", () => {
+      const seatA = Number((document.getElementById("kahya-seat-a") as HTMLSelectElement).value);
+      const seatB = Number((document.getElementById("kahya-seat-b") as HTMLSelectElement).value);
+      if (seatA === seatB) {
+        alert("Lütfen iki farklı koltuk seçin!");
+        return;
+      }
+      modal.classList.add("hidden");
+      this.room?.send("ask_kahya", { seatA, seatB });
+    });
   }
 
   private handleContextWheelClick(): void {
@@ -1861,7 +2166,7 @@ class SofraGameApp {
     const picksKey = Array.from(this.traitorNightPicks.entries())
       .map(([k, v]) => `${k}>${v.targetSeat}`)
       .join(",");
-    const hash = `${phase}|${state.round}|${state.fastMode}|${state.autoStart}|${state.pot}|${state.lastBurnedFlame}|${this.mobileLobbyTab}|${this.vault.gold}|${this.vault.selectedSeat}|${this.vault.coatColor}|${this.vault.hat}|${this.vault.mask}|${this.selectedVoteTargetId}|${this.selectedNightTargetId}|${this.selectedFinalChoice}|${trialKey}|${picksKey}|${this.nightConclaveLogs.length}|${this.nightWatchNote}|${Boolean(this.gameOverSummary)}|${playerSummary}`;
+    const hash = `${phase}|${state.round}|${state.fastMode}|${state.autoStart}|${state.pot}|${state.lastBurnedFlame}|${this.lastVoteReveal.length}|${this.mobileLobbyTab}|${this.vault.gold}|${this.vault.selectedSeat}|${this.vault.coatColor}|${this.vault.hat}|${this.vault.mask}|${this.selectedVoteTargetId}|${this.selectedNightTargetId}|${this.selectedFinalChoice}|${trialKey}|${picksKey}|${this.nightConclaveLogs.length}|${this.nightWatchNote}|${Boolean(this.gameOverSummary)}|${playerSummary}`;
 
     if (hash === this.lastCenterRenderHash) return;
     this.lastCenterRenderHash = hash;
@@ -2298,7 +2603,14 @@ class SofraGameApp {
             <strong>🔍 İncele</strong> ile kimin kiminle yakın fısıldaştığına bak, <strong>👉 Suçla</strong> ile gerekçeni masaya vur!
           </span>
         </div>
-        <span style="font-size:0.76rem; color:var(--gold);">🪙 Hazine: ${state.pot} · #11 Kâhya İzliyor</span>
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          ${
+            !isVotePhase && (state.pot || 0) >= 50
+              ? `<button class="btn" id="btn-table-kahya-ask" style="padding:4px 9px; font-size:0.72rem;">🔔 Kâhya'ya Sor (50🪙)</button>`
+              : ""
+          }
+          <span style="font-size:0.76rem; color:var(--gold);">🪙 Hazine: ${state.pot} · #11 Kâhya İzliyor</span>
+        </div>
       </div>
       <p style="font-size:0.82rem; color:var(--parchment); margin-bottom:10px;">
         ${
@@ -2342,6 +2654,10 @@ class SofraGameApp {
       </div>
     `;
 
+    document.getElementById("btn-table-kahya-ask")?.addEventListener("click", () => {
+      this.openKahyaAskModal();
+    });
+
     panel.querySelectorAll("[data-table-inspect]").forEach((btn) => {
       btn.addEventListener("click", (e) => {
         e.stopPropagation();
@@ -2377,6 +2693,26 @@ class SofraGameApp {
     const isRed = flame === "RED";
     const isWhite = flame === "WHITE";
 
+    const tallyHtml =
+      this.lastVoteReveal.length > 0
+        ? `<div style="margin-top:12px; padding-top:10px; border-top:1px solid var(--gold-soft);">
+             <div style="font-size:0.75rem; color:var(--gold); font-weight:bold; margin-bottom:6px;">
+               🗳️ AÇILAN MÜHÜRLÜ OYLAR (KİM KİME OY VERDİ?):
+             </div>
+             <div style="display:flex; flex-wrap:wrap; justify-content:center; gap:6px;">
+               ${this.lastVoteReveal
+                 .map(
+                   (v) => `
+                 <span style="background:rgba(24,18,36,0.92); border:1px solid var(--gold-soft); border-radius:8px; padding:4px 8px; font-size:0.74rem;">
+                   <strong>#${v.voterSeat} ${v.voterNick}</strong> ➔ 🔥 #${v.targetSeat} ${v.targetNick}
+                 </span>
+               `
+                 )
+                 .join("")}
+             </div>
+           </div>`
+        : "";
+
     panel.innerHTML = `
       <div style="text-align:center; padding:14px;">
         <h2 style="font-size:1.35rem; color:${isRed ? "#ff3b4e" : isWhite ? "#a8d8ff" : "#d4af37"};">
@@ -2389,6 +2725,7 @@ class SofraGameApp {
           }
         </h2>
         <p style="margin-top:8px; font-size:0.95rem;">${state.announcement}</p>
+        ${tallyHtml}
       </div>
     `;
   }
@@ -2826,6 +3163,7 @@ class SofraGameApp {
         } else if (state.phase === "TABLE") {
           sfx.playCastleBell();
           this.selectedVoteTargetId = "";
+          this.lastVoteReveal = [];
         } else if (state.phase === "FIRE") {
           if (state.lastBurnedFlame === "RED") {
             this.scene.triggerFireplaceFlame("red");
@@ -2850,6 +3188,9 @@ class SofraGameApp {
       const isDay = state.phase === "DAY";
       document.body.classList.toggle("in-day-mode", isDay);
       document.getElementById("day-action-hud")?.classList.toggle("day-active", isDay);
+      if (isDay) {
+        this.renderDayExtraActions(state);
+      }
 
       const canEarlyReady =
         state.phase === "DAY" || state.phase === "TRIAL" || state.phase === "TABLE";

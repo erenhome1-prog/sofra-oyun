@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   assignRoles,
   evaluateWinCondition,
+  filterProfanityTR,
   generateRoomCode,
   getTraitorCount,
   normalizeRoomCode,
@@ -19,8 +20,9 @@ describe("SOFRA Oyun Kuralları ve Fizik Testleri", () => {
     expect(normalizeRoomCode("sofra-4821")).toBe("SOFRA-4821");
   });
 
-  it("Türkçe karakterli takma adları (ş ğ ı İ ç ö ü) eksiksiz korur", () => {
+  it("Türkçe karakterli takma adları (ş ğ ı İ ç ö ü) eksiksiz korur ve küfrü filtreler", () => {
     expect(sanitizeNickname("Çağrı Şahin İğde")).toBe("Çağrı Şahin İğde");
+    expect(filterProfanityTR("merhaba amk nasılsın")).toBe("merhaba *** nasılsın");
   });
 
   it("6-8 oyuncuda 1 hain, 9-12 oyuncuda 2 hain dağıtır", () => {
