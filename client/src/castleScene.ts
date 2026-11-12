@@ -28,8 +28,27 @@ export interface CharacterVisualState {
   isLocal: boolean;
 }
 
+export interface PickedCharacterInfo {
+  sessionId: string;
+  seat: number;
+  name: string;
+  isLocal: boolean;
+  screenX: number;
+  screenY: number;
+}
+
+export interface PickedWorldInteractable {
+  kind: "door" | "altar" | "station" | "board";
+  id: string;
+  label: string;
+  x: number;
+  z: number;
+}
+
 interface CharacterRig {
+  sessionId: string;
   group: THREE.Group;
+  hitCylinder: THREE.Mesh;
   bodyMat: THREE.MeshStandardMaterial;
   accentMat: THREE.MeshStandardMaterial;
   headMesh: THREE.Mesh;
@@ -63,8 +82,37 @@ interface OccludableWall {
   maxX: number;
   minZ: number;
   maxZ: number;
-  mats: THREE.MeshStandardMaterial[];
+  mats: THREE.Material[];
   alpha: number;
+  doorId?: string;
+}
+
+function scaleBoxGeometryUVs(geo: THREE.BoxGeometry, repeatX: number, repeatY: number): THREE.BoxGeometry {
+  const uv = geo.attributes.uv as THREE.BufferAttribute | undefined;
+  if (uv) {
+    for (let i = 0; i < uv.count; i++) {
+      uv.setXY(i, uv.getX(i) * repeatX, uv.getY(i) * repeatY);
+    }
+    uv.needsUpdate = true;
+  }
+  return geo;
+}
+
+function disposeObjectSubtree(root: THREE.Object3D, keepMaterials?: Set<THREE.Material>): void {
+  root.traverse((obj) => {
+    const mesh = obj as THREE.Mesh;
+    if (mesh.geometry) {
+      mesh.geometry.dispose();
+    }
+    const mat = (mesh as { material?: THREE.Material | THREE.Material[] }).material;
+    if (Array.isArray(mat)) {
+      for (const m of mat) {
+        if (!keepMaterials?.has(m)) m.dispose();
+      }
+    } else if (mat && !keepMaterials?.has(mat)) {
+      mat.dispose();
+    }
+  });
 }
 
 interface WorldFloatingSprite {
@@ -159,9 +207,14 @@ export class CastleScene {
   private ghostFlickerTimer = 0;
 
   private dustPoints!: THREE.Points;
-  private doorPivots = new Map<string, { pivot: THREE.Group; targetAngle: number; closedAngle: number }>();
+  private doorPivots = new Map<string, { pivot: THREE.Group; targetAngle: number; closedAngle: number; isOpen?: boolean }>();
   private plateMeshes = new Map<number, THREE.Mesh>();
   private characterRigs = new Map<string, CharacterRig>();
+  private pickRaycaster = new THREE.Raycaster();
+  private pickNdc = new THREE.Vector2();
+  private sharedHitGeo = new THREE.CylinderGeometry(0.55, 0.55, 2.1, 10);
+  private sharedHitMat = new THREE.MeshBasicMaterial({ visible: false });
+  private worldInteractableMeshes: THREE.Object3D[] = [];
 
   // Procedural Medieval Textures
   private stoneWallTex!: THREE.CanvasTexture;
@@ -173,16 +226,17 @@ export class CastleScene {
 
   // Camera & 360° Character Inspect state
   public cameraYaw = 0;
-  public cameraPitch = 0.5;
-  public cameraDistance = 7.6;
-  public targetCameraDistance = 7.6;
+  public cameraPitch = 0.36;
+  public cameraDistance = 8.4;
+  public targetCameraDistance = 8.4;
   private zoomPresetIndex = 0;
+  private cameraFocusMode: "PLAYER" | "TABLE" | "FIRE" = "TABLE";
   public inspectTargetId: string | null = null;
   public inspectOrbitYaw = 0;
   public inspectPitch = 0.16;
   public inspectDistance = 2.45;
   public targetInspectDistance = 2.45;
-  private cameraTarget = new THREE.Vector3(0, 1.5, 0);
+  private cameraTarget = new THREE.Vector3(0, 1.25, -1.35);
 
   constructor(container: HTMLElement) {
     this.scene = new THREE.Scene();
@@ -199,7 +253,7 @@ export class CastleScene {
     this.renderer = new THREE.WebGLRenderer({
       antialias: window.devicePixelRatio < 2,
       powerPreference: "high-performance",
-      preserveDrawingBuffer: true
+      preserveDrawingBuffer: false
     });
     this.renderer.setSize(window.innerWidth, window.innerHeight);
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
@@ -215,6 +269,7 @@ export class CastleScene {
     this.buildLighting();
     this.buildCastleArchitecture();
     this.buildMedievalPropsAndRooms();
+    this.buildWorldInteractableTargets();
     this.buildRoundTableAndChairs();
     this.buildFireplaceAndEmbers();
     this.buildAtmosphereDust();
@@ -223,7 +278,10 @@ export class CastleScene {
     window.addEventListener("resize", () => this.onResize());
     window.addEventListener("orientationchange", () => this.forceResize());
     screen.orientation?.addEventListener?.("change", () => this.forceResize());
-    window.visualViewport?.addEventListener?.("resize", () => this.onResize());
+    window.visualViewport?.addEventListener?.("resize", () => {
+      if (document.body.classList.contains("keyboard-open")) return;
+      this.onResize();
+    });
   }
 
   public forceResize(): void {
@@ -234,6 +292,7 @@ export class CastleScene {
   }
 
   private onResize(): void {
+    if (document.body.classList.contains("keyboard-open")) return;
     const w = Math.max(1, window.innerWidth);
     const h = Math.max(1, window.innerHeight);
     const aspect = w / h;
@@ -244,7 +303,51 @@ export class CastleScene {
   }
 
   public setActivePhase(phase: string): void {
-    this.activePhase = phase || "LOBBY";
+    const nextPhase = phase || "LOBBY";
+    const changed = nextPhase !== this.activePhase;
+    const prevPhase = this.activePhase;
+    this.activePhase = nextPhase;
+
+    if (!changed) return;
+
+    if (prevPhase === "FIRE" && nextPhase !== "FIRE") {
+      this.fireMode = "normal";
+      this.fireModeTimer = 0;
+    }
+
+    if (nextPhase === "FIRE") {
+      this.cameraFocusMode = "FIRE";
+      this.cameraYaw = 0;
+      this.cameraPitch = 0.14;
+      this.targetCameraDistance = 3.9;
+    } else if (
+      nextPhase === "TABLE" ||
+      nextPhase === "VOTE" ||
+      nextPhase === "MORNING" ||
+      nextPhase === "FINAL" ||
+      nextPhase === "LOBBY" ||
+      nextPhase === "ARRIVAL" ||
+      nextPhase === "TRIAL" ||
+      nextPhase === "RESULT"
+    ) {
+      const wasTableView =
+        this.cameraFocusMode === "TABLE" &&
+        (prevPhase === "TABLE" || prevPhase === "VOTE" || prevPhase === "FINAL");
+      this.cameraFocusMode = "TABLE";
+      if (!wasTableView) {
+        this.cameraYaw = 0;
+        this.cameraPitch = 0.36;
+        this.targetCameraDistance = 8.4;
+      }
+    } else {
+      // DAY / NIGHT: Oyuncuyu takip eden serbest kamera
+      this.cameraFocusMode = "PLAYER";
+      if (prevPhase === "FIRE" || prevPhase === "ARRIVAL" || prevPhase === "MORNING") {
+        this.cameraYaw = 0;
+        this.cameraPitch = 0.46;
+        this.targetCameraDistance = 7.6;
+      }
+    }
   }
 
   public resetInspectCamera(): void {
@@ -286,13 +389,13 @@ export class CastleScene {
         INSPECT_MAX_DIST - clamped * (INSPECT_MAX_DIST - INSPECT_MIN_DIST);
       return this.getCameraZoomLabel();
     }
-    const prevT =
-      (this.targetCameraDistance - CAMERA_MIN_DIST) / (CAMERA_MAX_DIST - CAMERA_MIN_DIST);
     this.targetCameraDistance =
       CAMERA_MAX_DIST - clamped * (CAMERA_MAX_DIST - CAMERA_MIN_DIST);
     const nextT =
       (this.targetCameraDistance - CAMERA_MIN_DIST) / (CAMERA_MAX_DIST - CAMERA_MIN_DIST);
-    this.cameraPitch = Math.max(0.15, Math.min(1.05, this.cameraPitch + (nextT - prevT) * 0.48));
+    if (this.cameraFocusMode !== "FIRE") {
+      this.cameraPitch = 0.26 + nextT * 0.5;
+    }
     return this.getCameraZoomLabel();
   }
 
@@ -322,15 +425,16 @@ export class CastleScene {
       );
       return this.getCameraZoomLabel();
     }
-    const prevT =
-      (this.targetCameraDistance - CAMERA_MIN_DIST) / (CAMERA_MAX_DIST - CAMERA_MIN_DIST);
+    const prevDist = this.targetCameraDistance;
     this.targetCameraDistance = Math.max(
       CAMERA_MIN_DIST,
       Math.min(CAMERA_MAX_DIST, this.targetCameraDistance + deltaDist)
     );
-    const nextT =
-      (this.targetCameraDistance - CAMERA_MIN_DIST) / (CAMERA_MAX_DIST - CAMERA_MIN_DIST);
-    this.cameraPitch = Math.max(0.15, Math.min(1.05, this.cameraPitch + (nextT - prevT) * 0.48));
+    const actualDelta = this.targetCameraDistance - prevDist;
+    if (Math.abs(actualDelta) > 1e-4 && this.cameraFocusMode !== "FIRE") {
+      const deltaT = actualDelta / (CAMERA_MAX_DIST - CAMERA_MIN_DIST);
+      this.cameraPitch = Math.max(0.16, Math.min(0.95, this.cameraPitch + deltaT * 0.42));
+    }
     return this.getCameraZoomLabel();
   }
 
@@ -532,14 +636,44 @@ export class CastleScene {
     this.crowBannerTex = new THREE.CanvasTexture(bnCv);
   }
 
+  private attachMaterialsToNearestWall(
+    x: number,
+    z: number,
+    mats: THREE.Material[],
+    fallbackHalf = 0.75
+  ): void {
+    for (const wall of this.occludableWalls) {
+      if (
+        !wall.doorId &&
+        x >= wall.minX - 0.95 &&
+        x <= wall.maxX + 0.95 &&
+        z >= wall.minZ - 0.95 &&
+        z <= wall.maxZ + 0.95
+      ) {
+        for (const m of mats) {
+          if (!wall.mats.includes(m)) wall.mats.push(m);
+        }
+        return;
+      }
+    }
+    this.occludableWalls.push({
+      minX: x - fallbackHalf,
+      maxX: x + fallbackHalf,
+      minZ: z - fallbackHalf,
+      maxZ: z + fallbackHalf,
+      mats,
+      alpha: 1.0
+    });
+  }
+
   private buildLighting(): void {
-    this.ambientLight = new THREE.AmbientLight(0xf3dfc1, 1.32);
+    this.ambientLight = new THREE.AmbientLight(0xf3dfc1, 1.52);
     this.scene.add(this.ambientLight);
 
-    this.hemiLight = new THREE.HemisphereLight(0x9fb6e8, 0x6e4c32, 1.42);
+    this.hemiLight = new THREE.HemisphereLight(0x9fb6e8, 0x6e4c32, 1.62);
     this.scene.add(this.hemiLight);
 
-    this.moonLight = new THREE.DirectionalLight(0xffe9c4, 1.45);
+    this.moonLight = new THREE.DirectionalLight(0xffe9c4, 1.55);
     this.moonLight.position.set(16, 30, -18);
     this.moonLight.castShadow = true;
     this.moonLight.shadow.mapSize.set(1024, 1024);
@@ -552,40 +686,17 @@ export class CastleScene {
     this.moonLight.shadow.camera.bottom = -d;
     this.scene.add(this.moonLight);
 
-    // Oyuncuyu takip eden sıcak Orta Çağ Meşale Feneri
-    this.playerLanternLight = new THREE.PointLight(0xffcb78, 2.85, 21, 1.05);
+    // Oyuncuyu/kamerayı takip eden sıcak Orta Çağ Meşale Feneri (60 FPS için gereksiz 13 statik PointLight kaldırıldı)
+    this.playerLanternLight = new THREE.PointLight(0xffcb78, 3.25, 28, 1.02);
     this.playerLanternLight.position.set(0, 2.7, 15);
     this.scene.add(this.playerLanternLight);
 
-    // Büyük Şölen Salonu Ana Demir Avize Işığı
-    const tableLight = new THREE.PointLight(0xffb354, 4.0, 30, 1.15);
+    // Büyük Şölen Salonu Ana Demir Avize Işığı (6-pass cubemap gölge kapalı -> ~4x FPS artışı)
+    const tableLight = new THREE.PointLight(0xffb354, 4.15, 32, 1.12);
     tableLight.position.set(0, 5.0, 0);
-    tableLight.castShadow = true;
+    tableLight.castShadow = false;
     this.scene.add(tableLight);
-    this.candleLights.push({ light: tableLight, baseIntensity: 4.0, phase: 0.2 });
-
-    // Tüm Şato Kanatlarını ve Yeni Orta Çağ Odalarını Aydınlatan Meşale Işıkları
-    const candleSpots: [number, number, number, number][] = [
-      [0, 4.0, 16, 2.8],       // Antre Avizesi
-      [0, 4.2, 27.5, 2.6],     // Kargalı Avlu & Dilek Kuyusu
-      [-19, 3.9, -17, 2.8],    // Konsey Salonu
-      [19, 3.9, -17, 2.9],     // Rün & Bulmaca Salonu
-      [-19, 3.9, -28, 2.7],    // Şato Kütüphanesi
-      [19, 3.9, -28, 2.5],     // Zindan & Sorgu Mahzeni
-      [-19, 3.9, 27, 2.8],     // Simya & İksir Mahzeni
-      [19, 3.9, 27, 2.8],      // Şövalye Cephaneliği
-      [0, 4.4, -26, 2.8],      // Saat Kulesi
-      [-14.2, 3.6, -3, 2.4],   // Batı Koridor Kuzey
-      [-14.2, 3.6, 11, 2.4],   // Batı Koridor Güney
-      [14.2, 3.6, -3, 2.4],    // Doğu Koridor Kuzey
-      [14.2, 3.6, 11, 2.4]     // Doğu Koridor Güney
-    ];
-    candleSpots.forEach(([x, y, z, intensity], idx) => {
-      const pLight = new THREE.PointLight(0xffa947, intensity, 21, 1.2);
-      pLight.position.set(x, y, z);
-      this.scene.add(pLight);
-      this.candleLights.push({ light: pLight, baseIntensity: intensity, phase: idx * 1.37 });
-    });
+    this.candleLights.push({ light: tableLight, baseIntensity: 4.15, phase: 0.2 });
   }
 
   public setAtmosphereTheme(theme: string): void {
@@ -619,21 +730,21 @@ export class CastleScene {
   private applyBrightnessPreset(): string {
     if (this.brightnessMode === 2) {
       this.renderer.toneMappingExposure = 2.3;
-      this.ambientLight.intensity = 2.05;
-      this.hemiLight.intensity = 1.95;
-      this.playerLanternLight.intensity = 3.8;
+      this.ambientLight.intensity = 2.18;
+      this.hemiLight.intensity = 2.08;
+      this.playerLanternLight.intensity = 4.05;
       return "☀️ Ekstra Parlak";
     } else if (this.brightnessMode === 1) {
       this.renderer.toneMappingExposure = 1.65;
-      this.ambientLight.intensity = 1.32;
-      this.hemiLight.intensity = 1.42;
-      this.playerLanternLight.intensity = 2.85;
+      this.ambientLight.intensity = 1.52;
+      this.hemiLight.intensity = 1.62;
+      this.playerLanternLight.intensity = 3.25;
       return "💡 Meşale Aydınlığı";
     } else {
       this.renderer.toneMappingExposure = 1.2;
-      this.ambientLight.intensity = 0.85;
-      this.hemiLight.intensity = 0.95;
-      this.playerLanternLight.intensity = 2.0;
+      this.ambientLight.intensity = 0.98;
+      this.hemiLight.intensity = 1.08;
+      this.playerLanternLight.intensity = 2.25;
       return "🕯️ Loş Orta Çağ";
     }
   }
@@ -753,12 +864,8 @@ export class CastleScene {
       const wallHeight = isOuter ? 6.4 : 5.4;
 
       const len = Math.max(sx, sz);
-      const texClone = this.stoneWallTex.clone();
-      texClone.needsUpdate = true;
-      texClone.repeat.set(Math.max(1, len / 3.8), wallHeight / 2.7);
-
       const wallMat = new THREE.MeshStandardMaterial({
-        map: texClone,
+        map: this.stoneWallTex,
         roughness: 0.86,
         metalness: 0.08
       });
@@ -768,7 +875,12 @@ export class CastleScene {
         metalness: 0.12
       });
 
-      const wallMesh = new THREE.Mesh(new THREE.BoxGeometry(sx, wallHeight, sz), wallMat);
+      const wallGeo = scaleBoxGeometryUVs(
+        new THREE.BoxGeometry(sx, wallHeight, sz),
+        Math.max(1, len / 3.8),
+        wallHeight / 2.7
+      );
+      const wallMesh = new THREE.Mesh(wallGeo, wallMat);
       wallMesh.position.set(cx, wallHeight / 2, cz);
       wallMesh.castShadow = true;
       wallMesh.receiveShadow = true;
@@ -797,12 +909,14 @@ export class CastleScene {
         const alongX = sx > sz;
         const span = alongX ? sx : sz;
         const count = Math.floor(span / 2.4);
+        const merlonGeo = new THREE.BoxGeometry(
+          alongX ? 1.25 : sx + 0.16,
+          0.85,
+          alongX ? sz + 0.16 : 1.25
+        );
         for (let m = 0; m < count; m++) {
           const offset = -span / 2 + 1.2 + m * 2.4;
-          const merlon = new THREE.Mesh(
-            new THREE.BoxGeometry(alongX ? 1.25 : sx + 0.16, 0.85, alongX ? sz + 0.16 : 1.25),
-            wallCorniceMat
-          );
+          const merlon = new THREE.Mesh(merlonGeo, wallCorniceMat);
           merlon.position.set(alongX ? cx + offset : cx, wallHeight + 0.42, alongX ? cz : cz + offset);
           this.scene.add(merlon);
         }
@@ -810,16 +924,8 @@ export class CastleScene {
     }
 
     // 4. 4 Köşe Orta Çağ Gözetleme Burcu (Watchtowers) & Güney Kale Kapısı (Portcullis)
-    const towerMat = new THREE.MeshStandardMaterial({
-      map: this.stoneWallTex,
-      color: 0x7c7265,
-      roughness: 0.85
-    });
-    const slateRoofMat = new THREE.MeshStandardMaterial({
-      color: 0x222633,
-      roughness: 0.65,
-      metalness: 0.25
-    });
+    const towerGeo = new THREE.CylinderGeometry(2.3, 2.6, 9.2, 16);
+    const roofGeo = new THREE.ConeGeometry(2.9, 3.6, 16);
     const corners: [number, number][] = [
       [-26, -32],
       [26, -32],
@@ -827,31 +933,59 @@ export class CastleScene {
       [26, 34]
     ];
     for (const [tx, tz] of corners) {
-      const tower = new THREE.Mesh(new THREE.CylinderGeometry(2.3, 2.6, 9.2, 16), towerMat);
+      const tMat = new THREE.MeshStandardMaterial({
+        map: this.stoneWallTex,
+        color: 0x7c7265,
+        roughness: 0.85
+      });
+      const rMat = new THREE.MeshStandardMaterial({
+        color: 0x222633,
+        roughness: 0.65,
+        metalness: 0.25
+      });
+      const tower = new THREE.Mesh(towerGeo, tMat);
       tower.position.set(tx, 4.6, tz);
       this.scene.add(tower);
-      const roof = new THREE.Mesh(new THREE.ConeGeometry(2.9, 3.6, 16), slateRoofMat);
+      const roof = new THREE.Mesh(roofGeo, rMat);
       roof.position.set(tx, 10.9, tz);
       this.scene.add(roof);
+      this.occludableWalls.push({
+        minX: tx - 2.6,
+        maxX: tx + 2.6,
+        minZ: tz - 2.6,
+        maxZ: tz + 2.6,
+        mats: [tMat, rMat],
+        alpha: 1.0
+      });
     }
 
     // Güney Kargalı Avlu Demir Parmaklıklı Kale Kapısı (Portcullis Gatehouse)
     const ironMat = new THREE.MeshStandardMaterial({ color: 0x1e1d22, roughness: 0.42, metalness: 0.82 });
+    const gateStoneMat = stonePlinthMat.clone();
     const gateGroup = new THREE.Group();
     gateGroup.position.set(0, 0, 33.4);
-    const gateArchL = new THREE.Mesh(new THREE.CylinderGeometry(0.65, 0.75, 5.8, 12), stonePlinthMat);
+    const gateArchL = new THREE.Mesh(new THREE.CylinderGeometry(0.65, 0.75, 5.8, 12), gateStoneMat);
     gateArchL.position.set(-3.2, 2.9, 0);
-    const gateArchR = new THREE.Mesh(new THREE.CylinderGeometry(0.65, 0.75, 5.8, 12), stonePlinthMat);
+    const gateArchR = new THREE.Mesh(new THREE.CylinderGeometry(0.65, 0.75, 5.8, 12), gateStoneMat);
     gateArchR.position.set(3.2, 2.9, 0);
-    const gateLintel = new THREE.Mesh(new THREE.BoxGeometry(7.4, 1.1, 1.2), stonePlinthMat);
+    const gateLintel = new THREE.Mesh(new THREE.BoxGeometry(7.4, 1.1, 1.2), gateStoneMat);
     gateLintel.position.set(0, 5.5, 0);
     gateGroup.add(gateArchL, gateArchR, gateLintel);
+    const gateBarGeo = new THREE.CylinderGeometry(0.05, 0.05, 5.0, 8);
     for (let gx = -2.4; gx <= 2.4; gx += 0.6) {
-      const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 5.0, 8), ironMat);
+      const bar = new THREE.Mesh(gateBarGeo, ironMat);
       bar.position.set(gx, 2.5, 0);
       gateGroup.add(bar);
     }
     this.scene.add(gateGroup);
+    this.occludableWalls.push({
+      minX: -3.9,
+      maxX: 3.9,
+      minZ: 32.7,
+      maxZ: 34.1,
+      mats: [gateStoneMat, ironMat],
+      alpha: 1.0
+    });
 
     // 5. Kemerli Taş Sütunlar ve Tavan Meşe Kirişleri (Gothic Archways & Timber Beams)
     const archPassages: Array<{ x: number; z: number; span: number; alongZ?: boolean }> = [
@@ -871,39 +1005,52 @@ export class CastleScene {
       { x: 12, z: 27.0, span: 4.4, alongZ: true }
     ];
 
+    const archColGeo = new THREE.CylinderGeometry(0.32, 0.38, 4.8, 12);
+    const archKeyGeo = new THREE.BoxGeometry(0.55, 0.95, 0.82);
     for (const ap of archPassages) {
       const g = new THREE.Group();
       g.position.set(ap.x, 0, ap.z);
       if (ap.alongZ) g.rotation.y = Math.PI / 2;
 
+      const archStoneMat = stonePlinthMat.clone();
+      const archGoldMat = new THREE.MeshStandardMaterial({ color: 0xc9a24e, roughness: 0.45, metalness: 0.55 });
       const half = ap.span / 2;
-      const colL = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.38, 4.8, 12), stonePlinthMat);
+      const colL = new THREE.Mesh(archColGeo, archStoneMat);
       colL.position.set(-half, 2.4, 0);
-      const colR = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.38, 4.8, 12), stonePlinthMat);
+      const colR = new THREE.Mesh(archColGeo, archStoneMat);
       colR.position.set(half, 2.4, 0);
-      const lintel = new THREE.Mesh(new THREE.BoxGeometry(ap.span + 0.8, 0.75, 0.72), stonePlinthMat);
+      const lintel = new THREE.Mesh(new THREE.BoxGeometry(ap.span + 0.8, 0.75, 0.72), archStoneMat);
       lintel.position.set(0, 4.95, 0);
-      const keystone = new THREE.Mesh(
-        new THREE.BoxGeometry(0.55, 0.95, 0.82),
-        new THREE.MeshStandardMaterial({ color: 0xc9a24e, roughness: 0.45, metalness: 0.55 })
-      );
+      const keystone = new THREE.Mesh(archKeyGeo, archGoldMat);
       keystone.position.set(0, 4.85, 0);
       g.add(colL, colR, lintel, keystone);
       this.scene.add(g);
+
+      const extentX = ap.alongZ ? 0.55 : half + 0.45;
+      const extentZ = ap.alongZ ? half + 0.45 : 0.55;
+      this.occludableWalls.push({
+        minX: ap.x - extentX,
+        maxX: ap.x + extentX,
+        minZ: ap.z - extentZ,
+        maxZ: ap.z + extentZ,
+        mats: [archStoneMat, archGoldMat],
+        alpha: 1.0
+      });
     }
 
     // Büyük Şölen Salonu Tavan Meşe Kirişleri
+    const beamGeo = new THREE.BoxGeometry(24, 0.36, 0.42);
     for (const bz of [-6, 0, 6]) {
-      const beam = new THREE.Mesh(new THREE.BoxGeometry(24, 0.36, 0.42), timberBeamMat);
+      const beam = new THREE.Mesh(beamGeo, timberBeamMat);
       beam.position.set(0, 5.35, bz);
       this.scene.add(beam);
     }
 
-    // 6. Demir Zincirli Orta Çağ Mum Avizeleri (Wrought-Iron Chandeliers)
-    this.buildWroughtIronChandelier(0, 4.45, 0, 2.1, 10);
-    this.buildWroughtIronChandelier(0, 4.3, 16, 1.45, 8);
-    this.buildWroughtIronChandelier(-19, 4.2, -17, 1.25, 6);
-    this.buildWroughtIronChandelier(19, 4.2, -17, 1.25, 6);
+    // 6. Demir Zincirli Orta Çağ Mum Avizeleri (Kamera açısını kapatmaması için tavan hizasında yükseltildi)
+    this.buildWroughtIronChandelier(0, 4.82, 0, 2.0, 10);
+    this.buildWroughtIronChandelier(0, 5.08, 16, 1.25, 8);
+    this.buildWroughtIronChandelier(-19, 4.72, -17, 1.2, 6);
+    this.buildWroughtIronChandelier(19, 4.72, -17, 1.2, 6);
 
     // 7. Duvar Meşaleleri (Flickering Wall Torch Sconces)
     const torchCoords: Array<[number, number, number]> = [
@@ -920,7 +1067,7 @@ export class CastleScene {
     ];
     torchCoords.forEach(([tx, ty, tz], idx) => this.buildWallTorch(tx, ty, tz, idx));
 
-    // 8. Gotik Vitray Pencereler & Kargalı Şato Hanedan Sancakları
+    // 8. Gotik Vitray Pencereler & Kargalı Şato Hanedan Sancakları (Duvarla birlikte şeffaflaşır)
     const bannerSpecs: Array<[number, number, number, number]> = [
       [-11.68, 3.2, -1.3, Math.PI / 2],
       [-11.68, 3.2, 1.3, Math.PI / 2],
@@ -931,30 +1078,32 @@ export class CastleScene {
       [-7.5, 3.3, 9.68, Math.PI],
       [7.5, 3.3, 9.68, Math.PI]
     ];
-    const bannerMat = new THREE.MeshStandardMaterial({
-      map: this.crowBannerTex,
-      roughness: 0.72,
-      side: THREE.DoubleSide
-    });
+    const bannerClothGeo = new THREE.PlaneGeometry(1.35, 2.7);
+    const bannerRodGeo = new THREE.CylinderGeometry(0.04, 0.04, 1.6, 8);
     for (const [bx, by, bz, ry] of bannerSpecs) {
+      const bClothMat = new THREE.MeshStandardMaterial({
+        map: this.crowBannerTex,
+        roughness: 0.72,
+        side: THREE.DoubleSide
+      });
+      const bRodMat = new THREE.MeshStandardMaterial({
+        color: 0xd4ac54,
+        metalness: 0.8,
+        roughness: 0.25
+      });
       const bGroup = new THREE.Group();
       bGroup.position.set(bx, by, bz);
       bGroup.rotation.y = ry;
-      const cloth = new THREE.Mesh(new THREE.PlaneGeometry(1.35, 2.7), bannerMat);
-      const rod = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.04, 0.04, 1.6, 8),
-        new THREE.MeshStandardMaterial({ color: 0xd4ac54, metalness: 0.8, roughness: 0.25 })
-      );
+      const cloth = new THREE.Mesh(bannerClothGeo, bClothMat);
+      const rod = new THREE.Mesh(bannerRodGeo, bRodMat);
       rod.rotation.z = Math.PI / 2;
       rod.position.y = 1.36;
       bGroup.add(cloth, rod);
       this.scene.add(bGroup);
+      this.attachMaterialsToNearestWall(bx, bz, [bClothMat, bRodMat]);
     }
 
-    const glassMat = new THREE.MeshBasicMaterial({
-      map: this.stainedGlassTex,
-      side: THREE.DoubleSide
-    });
+    const windowGeo = new THREE.PlaneGeometry(1.7, 3.2);
     const windowSpecs: Array<[number, number, number, number]> = [
       [-25.4, 3.2, -17, Math.PI / 2],
       [25.4, 3.2, -17, -Math.PI / 2],
@@ -964,33 +1113,48 @@ export class CastleScene {
       [25.4, 3.2, 27, -Math.PI / 2]
     ];
     for (const [wx, wy, wz, wry] of windowSpecs) {
-      const win = new THREE.Mesh(new THREE.PlaneGeometry(1.7, 3.2), glassMat);
+      const wGlassMat = new THREE.MeshBasicMaterial({
+        map: this.stainedGlassTex,
+        side: THREE.DoubleSide
+      });
+      const win = new THREE.Mesh(windowGeo, wGlassMat);
       win.position.set(wx, wy, wz);
       win.rotation.y = wry;
       this.scene.add(win);
+      this.attachMaterialsToNearestWall(wx, wz, [wGlassMat]);
     }
 
     // 9. Demir Kuşaklı Meşe Yatak Odası Kapıları (#1..#12)
-    const doorWoodMat = new THREE.MeshStandardMaterial({
-      map: this.oakWoodTex,
-      color: 0x9c6b43,
-      roughness: 0.65,
-      metalness: 0.1
-    });
-    const strapIronMat = new THREE.MeshStandardMaterial({
-      color: 0x222026,
-      roughness: 0.4,
-      metalness: 0.85
-    });
-    const brassMat = new THREE.MeshStandardMaterial({
-      color: 0xe6be5a,
-      roughness: 0.28,
-      metalness: 0.88
-    });
+    const doorArchGeo = new THREE.BoxGeometry(0.62, 0.42, 2.35);
+    const doorLeafGeo = new THREE.BoxGeometry(1.92, 3.4, 0.16);
+    const doorStrapGeo = new THREE.BoxGeometry(1.86, 0.1, 0.2);
+    const doorKnockerGeo = new THREE.TorusGeometry(0.11, 0.025, 8, 16);
+    const doorSconceGeo = new THREE.SphereGeometry(0.16, 10, 10);
 
     for (const door of DOORS) {
+      const dArchMat = stonePlinthMat.clone();
+      const dWoodMat = new THREE.MeshStandardMaterial({
+        map: this.oakWoodTex,
+        color: 0x9c6b43,
+        roughness: 0.65,
+        metalness: 0.1
+      });
+      const dStrapMat = new THREE.MeshStandardMaterial({
+        color: 0x222026,
+        roughness: 0.4,
+        metalness: 0.85
+      });
+      const dBrassMat = new THREE.MeshStandardMaterial({
+        color: 0xe6be5a,
+        roughness: 0.28,
+        metalness: 0.88
+      });
+      const dSconceMat = new THREE.MeshBasicMaterial({
+        color: door.sealedByKahya ? 0xff3b4e : 0xffcf6e
+      });
+
       // Kapı Taş Kemeri
-      const archFrame = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.42, 2.35), stonePlinthMat);
+      const archFrame = new THREE.Mesh(doorArchGeo, dArchMat);
       archFrame.position.set(door.x, 3.6, door.z);
       this.scene.add(archFrame);
 
@@ -998,25 +1162,22 @@ export class CastleScene {
       pivot.position.set(door.x, 0, door.z);
 
       const leafGroup = new THREE.Group();
-      const doorMesh = new THREE.Mesh(new THREE.BoxGeometry(1.92, 3.4, 0.16), doorWoodMat);
+      const doorMesh = new THREE.Mesh(doorLeafGeo, dWoodMat);
       doorMesh.position.set(0, 1.7, 0);
       doorMesh.castShadow = true;
       leafGroup.add(doorMesh);
 
       // Demir menteşe kuşakları + halka tokmak
       for (const sy of [0.65, 1.7, 2.75]) {
-        const strap = new THREE.Mesh(new THREE.BoxGeometry(1.86, 0.1, 0.2), strapIronMat);
+        const strap = new THREE.Mesh(doorStrapGeo, dStrapMat);
         strap.position.set(0, sy, 0);
         leafGroup.add(strap);
       }
-      const ringKnocker = new THREE.Mesh(new THREE.TorusGeometry(0.11, 0.025, 8, 16), brassMat);
+      const ringKnocker = new THREE.Mesh(doorKnockerGeo, dBrassMat);
       ringKnocker.position.set(0.62, 1.58, 0.12);
       leafGroup.add(ringKnocker);
 
-      const sconce = new THREE.Mesh(
-        new THREE.SphereGeometry(0.16, 10, 10),
-        new THREE.MeshBasicMaterial({ color: door.sealedByKahya ? 0xff3b4e : 0xffcf6e })
-      );
+      const sconce = new THREE.Mesh(doorSconceGeo, dSconceMat);
       sconce.position.set(door.x, 3.92, door.z);
       this.scene.add(sconce);
 
@@ -1062,7 +1223,19 @@ export class CastleScene {
       this.doorPivots.set(door.id, {
         pivot,
         targetAngle: closedAngle,
-        closedAngle
+        closedAngle,
+        isOpen: false
+      });
+
+      const isVert = door.orientation === "vertical";
+      this.occludableWalls.push({
+        minX: door.x - (isVert ? 0.35 : 1.05),
+        maxX: door.x + (isVert ? 0.35 : 1.05),
+        minZ: door.z - (isVert ? 1.05 : 0.35),
+        maxZ: door.z + (isVert ? 1.05 : 0.35),
+        mats: [dArchMat, dWoodMat, dStrapMat, dBrassMat, dSconceMat],
+        alpha: 1.0,
+        doorId: door.id
       });
     }
   }
@@ -1075,24 +1248,26 @@ export class CastleScene {
     const waxMat = new THREE.MeshStandardMaterial({ color: 0xf4ebd0, roughness: 0.7 });
     const flameMat = new THREE.MeshBasicMaterial({ color: 0xffb84d });
 
-    const ring = new THREE.Mesh(new THREE.TorusGeometry(radius, 0.07, 10, 28), ironMat);
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(radius, 0.065, 10, 28), ironMat);
     ring.rotation.x = Math.PI / 2;
     group.add(ring);
 
-    const chain = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 1.4, 8), ironMat);
-    chain.position.y = 0.7;
+    const chain = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.95, 8), ironMat);
+    chain.position.y = 0.48;
     group.add(chain);
 
+    const waxGeo = new THREE.CylinderGeometry(0.05, 0.055, 0.24, 8);
+    const flameGeo = new THREE.ConeGeometry(0.055, 0.15, 8);
     for (let i = 0; i < candleCount; i++) {
       const ang = (i / candleCount) * Math.PI * 2;
       const cx = Math.cos(ang) * radius;
       const cz = Math.sin(ang) * radius;
-      const wax = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.055, 0.26, 8), waxMat);
-      wax.position.set(cx, 0.16, cz);
-      const flame = new THREE.Mesh(new THREE.ConeGeometry(0.055, 0.16, 8), flameMat);
-      flame.position.set(cx, 0.36, cz);
+      const wax = new THREE.Mesh(waxGeo, waxMat);
+      wax.position.set(cx, 0.15, cz);
+      const flame = new THREE.Mesh(flameGeo, flameMat);
+      flame.position.set(cx, 0.34, cz);
       group.add(wax, flame);
-      this.torchFlames.push({ mesh: flame, baseY: 0.36, phase: i * 0.9 + x });
+      this.torchFlames.push({ mesh: flame, baseY: 0.34, phase: i * 0.9 + x });
     }
 
     this.scene.add(group);
@@ -1102,18 +1277,17 @@ export class CastleScene {
     const g = new THREE.Group();
     g.position.set(x, y, z);
     const ironMat = new THREE.MeshStandardMaterial({ color: 0x221f24, roughness: 0.5, metalness: 0.8 });
+    const flameMat = new THREE.MeshBasicMaterial({ color: 0xff8c24 });
     const stick = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.035, 0.55, 8), ironMat);
     stick.rotation.z = x < 0 ? -0.25 : 0.25;
     const cup = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.06, 0.12, 10), ironMat);
     cup.position.y = 0.26;
-    const flame = new THREE.Mesh(
-      new THREE.ConeGeometry(0.12, 0.34, 10),
-      new THREE.MeshBasicMaterial({ color: 0xff8c24 })
-    );
+    const flame = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.34, 10), flameMat);
     flame.position.y = 0.46;
     g.add(stick, cup, flame);
     this.scene.add(g);
     this.torchFlames.push({ mesh: flame, baseY: 0.46, phase: idx * 1.13 });
+    this.attachMaterialsToNearestWall(x, z, [ironMat, flameMat]);
   }
 
   private buildKnightArmor(x: number, z: number, rotY: number): void {
@@ -1272,19 +1446,33 @@ export class CastleScene {
     this.scene.add(anvilBase, anvilTop, weaponRack, forgeBrazier, forgeGlow);
 
     // 7. 📚 Şato Kütüphanesi & Vakayiname Arşivi (Kuzeybatı: X = -26..-8.5, Z = -32..-24)
+    const bookcaseGeo = new THREE.BoxGeometry(2.4, 3.8, 0.65);
+    const booksRowGeo = new THREE.BoxGeometry(2.1, 0.42, 0.52);
+    const bookColors = [0x8f1d2c, 0x1d4e89, 0x2b6e44, 0x7a4e1d, 0x54236b];
     for (let bx = -24.0; bx <= -12.0; bx += 3.0) {
-      const bookcase = new THREE.Mesh(new THREE.BoxGeometry(2.4, 3.8, 0.65), oakMat);
+      const bcMat = oakMat.clone();
+      const bookcase = new THREE.Mesh(bookcaseGeo, bcMat);
       bookcase.position.set(bx, 1.9, -31.1);
       this.scene.add(bookcase);
-      const bookColors = [0x8f1d2c, 0x1d4e89, 0x2b6e44, 0x7a4e1d, 0x54236b];
+      const rowMats: THREE.Material[] = [bcMat];
       for (let row = 0; row < 4; row++) {
-        const books = new THREE.Mesh(
-          new THREE.BoxGeometry(2.1, 0.42, 0.52),
-          new THREE.MeshStandardMaterial({ color: bookColors[(row + Math.abs(Math.round(bx))) % bookColors.length], roughness: 0.75 })
-        );
+        const bMat = new THREE.MeshStandardMaterial({
+          color: bookColors[(row + Math.abs(Math.round(bx))) % bookColors.length],
+          roughness: 0.75
+        });
+        rowMats.push(bMat);
+        const books = new THREE.Mesh(booksRowGeo, bMat);
         books.position.set(bx, 0.65 + row * 0.85, -30.98);
         this.scene.add(books);
       }
+      this.occludableWalls.push({
+        minX: bx - 1.25,
+        maxX: bx + 1.25,
+        minZ: -31.5,
+        maxZ: -30.7,
+        mats: rowMats,
+        alpha: 1.0
+      });
     }
     const lectern = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 0.6, 1.25, 10), oakMat);
     lectern.position.set(-19.5, 0.62, -28.0);
@@ -1442,15 +1630,77 @@ export class CastleScene {
       });
     }
 
-    // Antre Hazine Sandığı
+    // Antre Hazine Sandığı (Merkez 360° karakter inceleme sahnesini engellememek için yan duvara alındı)
     const chestGroup = new THREE.Group();
-    chestGroup.position.set(0, 0, 17.8);
+    chestGroup.position.set(-8.4, 0, 18.6);
     const chestBox = new THREE.Mesh(new THREE.BoxGeometry(1.65, 0.92, 1.02), oakMat);
     chestBox.position.y = 0.46;
     const chestGold = new THREE.Mesh(new THREE.BoxGeometry(1.72, 0.24, 1.08), goldMat);
     chestGold.position.y = 0.82;
     chestGroup.add(chestBox, chestGold);
     this.scene.add(chestGroup);
+  }
+
+  private buildWorldInteractableTargets(): void {
+    const doorHitGeo = new THREE.BoxGeometry(2.1, 3.6, 1.0);
+    for (const door of DOORS) {
+      const m = new THREE.Mesh(doorHitGeo, this.sharedHitMat);
+      m.position.set(door.x, 1.8, door.z);
+      if (door.orientation === "vertical") {
+        m.rotation.y = Math.PI / 2;
+      }
+      m.userData.interactable = {
+        kind: "door",
+        id: door.id,
+        label: door.label,
+        x: door.x,
+        z: door.z
+      } satisfies PickedWorldInteractable;
+      this.scene.add(m);
+      this.worldInteractableMeshes.push(m);
+    }
+
+    const altarHitGeo = new THREE.CylinderGeometry(1.15, 1.15, 2.4, 10);
+    for (const altar of PUZZLE_ALTARS) {
+      const m = new THREE.Mesh(altarHitGeo, this.sharedHitMat);
+      m.position.set(altar.x, 1.2, altar.z);
+      m.userData.interactable = {
+        kind: "altar",
+        id: altar.id,
+        label: `🔮 ${altar.label}`,
+        x: altar.x,
+        z: altar.z
+      } satisfies PickedWorldInteractable;
+      this.scene.add(m);
+      this.worldInteractableMeshes.push(m);
+    }
+
+    const stationHitGeo = new THREE.CylinderGeometry(1.4, 1.4, 2.7, 10);
+    for (const st of MEDIEVAL_STATIONS) {
+      const m = new THREE.Mesh(stationHitGeo, this.sharedHitMat);
+      m.position.set(st.x, 1.35, st.z);
+      m.userData.interactable = {
+        kind: "station",
+        id: st.id,
+        label: st.title,
+        x: st.x,
+        z: st.z
+      } satisfies PickedWorldInteractable;
+      this.scene.add(m);
+      this.worldInteractableMeshes.push(m);
+    }
+
+    const boardHit = new THREE.Mesh(new THREE.BoxGeometry(1.4, 2.9, 2.9), this.sharedHitMat);
+    boardHit.position.set(COUNCIL_BOARD_POS.x, 1.45, COUNCIL_BOARD_POS.z);
+    boardHit.userData.interactable = {
+      kind: "board",
+      id: "council_board",
+      label: "📋 Konsey Şüphe Tahtası",
+      x: COUNCIL_BOARD_POS.x,
+      z: COUNCIL_BOARD_POS.z
+    } satisfies PickedWorldInteractable;
+    this.scene.add(boardHit);
+    this.worldInteractableMeshes.push(boardHit);
   }
 
   private populateMedievalBedroom(bedX: number, zCenter: number, seat: number, dirSign: number): void {
@@ -1685,7 +1935,7 @@ export class CastleScene {
 
   public triggerFireplaceFlame(mode: "normal" | "red" | "white"): void {
     this.fireMode = mode;
-    this.fireModeTimer = mode === "normal" ? 0 : 7.0;
+    this.fireModeTimer = mode === "normal" ? 0 : 14.0;
   }
 
   public syncDoorStates(doors: Map<string, boolean> | Record<string, boolean>): void {
@@ -1695,8 +1945,66 @@ export class CastleScene {
     };
     for (const [id, entry] of this.doorPivots.entries()) {
       const isOpen = getVal(id);
+      entry.isOpen = isOpen;
       entry.targetAngle = isOpen ? entry.closedAngle - Math.PI * 0.62 : entry.closedAngle;
     }
+  }
+
+  public pickCharacterAt(clientX: number, clientY: number): PickedCharacterInfo | null {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    this.pickNdc.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+    this.pickNdc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+    this.pickRaycaster.setFromCamera(this.pickNdc, this.camera);
+
+    const targets: THREE.Object3D[] = [];
+    for (const [id, rig] of this.characterRigs.entries()) {
+      if (id === "__preview_self__") continue;
+      targets.push(rig.hitCylinder);
+      if (rig.labelSprite.visible) {
+        targets.push(rig.labelSprite);
+      }
+    }
+    if (targets.length === 0) return null;
+
+    const hits = this.pickRaycaster.intersectObjects(targets, false);
+    if (hits.length === 0) return null;
+
+    const pickedId = hits[0].object.userData?.sessionId as string | undefined;
+    if (!pickedId) return null;
+    const rig = this.characterRigs.get(pickedId);
+    if (!rig) return null;
+
+    const proj = new THREE.Vector3(
+      rig.group.position.x,
+      rig.group.position.y + 1.55,
+      rig.group.position.z
+    ).project(this.camera);
+
+    const screenX = rect.left + ((proj.x + 1) * 0.5) * rect.width;
+    const screenY = rect.top + ((-proj.y + 1) * 0.5) * rect.height;
+
+    return {
+      sessionId: pickedId,
+      seat: rig.lastSeat,
+      name: rig.lastName,
+      isLocal: rig.isLocal,
+      screenX: Number.isFinite(screenX) ? screenX : clientX,
+      screenY: Number.isFinite(screenY) ? screenY : clientY
+    };
+  }
+
+  public pickWorldInteractableAt(clientX: number, clientY: number): PickedWorldInteractable | null {
+    if (this.worldInteractableMeshes.length === 0) return null;
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) return null;
+    this.pickNdc.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+    this.pickNdc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+    this.pickRaycaster.setFromCamera(this.pickNdc, this.camera);
+
+    const hits = this.pickRaycaster.intersectObjects(this.worldInteractableMeshes, false);
+    if (hits.length === 0) return null;
+    return (hits[0].object.userData?.interactable as PickedWorldInteractable | undefined) ?? null;
   }
 
   public setCharacterChatBubble(sessionId: string, text: string): void {
@@ -1840,6 +2148,10 @@ export class CastleScene {
     for (const [id, rig] of this.characterRigs.entries()) {
       if (!activeIds.has(id)) {
         this.scene.remove(rig.group);
+        rig.group.remove(rig.hitCylinder);
+        rig.labelTexture.dispose();
+        (rig.labelSprite.material as THREE.SpriteMaterial).dispose();
+        disposeObjectSubtree(rig.group);
         this.characterRigs.delete(id);
       }
     }
@@ -1849,6 +2161,11 @@ export class CastleScene {
     const group = new THREE.Group();
     group.position.set(ch.x, 0, ch.z);
     group.rotation.y = ch.rotY;
+
+    const hitCylinder = new THREE.Mesh(this.sharedHitGeo, this.sharedHitMat);
+    hitCylinder.position.set(0, 1.05, 0);
+    hitCylinder.userData.sessionId = ch.sessionId;
+    group.add(hitCylinder);
 
     const bodyMat = new THREE.MeshStandardMaterial({
       color: new THREE.Color(ch.coatColor || "#5c1a24"),
@@ -1953,10 +2270,13 @@ export class CastleScene {
     );
     labelSprite.position.set(0, 2.38, 0);
     labelSprite.scale.set(1.56, 0.49, 1);
+    labelSprite.userData.sessionId = ch.sessionId;
     group.add(labelSprite);
 
     const rig: CharacterRig = {
+      sessionId: ch.sessionId,
       group,
+      hitCylinder,
       bodyMat,
       accentMat,
       headMesh,
@@ -1999,7 +2319,10 @@ export class CastleScene {
     rig.bodyMat.color.set(ch.coatColor || "#5c1a24");
     rig.accentMat.color.set(ch.accentColor || "#d4af37");
 
-    // Orta Çağ Başlıkları & Miğferleri
+    const keepMats = new Set<THREE.Material>([rig.bodyMat, rig.accentMat]);
+
+    // Orta Çağ Başlıkları & Miğferleri (Eski mesh/materyalleri temizle)
+    disposeObjectSubtree(rig.hatGroup, keepMats);
     rig.hatGroup.clear();
     const darkHatMat = new THREE.MeshStandardMaterial({ color: 0x1e1922, roughness: 0.68 });
     const steelMat = new THREE.MeshStandardMaterial({ color: 0xc4ccd8, roughness: 0.24, metalness: 0.9 });
@@ -2051,6 +2374,7 @@ export class CastleScene {
     }
 
     // Orta Çağ Maskeleri & Sakallar
+    disposeObjectSubtree(rig.maskGroup, keepMats);
     rig.maskGroup.clear();
     if (ch.mask === "ironmask") {
       const visor = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.28, 0.12), steelMat);
@@ -2130,10 +2454,10 @@ export class CastleScene {
     if (this.inspectTargetId) {
       const rig = this.characterRigs.get(this.inspectTargetId);
       if (rig) {
-        const focusY = this.inspectDistance < 1.8 ? 1.52 : 1.32;
+        const focusY = this.inspectDistance < 1.85 ? 1.44 : 1.24;
         const focus = new THREE.Vector3(rig.group.position.x, focusY, rig.group.position.z);
         this.cameraTarget.lerp(focus, Math.min(1, dt * 14));
-        this.playerLanternLight.position.set(focus.x, 2.6, focus.z);
+        this.playerLanternLight.position.set(focus.x, 2.75, focus.z);
 
         const viewAngle = rig.group.rotation.y + this.inspectOrbitYaw;
         const dist = this.inspectDistance;
@@ -2148,8 +2472,18 @@ export class CastleScene {
       }
     }
 
-    const target = new THREE.Vector3(playerX, 1.5, playerZ);
-    this.cameraTarget.lerp(target, Math.min(1, dt * 14));
+    let target: THREE.Vector3;
+    if (this.cameraFocusMode === "FIRE") {
+      // Hükmün Şöminesi sinematik cephe açısı (alev + kıvılcımlar üst-ortada net görünür)
+      target = new THREE.Vector3(0, 1.18, -8.85);
+    } else if (this.cameraFocusMode === "TABLE") {
+      // Yuvarlak Masa + #11 Kâhya Tahtı + Kuzey Şöminesi ortak kadrajı
+      target = new THREE.Vector3(0, 1.25, -1.35);
+    } else {
+      target = new THREE.Vector3(playerX, 1.5, playerZ);
+    }
+
+    this.cameraTarget.lerp(target, Math.min(1, dt * 12));
     this.playerLanternLight.position.set(this.cameraTarget.x, 3.0, this.cameraTarget.z);
 
     const isPortrait = window.innerWidth < window.innerHeight;
@@ -2159,26 +2493,40 @@ export class CastleScene {
 
     let desiredX = this.cameraTarget.x + Math.sin(this.cameraYaw) * horizDist;
     let desiredZ = this.cameraTarget.z + Math.cos(this.cameraYaw) * horizDist;
-    const desiredY = Math.max(1.25, this.cameraTarget.y + vertDist);
+    let desiredY = Math.max(1.25, this.cameraTarget.y + vertDist);
 
-    desiredX = Math.max(-36.5, Math.min(36.5, desiredX));
-    desiredZ = Math.max(-42.5, Math.min(45.5, desiredZ));
+    // Büyük Şölen Salonu içindeyken tavan kirişlerine ve Kuzey Şömine Bacasına girmeyi engelle
+    if (
+      this.cameraFocusMode === "FIRE" ||
+      this.cameraFocusMode === "TABLE" ||
+      (Math.abs(this.cameraTarget.x) < 10.5 && Math.abs(this.cameraTarget.z) < 9.6)
+    ) {
+      desiredX = Math.max(-10.8, Math.min(10.8, desiredX));
+      desiredZ = Math.max(-8.0, Math.min(9.2, desiredZ));
+      desiredY = Math.min(4.88, desiredY);
+      if (desiredZ < -7.35 && Math.abs(desiredX) < 2.65) {
+        desiredZ = -7.35;
+      }
+    } else {
+      desiredX = Math.max(-36.5, Math.min(36.5, desiredX));
+      desiredZ = Math.max(-42.5, Math.min(45.5, desiredZ));
+    }
 
     this.camera.position.set(desiredX, desiredY, desiredZ);
     this.camera.lookAt(this.cameraTarget);
   }
 
   public render(dt: number, elapsedTime: number): void {
-    // 1. Kamera ile oyuncu arasına giren taş duvarları otomatik yarı-saydamlaştır (Diablo / V Rising stili)
+    // 1. Kamera ile hedef arasına giren taş duvarları, kemerleri ve kapalı kapıları otomatik yarı-saydamlaştır (360° İnceleme dahil!)
     const camX = this.camera.position.x;
     const camZ = this.camera.position.z;
     const tgtX = this.cameraTarget.x;
     const tgtZ = this.cameraTarget.z;
-    const checkWallFade = !this.inspectTargetId;
 
     for (const wall of this.occludableWalls) {
+      const doorOpen = wall.doorId ? Boolean(this.doorPivots.get(wall.doorId)?.isOpen) : false;
       const blocking =
-        checkWallFade &&
+        !doorOpen &&
         segmentIntersectsExpandedAABB(
           camX,
           camZ,
@@ -2279,7 +2627,9 @@ export class CastleScene {
       cg.mesh.rotation.z = elapsedTime * cg.speed;
     }
 
-    if (this.fireModeTimer > 0) {
+    if (this.activePhase === "FIRE" && this.fireMode !== "normal") {
+      this.fireModeTimer = Math.max(this.fireModeTimer, 1.0);
+    } else if (this.fireModeTimer > 0) {
       this.fireModeTimer -= dt;
       if (this.fireModeTimer <= 0) {
         this.fireMode = "normal";

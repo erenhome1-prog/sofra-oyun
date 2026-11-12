@@ -12,9 +12,10 @@ import {
   detectRoomZone,
   normalizeRoomCode,
   resolveCastleCollision,
+  resolveCastleStep,
   resolveDurationPreset
 } from "@sofra/shared";
-import { CastleScene, CharacterVisualState } from "./castleScene";
+import { CastleScene, CharacterVisualState, PickedCharacterInfo } from "./castleScene";
 import { sfx } from "./sfx";
 
 interface VaultData {
@@ -214,6 +215,19 @@ class SofraGameApp {
   private fpsAccum = 0;
   private lastFrameTime = performance.now();
 
+  // Faz 2 Yeni Özellikler: Son 10 sn Çan, Beraberlik İkinci Tur, Odalar & Bağlam Menüsü Durumları
+  private activeReconnectRoomId = "";
+  private isLocalReadyForPhase = false;
+  private isNightSealed = false;
+  private tieCandidateIds: string[] | null = null;
+  private lastLocalServerVoted = false;
+  private lastCountdownSec = -1;
+  private usedStationIdsThisRound = new Set<string>();
+  private lastRoundNumber = 0;
+  private inspectedFromHandbook = false;
+  private resetPointersFn: (() => void) | null = null;
+  private toastHideTimer: number | null = null;
+
   constructor() {
     const container = document.getElementById("canvas-container")!;
     this.scene = new CastleScene(container);
@@ -240,18 +254,60 @@ class SofraGameApp {
     requestAnimationFrame((t) => this.animate(t));
   }
 
+  private isTextInputElement(el: Element | null): boolean {
+    if (!el) return false;
+    const tag = el.tagName;
+    return tag === "INPUT" || tag === "TEXTAREA" || (el as HTMLElement).isContentEditable;
+  }
+
   private setupMobileOrientationGate(): void {
+    const updateKeyboardState = () => {
+      const vv = window.visualViewport;
+      const focusedInput = this.isTextInputElement(document.activeElement);
+      const baseH = Math.max(window.screen?.availHeight || 0, window.innerHeight);
+      const vvH = vv ? vv.height : window.innerHeight;
+      const keyboardOpen = focusedInput && vvH < baseH * 0.74;
+      const wasOpen = document.body.classList.contains("keyboard-open");
+      document.body.classList.toggle("keyboard-open", keyboardOpen);
+      if (wasOpen && !keyboardOpen) {
+        // iOS Safari sanal klavye kapandığında kayan viewport ofsetini sıfırla
+        window.scrollTo(0, 0);
+        setTimeout(() => {
+          window.scrollTo(0, 0);
+          this.scene.forceResize();
+        }, 80);
+      }
+    };
+
     const syncOrientationState = () => {
-      const isTouchMobile =
+      updateKeyboardState();
+
+      const ua = navigator.userAgent || "";
+      const isCoarsePointer =
         window.matchMedia("(pointer: coarse)").matches ||
-        /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+        /Android|iPhone|iPad|iPod|Mobile/i.test(ua);
+      const minScreenDim = Math.min(window.screen?.width || window.innerWidth, window.screen?.height || window.innerHeight);
+      // Büyük tabletlerde (iPad vb. kısa kenar >= 620px) dikey kilide zorlama; telefonlarda yatay ekran iste
+      const isPhoneTouch = isCoarsePointer && minScreenDim < 620;
 
-      const isLandscape = window.innerWidth >= window.innerHeight;
-
-      if (!isTouchMobile) {
+      if (!isPhoneTouch) {
         document.body.classList.remove("force-rotate-gate");
         document.body.classList.add("is-landscape");
         return;
+      }
+
+      // Sanal klavye açıkken innerHeight küçülmesi yatay ekran sanılmasın!
+      let isLandscape: boolean;
+      const scrOrientType = screen.orientation?.type || "";
+      const legacyAngle = typeof (window as any).orientation === "number" ? Math.abs((window as any).orientation) : null;
+      if (scrOrientType) {
+        isLandscape = scrOrientType.startsWith("landscape");
+      } else if (legacyAngle !== null) {
+        isLandscape = legacyAngle === 90;
+      } else if (document.body.classList.contains("keyboard-open") && (window.screen?.height || 0) > (window.screen?.width || 0)) {
+        isLandscape = document.body.classList.contains("is-landscape");
+      } else {
+        isLandscape = window.innerWidth >= window.innerHeight;
       }
 
       if (isLandscape) {
@@ -267,22 +323,33 @@ class SofraGameApp {
         // Telefon dikey tutulduğunda "TELEFONU YATAYA ÇEVİRİN" ekranı çıkar
         document.body.classList.add("force-rotate-gate");
         document.body.classList.remove("is-landscape");
+        this.closeCharacterContextMenu();
+        this.closeHudGearMenu();
       }
     };
 
     syncOrientationState();
     window.addEventListener("resize", syncOrientationState);
+    window.addEventListener("focusin", () => setTimeout(updateKeyboardState, 90));
+    window.addEventListener("focusout", () => setTimeout(syncOrientationState, 120));
     window.addEventListener("orientationchange", () => {
+      this.resetPointersFn?.();
       syncOrientationState();
       for (const ms of [90, 220, 450]) {
         window.setTimeout(syncOrientationState, ms);
       }
     });
     screen.orientation?.addEventListener?.("change", () => {
+      this.resetPointersFn?.();
       syncOrientationState();
       for (const ms of [90, 220, 450]) {
         window.setTimeout(syncOrientationState, ms);
       }
+    });
+    document.addEventListener("fullscreenchange", () => {
+      this.resetPointersFn?.();
+      syncOrientationState();
+      setTimeout(() => this.scene.forceResize(), 100);
     });
     window.visualViewport?.addEventListener?.("resize", syncOrientationState);
   }
@@ -356,15 +423,20 @@ class SofraGameApp {
   // ==========================================================================
   // SİNEMATİK 3D MÜHÜRLÜ ZARF SAHNESİ
   // ==========================================================================
-  private openCinematicEnvelope(bonusMessage?: string): void {
+  private openCinematicEnvelope(bonusMessage?: string, risingLabel?: string): void {
     const modal = document.getElementById("welcome-modal")!;
     const closedView = document.getElementById("envelope-closed-view")!;
     const openView = document.getElementById("envelope-open-view")!;
     const box3d = document.getElementById("env-3d-box")!;
     const bonusEl = document.getElementById("welcome-bonus-text");
+    const risingEl = document.getElementById("env-rising-letter-text");
 
     if (bonusEl && bonusMessage) {
       bonusEl.textContent = bonusMessage;
+    }
+    if (risingEl) {
+      risingEl.innerHTML =
+        risingLabel || "📜 Kâhya'nın Mektubu<br/>&amp; +100 🪙 Hoş Geldin Hediyesi";
     }
 
     box3d.classList.remove("opening");
@@ -505,7 +577,8 @@ class SofraGameApp {
 
         if (this.authTabMode === "register") {
           this.openCinematicEnvelope(
-            `👑 @${p.username} Kayıt Hediyesi: Kişisel Kasanıza +150 Altın Eklendi!`
+            `👑 @${p.username} Kayıt Hediyesi: Kişisel Kasanıza +150 Altın Eklendi!`,
+            `📜 @${escapeHtml(p.username)} Kayıt Beratı<br/>&amp; +150 🪙 Kayıt Hediyesi`
           );
         }
         this.checkActiveServerSession();
@@ -513,6 +586,23 @@ class SofraGameApp {
         feedbackEl.textContent = "Sunucuya ulaşılamadı.";
       }
     });
+
+    // Klavye Enter tuşu kısayolları (Kayıt, Hızlı Giriş, Oda Kurma ve Kodla Katılma)
+    const bindEnterToClick = (inputId: string, buttonId: string) => {
+      document.getElementById(inputId)?.addEventListener("keydown", (ev) => {
+        if ((ev as KeyboardEvent).key === "Enter") {
+          ev.preventDefault();
+          (document.getElementById(buttonId) as HTMLButtonElement | null)?.click();
+        }
+      });
+    };
+    bindEnterToClick("input-guest-nick", "btn-quick-play");
+    bindEnterToClick("input-acc-user", "btn-acc-submit");
+    bindEnterToClick("input-acc-pin", "btn-acc-submit");
+    bindEnterToClick("input-acc-nick", "btn-acc-submit");
+    bindEnterToClick("input-create-title", "btn-create-room");
+    bindEnterToClick("input-create-pass", "btn-create-room");
+    bindEnterToClick("input-join-code", "btn-join-by-code");
 
     // Oda İşlemleri: Hızlı Giriş, Şifreli/Şifresiz Oda Kurma, Kodla Girme
     document.getElementById("btn-quick-play")?.addEventListener("click", () => {
@@ -642,12 +732,14 @@ class SofraGameApp {
       const btn = document.getElementById("btn-resume-session")!;
 
       if (data?.session?.roomId) {
+        this.activeReconnectRoomId = String(data.session.roomId);
         banner.classList.remove("hidden");
         textEl.textContent = `${data.session.roomTitle} (${data.session.code}) — Durum: ${data.session.phase}`;
         btn.onclick = () => {
           this.joinRoomFlow("byId", { roomId: data.session.roomId });
         };
       } else {
+        this.activeReconnectRoomId = "";
         banner.classList.add("hidden");
       }
     } catch {
@@ -676,27 +768,39 @@ class SofraGameApp {
         .map((r) => {
           const preset = resolveDurationPreset(r.paceMode, r.fastMode);
           const cap = r.targetPlayerCount || r.maxClients;
+          const isLobby = r.phase === "LOBBY";
+          const isMyActiveRoom = !isLobby && this.activeReconnectRoomId === r.roomId;
+          const canJoin = isLobby || isMyActiveRoom;
+          const safeTitle = escapeHtml(String(r.roomTitle || "Sofra Odası"));
+          const safeCode = escapeHtml(String(r.code || "---"));
+          const safeHost = escapeHtml(String(r.hostNick || "Kurucu"));
           return `
         <div class="room-row">
-          <div>
-            <div style="font-weight:bold; font-size:0.86rem; color:var(--gold); display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-              <span>${r.hasPassword ? "🔒" : "🔓"} ${r.roomTitle}</span>
+          <div style="min-width:0;">
+            <div style="font-weight:bold; font-size:0.85rem; color:var(--gold); display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+              <span>${r.hasPassword ? "🔒" : "🔓"} ${safeTitle}</span>
               <span style="font-size:0.69rem; padding:1px 6px; border-radius:99px; background:rgba(226,189,83,0.16); border:1px solid var(--gold-soft); color:#ffe6a1;">${preset.badge}</span>
-              <span style="font-size:0.72rem; color:var(--text-muted);">(${r.code})</span>
+              <span style="font-size:0.72rem; color:var(--text-muted);">(${safeCode})</span>
             </div>
             <div style="font-size:0.72rem; color:var(--text-muted);">
-              Kurucu: ${r.hostNick} · Kadro: ${r.playerCount}/${cap} · ${
-            r.phase === "LOBBY" ? "🟢 Lobide" : "🔥 Oyunda"
+              Kurucu: ${safeHost} · Kadro: ${r.playerCount}/${cap} · ${
+            isLobby ? "🟢 Lobide" : isMyActiveRoom ? "🔄 Senin Maçın" : "🔥 Maç Devam Ediyor"
           }
             </div>
           </div>
-          <button
-            class="btn ${r.phase === "LOBBY" ? "btn-crimson" : ""}"
-            data-join-id="${r.roomId}"
-            data-has-pass="${r.hasPassword ? "1" : "0"}"
-          >
-            ${r.phase === "LOBBY" ? "Katıl" : "İzle/Dön"}
-          </button>
+          ${
+            canJoin
+              ? `<button
+                  class="btn ${isLobby ? "btn-crimson" : "btn-emerald"}"
+                  data-join-id="${escapeHtml(r.roomId)}"
+                  data-has-pass="${r.hasPassword ? "1" : "0"}"
+                >
+                  ${isLobby ? "Katıl" : "🔄 Oyuna Dön"}
+                </button>`
+              : `<button class="btn" disabled style="opacity:0.5; cursor:not-allowed;" title="Başlamış maça dışarıdan girilemez">
+                  🔥 Oyunda
+                </button>`
+          }
         </div>
       `;
         })
@@ -787,6 +891,7 @@ class SofraGameApp {
     this.room = room;
     this.previewSelfOnMenu = false;
     this.scene.inspectTargetId = null;
+    this.inspectedFromHandbook = false;
     this.myQuests = [];
     this.activeTrial = null;
     this.traitorNightPicks.clear();
@@ -795,6 +900,14 @@ class SofraGameApp {
     this.gameOverSummary = null;
     this.lastVoteReveal = [];
     this.lastDayExtraKey = "";
+    this.isLocalReadyForPhase = false;
+    this.isNightSealed = false;
+    this.tieCandidateIds = null;
+    this.lastLocalServerVoted = false;
+    this.lastCountdownSec = -1;
+    this.usedStationIdsThisRound.clear();
+    this.closeCharacterContextMenu();
+    this.closeHudGearMenu();
     sessionStorage.setItem("sofra_reconnect_token", room.reconnectionToken);
 
     document.getElementById("main-menu-overlay")?.classList.add("hidden");
@@ -806,11 +919,32 @@ class SofraGameApp {
     document.getElementById("chat-log")!.innerHTML = "";
     this.pmThreads.clear();
     this.renderPMWindows();
+    this.syncCameraZoomUI();
     this.lastCenterRenderHash = "";
 
-    room.onMessage("role_envelope", (payload: SecretRolePayload) => {
+    room.onMessage("role_envelope", (payload: SecretRolePayload & {
+      myVotedTargetId?: string;
+      tieCandidates?: string[];
+      isNightSealed?: boolean;
+      myFinalDecision?: "TRUST" | "DOUBT" | "";
+    }) => {
+      const roleChanged = !this.myRole || this.myRole.role !== payload.role;
       this.myRole = payload;
-      sfx.playSealBreak();
+      if (typeof payload.myVotedTargetId === "string" && payload.myVotedTargetId) {
+        this.selectedVoteTargetId = payload.myVotedTargetId;
+      }
+      if (Array.isArray(payload.tieCandidates)) {
+        this.tieCandidateIds = payload.tieCandidates.length > 0 ? payload.tieCandidates : null;
+      }
+      if (typeof payload.isNightSealed === "boolean") {
+        this.isNightSealed = payload.isNightSealed;
+      }
+      if (payload.myFinalDecision === "TRUST" || payload.myFinalDecision === "DOUBT") {
+        this.selectedFinalChoice = payload.myFinalDecision;
+      }
+      if (roleChanged) {
+        sfx.playSealBreak();
+      }
       const pill = document.getElementById("my-role-pill")!;
       pill.classList.remove("hidden", "role-hain", "role-misafir");
       if (payload.role === "HAIN") {
@@ -843,9 +977,12 @@ class SofraGameApp {
       "chat_msg",
       (msg: { senderId: string; senderNick: string; seat?: number; channel: string; text: string }) => {
         if (msg.senderId && this.mutedPlayerIds.has(msg.senderId)) return;
+        if (msg.senderId !== room.sessionId) {
+          sfx.playChatTick();
+        }
         this.appendChatMessage(msg.senderId, msg.senderNick, msg.channel, msg.text);
         if (msg.channel === "HAİN MECLİSİ") {
-          this.nightConclaveLogs.push(`${msg.senderNick}: ${msg.text}`);
+          this.nightConclaveLogs.push(`${escapeHtml(String(msg.senderNick || ""))}: ${escapeHtml(String(msg.text || ""))}`);
           if (this.nightConclaveLogs.length > 14) this.nightConclaveLogs.shift();
           this.lastCenterRenderHash = "";
         } else {
@@ -900,7 +1037,7 @@ class SofraGameApp {
           text: pm.text
         });
         if (!fromMe) {
-          sfx.playSealBreak();
+          sfx.playWhisperPing();
           if (thread.minimized) thread.unread = true;
         }
         this.renderPMWindows();
@@ -908,7 +1045,18 @@ class SofraGameApp {
     );
 
     room.onMessage("pm_error", (err: { text: string }) => {
+      sfx.playDoorLocked();
       this.appendChatMessage("", "UYARI", "FISILTI", err.text);
+    });
+
+    room.onMessage("bell_tolls", () => {
+      sfx.playCastleBell();
+    });
+
+    room.onMessage("fireplace_burn", (d: { flame?: string }) => {
+      const isRed = d?.flame === "RED";
+      this.scene.triggerFireplaceFlame(isRed ? "red" : "white");
+      sfx.playFireWhoosh(isRed);
     });
 
     room.onMessage(
@@ -937,24 +1085,31 @@ class SofraGameApp {
       sfx.playGoldChime();
     });
 
-    room.onMessage("door_sfx", (data: { doorId: string; open: boolean }) => {
-      sfx.playDoorCreak(data.open);
+    room.onMessage("door_sfx", (data: { doorId: string; open: boolean; locked?: boolean }) => {
+      if (data.locked) {
+        sfx.playDoorLocked();
+      } else {
+        sfx.playDoorCreak(data.open);
+      }
     });
 
     // 🔍 KARAKTER İNCELE & ARKADAŞLIK / FISILTI YAKINLIK BARI SONUCU
     room.onMessage("inspect_result", (data: any) => {
       this.renderInspectOverlay(data);
-      if (data?.topBonds?.length > 0 && data.topBonds[0].score >= 25) {
-        const top = data.topBonds[0];
+      const strongBonds = Array.isArray(data?.topBonds)
+        ? data.topBonds.filter((b: any) => Number(b.score) >= 25).slice(0, 3)
+        : [];
+      if (strongBonds.length > 0) {
         const rnd = (this.room?.state as any)?.round || 1;
+        const bondSummary = strongBonds
+          .map((b: any) => `#${b.seat} ${b.nick} (%${b.score} ${b.tier})`)
+          .join(", ");
         this.addClueEntry({
           category: "clue",
           icon: "🔍",
           source: `Yakınlık Raporu (#${data.seat} ${escapeHtml(String(data.nick || ""))})`,
-          text: escapeHtml(
-            `En güçlü fısıltı bağı: #${top.seat} ${top.nick} ile %${top.score} (${top.tier}) · Konum: ${data.roomName}`
-          ),
-          dedupeKey: `insp_${rnd}_${data.seat}_${top.seat}`,
+          text: escapeHtml(`Güçlü fısıltı bağları: ${bondSummary} · Konum: ${data.roomName}`),
+          dedupeKey: `insp_${rnd}_${data.seat}_${strongBonds.map((b: any) => b.seat).join("-")}`,
           silent: true
         });
       }
@@ -981,27 +1136,46 @@ class SofraGameApp {
     room.onMessage(
       "puzzle_challenge",
       (ch: { puzzleId: string; title: string; prompt: string; options: string[] }) => {
+        sfx.playRuneChime();
         this.renderDayPuzzleModal(ch);
       }
     );
 
-    room.onMessage("puzzle_feedback", (fb: { ok: boolean; bonusGold?: number; text: string }) => {
+    room.onMessage("puzzle_feedback", (fb: { ok: boolean; bonusGold?: number; text: string; isClue?: boolean }) => {
       if (fb.bonusGold) {
         this.vault.gold += fb.bonusGold;
         this.saveVault(false);
         sfx.playGoldChime();
+      } else if (fb.ok) {
+        sfx.playSuccessChord();
+      } else {
+        sfx.playDoorLocked();
       }
-      if (fb.ok && fb.text) {
+
+      const rawText = String(fb.text || "");
+      const isCosmeticOrActionOnly =
+        fb.isClue === false ||
+        /^(🪖|🧙|🎭|🛡️|✨ Simya Taşı|🔔 Zindan zincirlerini|⛲ Kuyunun suları|🗡️ Şato düzeneğini gizlice SABOTE|📜 İsimsiz mühürsüz not gizlice|🌑 Gölge İksiri|🧪 Dostluk İksiri|🧪 İksir sana)/.test(
+          rawText
+        );
+
+      if (fb.ok && rawText && !isCosmeticOrActionOnly) {
         const rnd = (this.room?.state as any)?.round || 1;
         this.addClueEntry({
           category: "clue",
           icon: "🔮",
           source: "Şato Keşif & Kürsü İpucu",
-          text: escapeHtml(fb.text),
-          dedupeKey: `puz_${rnd}_${fb.text}`
+          text: escapeHtml(rawText),
+          dedupeKey: `puz_${rnd}_${rawText}`
         });
       }
-      this.showPuzzleFeedbackModal(fb.text, fb.ok);
+
+      const customTitle = !fb.ok
+        ? "⚠️ İŞLEM TAMAMLANAMADI"
+        : isCosmeticOrActionOnly
+        ? "✨ ŞATO ETKİLEŞİMİ TAMAMLANDI!"
+        : "🔮 YENİ DEDEKTİF KANITI AÇILDI!";
+      this.showPuzzleFeedbackModal(rawText, fb.ok, customTitle);
     });
 
     // 🧩 1 DAKİKALIK ORTAK ŞATO BULMACA SINAVI (TRIAL)
@@ -1011,7 +1185,7 @@ class SofraGameApp {
     });
 
     room.onMessage("trial_completed", (res: { wonNecklace: boolean; clueText: string }) => {
-      sfx.playGoldChime();
+      sfx.playSuccessChord();
       if (this.activeTrial) {
         this.activeTrial.stage = 4;
         this.activeTrial.completedClue = `${res.wonNecklace ? "📿 ALTIN KOLYE KAZANDIN! | " : ""}${res.clueText}`;
@@ -1020,7 +1194,7 @@ class SofraGameApp {
       this.addClueEntry({
         category: "clue",
         icon: res.wonNecklace ? "📿" : "🧩",
-        source: "1 Dk Bulmaca Sınavı Kanıtı",
+        source: "Şato Bulmaca Kanıtı",
         text: escapeHtml(`${res.wonNecklace ? "[Altın Kolye Kazanıldı] " : ""}${res.clueText}`),
         dedupeKey: `trial_${rnd}_${res.clueText}`
       });
@@ -1031,18 +1205,24 @@ class SofraGameApp {
     room.onMessage("ready_count_update", (d: { readyCount: number; totalHumans: number }) => {
       this.readyStatusText = `(${d.readyCount}/${d.totalHumans})`;
       const btn = document.getElementById("btn-ready-phase");
-      if (btn) btn.textContent = `⏩ Hazırım ${this.readyStatusText}`;
+      if (btn) {
+        btn.textContent = `${this.isLocalReadyForPhase ? "✅ Hazırım" : "⏩ Hazırım"} ${this.readyStatusText}`;
+      }
+      this.lastCenterRenderHash = "";
     });
 
     // 🗡️ GECE HAİNLER MECLİSİ CANLI İNFAZ SEÇİMLERİ & KAPI DİNLEME
     room.onMessage("traitor_pick_update", (d: any) => {
       this.traitorNightPicks.set(d.traitorId, d);
+      if (d.traitorId === room.sessionId && d.targetId) {
+        this.selectedNightTargetId = d.targetId;
+      }
       this.lastCenterRenderHash = "";
     });
 
     room.onMessage("night_watch_result", (d: { text: string }) => {
       this.nightWatchNote = d.text;
-      sfx.playSealBreak();
+      sfx.playClueChime();
       const rnd = (this.room?.state as any)?.round || 1;
       this.addClueEntry({
         category: "clue",
@@ -1064,7 +1244,8 @@ class SofraGameApp {
           this.showExecutionToast(
             "📿 ALTIN KOLYE İNFAZI DURDURDU!",
             "Gece Hainler Meclisi infaz mührünü bastı ancak Altın Kolye parlayarak sahibini ölümden kurtardı!",
-            false
+            false,
+            "🌅 SABAH GECE İNFAZI RAPORU"
           );
           this.addClueEntry({
             category: "fire",
@@ -1075,13 +1256,17 @@ class SofraGameApp {
           });
         } else if (ev.victimId) {
           this.confirmedSeatFlames[ev.victimSeat] = "EXEC";
+          if (this.preTargetSeat === ev.victimSeat) {
+            this.preTargetSeat = 0;
+          }
           const isMe = ev.victimId === this.room?.sessionId;
           this.showExecutionToast(
             isMe ? "💀 HAİNLER TOPLANTISINDA İNFAZ EDİLDİN!" : `🩸 GECE İNFAZI: KOLTUK #${ev.victimSeat}`,
             isMe
               ? "Gece Hainler Meclisi senin için infaz kararı verdi! Porselen tabağın ters çevrildi; artık Hayalet olarak şatoda süzülüp oyun sonunu izleyebilirsin."
               : `Hainler gece toplantısında Koltuk #${ev.victimSeat} (${ev.victimNick}) için İNFAZ mührü bastı!`,
-            true
+            true,
+            "🕯️ GECE HAİNLER MECLİSİ HÜKMÜ"
           );
           this.addClueEntry({
             category: "fire",
@@ -1101,17 +1286,41 @@ class SofraGameApp {
       this.lastCenterRenderHash = "";
     });
 
-    // 🗳️ ŞÖMİNE ÖNCESİ KİM KİME OY VERDİ AÇIKLAMASI
+    // 🗳️ ŞÖMİNE ÖNCESİ KİM KİME OY VERDİ AÇIKLAMASI & BERABERLİK TESPİTİ
     room.onMessage(
       "vote_reveal",
       (d: {
         votes: Array<{ voterSeat: number; voterNick: string; targetSeat: number; targetNick: string }>;
+        counts?: Record<string, number>;
+        tieCandidates?: string[];
+        isTie?: boolean;
       }) => {
         this.lastVoteReveal = d.votes || [];
+        if (Array.isArray(d.tieCandidates) && d.tieCandidates.length > 0) {
+          this.tieCandidateIds = d.tieCandidates;
+          this.selectedVoteTargetId = "";
+          sfx.playTensionDrum();
+        } else if (d.counts && !this.tieCandidateIds) {
+          // counts içinden en yüksek oy sayısında birden fazla kişi eşit kaldıysa ikinci tur adaylarını hazırla
+          const entries = Object.entries(d.counts).filter(([, c]) => Number(c) > 0);
+          if (entries.length >= 2) {
+            const maxC = Math.max(...entries.map(([, c]) => Number(c)));
+            const tops = entries.filter(([, c]) => Number(c) === maxC).map(([id]) => id);
+            if (tops.length > 1) {
+              this.tieCandidateIds = tops;
+              this.selectedVoteTargetId = "";
+              sfx.playTensionDrum();
+            }
+          }
+        }
         if (this.lastVoteReveal.length > 0) {
           const rnd = (this.room?.state as any)?.round || 1;
           const summary = this.lastVoteReveal
-            .map((v) => `#${v.voterSeat} ${v.voterNick} ➔ #${v.targetSeat} ${v.targetNick}`)
+            .map((v) =>
+              v.targetSeat > 0
+                ? `#${v.voterSeat} ${v.voterNick} ➔ #${v.targetSeat} ${v.targetNick}`
+                : `#${v.voterSeat} ${v.voterNick} ➔ 🏳️ Çekimser`
+            )
             .join(" · ");
           this.addClueEntry({
             category: "fire",
@@ -1128,17 +1337,18 @@ class SofraGameApp {
     // 🕯️ GÜNDÜZ HAİN SABOTAJI: 12 SANİYE ŞATO KARARTMASI
     room.onMessage("blackout_event", (d: { durationSec: number }) => {
       this.scene.triggerBlackout(d?.durationSec || 12);
-      sfx.playFireWhoosh(true);
+      sfx.playSabotageDark();
       this.showExecutionToast(
         "🕯️ ŞATODA KARARTMA SABOTAJI!",
         "Gizli bir Hain avizeleri ve şamdanları söndürdü! 12 saniye boyunca karanlıkta kimseye sırtını dönme!",
-        true
+        true,
+        "🕯️ KARANLIK SABOTAJ ALARMI"
       );
     });
 
     // 📜 GÜNDÜZ HAİN SABOTAJI: İSİMSİZ SAHTE NOT
     room.onMessage("anonymous_note", (d: { text: string }) => {
-      sfx.playSealBreak();
+      sfx.playWhisperPing();
       const rnd = (this.room?.state as any)?.round || 1;
       this.addClueEntry({
         category: "clue",
@@ -1147,7 +1357,12 @@ class SofraGameApp {
         text: escapeHtml(`"${d.text}"`),
         dedupeKey: `anon_${rnd}_${d.text}`
       });
-      this.showExecutionToast("📜 CEBİNE İSİMSİZ BİR NOT BIRAKILDI!", `"${d.text}"`, true);
+      this.showExecutionToast(
+        "📜 CEBİNE İSİMSİZ BİR NOT BIRAKILDI!",
+        `"${d.text}"`,
+        true,
+        "📜 GİZLİ İHBAR NOTU"
+      );
     });
 
     // 🔔 KÂHYA ZİLİ GİZLİ TAKIM YANITI
@@ -1161,22 +1376,60 @@ class SofraGameApp {
         text: escapeHtml(d.text),
         dedupeKey: `kahya_${rnd}_${d.text}`
       });
-      this.showPuzzleFeedbackModal(d.text, true);
+      this.showPuzzleFeedbackModal(d.text, true, "🔔 KÂHYA ZİLİ GİZLİ YANITI");
     });
 
     // 👻 HAYALET ŞAMDAN TİTRETMESİ
     room.onMessage("ghost_flicker", () => {
       this.scene.triggerGhostFlicker();
-      sfx.playSealBreak();
+      sfx.playNightWind();
+    });
+
+    // Olası özel durum geri yükleme mesajı (yeniden bağlanma desteği)
+    room.onMessage("my_private_Choices", (d: { voteTargetId?: string; finalChoice?: "TRUST" | "DOUBT"; tieCandidates?: string[] }) => {
+      if (d?.voteTargetId) this.selectedVoteTargetId = d.voteTargetId;
+      if (d?.finalChoice) this.selectedFinalChoice = d.finalChoice;
+      if (Array.isArray(d?.tieCandidates)) this.tieCandidateIds = d.tieCandidates;
+      this.lastCenterRenderHash = "";
     });
 
     room.onStateChange((state: any) => {
       sessionStorage.setItem("sofra_reconnect_token", room.reconnectionToken);
       const me = state.players?.get(room.sessionId);
-      if (me && state.phase !== "DAY") {
-        this.localX = me.x;
-        this.localZ = me.z;
-        this.localRotY = me.rotY;
+      if (me) {
+        if (state.phase === "LOBBY" && me.seat && me.seat !== this.vault.selectedSeat) {
+          this.vault.selectedSeat = me.seat;
+          this.saveVault(false);
+        }
+        if (state.phase !== "DAY") {
+          this.localX = me.x;
+          this.localZ = me.z;
+          this.localRotY = me.rotY;
+        }
+        if (state.phase === "VOTE") {
+          const serverVotedNow = Boolean(me.votedForId);
+          // İkinci tur beraberlik (TIE_VOTE) başladığında sunucu votedForId'yi sıfırlar -> yerelde de kilidi aç!
+          if (this.lastLocalServerVoted && !serverVotedNow) {
+            this.selectedVoteTargetId = "";
+            this.lastCenterRenderHash = "";
+          } else if (!this.selectedVoteTargetId && serverVotedNow) {
+            // Sayfa yenileyip geri dönen oyuncu için mühürlü oy bilgisini koru
+            this.selectedVoteTargetId = me.votedForId === "ABSTAIN" ? "ABSTAIN" : me.votedForId;
+          }
+          this.lastLocalServerVoted = serverVotedNow;
+        } else {
+          this.lastLocalServerVoted = false;
+        }
+      }
+      // Elenen koltuk Ön-Hedef ise temizle
+      if (this.preTargetSeat > 0) {
+        let preStillAlive = false;
+        state.players?.forEach((p: any) => {
+          if (p.seat === this.preTargetSeat && p.alive) preStillAlive = true;
+        });
+        if (!preStillAlive) {
+          this.preTargetSeat = 0;
+        }
       }
     });
 
@@ -1207,36 +1460,55 @@ class SofraGameApp {
   private showFarewellToast(data: { seat: number; nick: string; flame: string; roleLabel: string; note: string }): void {
     const toast = document.getElementById("farewell-toast")!;
     const isRed = data.flame === "RED";
+    if (this.toastHideTimer) clearTimeout(this.toastHideTimer);
     toast.innerHTML = `
-      <div style="font-size:0.78rem; letter-spacing:1.5px; color:var(--gold);">
-        📜 MASAYA BIRAKILAN VEDA MEKTUBU
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+        <span style="font-size:0.74rem; letter-spacing:1.3px; color:var(--gold);">
+          📜 MASAYA BIRAKILAN VEDA MEKTUBU
+        </span>
+        <button class="btn" id="btn-close-toast-x" style="padding:1px 7px; font-size:0.7rem;">✕</button>
       </div>
-      <h3 style="margin:6px 0; color:${isRed ? "#ff4d5e" : "#9ed4ff"};">
-        Koltuk #${data.seat} ${data.nick} (${data.roleLabel})
+      <h3 style="margin:4px 0; font-size:0.98rem; color:${isRed ? "#ff4d5e" : "#9ed4ff"};">
+        Koltuk #${Number(data.seat)} ${escapeHtml(String(data.nick || ""))} (${escapeHtml(String(data.roleLabel || ""))})
       </h3>
-      <p style="font-style:italic; font-size:0.92rem; color:var(--parchment); line-height:1.45;">
-        "${data.note}"
+      <p style="font-style:italic; font-size:0.86rem; color:var(--parchment); line-height:1.4;">
+        "${escapeHtml(String(data.note || ""))}"
       </p>
     `;
     toast.classList.remove("hidden");
-    setTimeout(() => toast.classList.add("hidden"), 6500);
+    document.getElementById("btn-close-toast-x")?.addEventListener("click", () => {
+      toast.classList.add("hidden");
+    });
+    this.toastHideTimer = window.setTimeout(() => toast.classList.add("hidden"), 6000);
   }
 
-  private showExecutionToast(title: string, body: string, isDanger: boolean): void {
+  private showExecutionToast(
+    title: string,
+    body: string,
+    isDanger: boolean,
+    headerLabel = "🕯️ ŞATO DUYURUSU"
+  ): void {
     const toast = document.getElementById("farewell-toast")!;
+    if (this.toastHideTimer) clearTimeout(this.toastHideTimer);
     toast.innerHTML = `
-      <div style="font-size:0.78rem; letter-spacing:1.5px; color:var(--gold);">
-        🕯️ GECE HAİNLER MECLİSİ HÜKMÜ
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+        <span style="font-size:0.74rem; letter-spacing:1.3px; color:var(--gold);">
+          ${escapeHtml(headerLabel)}
+        </span>
+        <button class="btn" id="btn-close-toast-x" style="padding:1px 7px; font-size:0.7rem;">✕</button>
       </div>
-      <h3 style="margin:6px 0; color:${isDanger ? "#ff4d5e" : "#ffd166"};">
-        ${title}
+      <h3 style="margin:4px 0; font-size:0.98rem; color:${isDanger ? "#ff4d5e" : "#ffd166"};">
+        ${escapeHtml(title)}
       </h3>
-      <p style="font-size:0.92rem; color:var(--parchment); line-height:1.45;">
-        ${body}
+      <p style="font-size:0.86rem; color:var(--parchment); line-height:1.4;">
+        ${escapeHtml(body)}
       </p>
     `;
     toast.classList.remove("hidden");
-    setTimeout(() => toast.classList.add("hidden"), 7000);
+    document.getElementById("btn-close-toast-x")?.addEventListener("click", () => {
+      toast.classList.add("hidden");
+    });
+    this.toastHideTimer = window.setTimeout(() => toast.classList.add("hidden"), 5800);
   }
 
   private returnToMainMenu(): void {
@@ -1245,21 +1517,30 @@ class SofraGameApp {
     this.lastPhase = "";
     this.previewSelfOnMenu = false;
     this.scene.inspectTargetId = null;
+    this.inspectedFromHandbook = false;
     this.myQuests = [];
     this.activeTrial = null;
     this.traitorNightPicks.clear();
     this.nightConclaveLogs = [];
     this.nightWatchNote = "";
     this.gameOverSummary = null;
-    document.body.classList.remove("in-day-mode");
+    this.tieCandidateIds = null;
+    this.isLocalReadyForPhase = false;
+    this.isNightSealed = false;
+    this.resetPointersFn?.();
+    this.closeCharacterContextMenu();
+    this.closeHudGearMenu();
+    document.body.classList.remove("in-day-mode", "in-fire-mode");
     document.getElementById("day-action-hud")?.classList.remove("day-active");
     document.getElementById("hud")?.classList.add("hidden");
     document.getElementById("my-role-pill")?.classList.add("hidden");
     document.getElementById("inspect-overlay")?.classList.add("hidden");
     document.getElementById("puzzle-modal")?.classList.add("hidden");
+    document.getElementById("farewell-toast")?.classList.add("hidden");
     this.closeHandbookModal();
     document.getElementById("main-menu-overlay")?.classList.remove("hidden");
     this.scene.syncCharacters([], 0);
+    this.syncCameraZoomUI();
     this.refreshLiveRooms();
     this.checkActiveServerSession();
   }
@@ -1297,19 +1578,21 @@ class SofraGameApp {
 
     for (const [peerId, th] of this.pmThreads.entries()) {
       const isMuted = this.mutedPlayerIds.has(peerId);
+      const safePeerNick = escapeHtml(String(th.peerNick || "Oyuncu"));
+      const safePeerId = escapeHtml(peerId);
       const win = document.createElement("div");
       win.className = "ko-pm-window";
       win.innerHTML = `
         <div class="ko-pm-header ${th.unread ? "unread-pulse" : ""}">
-          <span>🤫 [PM] #${th.peerSeat} ${th.peerNick}</span>
+          <span>🤫 [PM] #${Number(th.peerSeat)} ${safePeerNick}</span>
           <div style="display:flex; gap:5px;">
-            <button class="btn" data-pm-mute="${peerId}" title="${isMuted ? "Sesi Aç" : "Sustur"}" style="padding:1px 6px; font-size:0.72rem;">${
+            <button class="btn ko-pm-act-btn" data-pm-mute="${safePeerId}" title="${isMuted ? "Sesi Aç" : "Sustur"}">${
         isMuted ? "🔇" : "🔊"
       }</button>
-            <button class="btn" data-pm-min="${peerId}" style="padding:1px 7px; font-size:0.72rem;">${
+            <button class="btn ko-pm-act-btn" data-pm-min="${safePeerId}">${
         th.minimized ? "▢" : "—"
       }</button>
-            <button class="btn btn-crimson" data-pm-close="${peerId}" style="padding:1px 7px; font-size:0.72rem;">✕</button>
+            <button class="btn btn-crimson ko-pm-act-btn" data-pm-close="${safePeerId}">✕</button>
           </div>
         </div>
         <div class="ko-pm-body ${th.minimized ? "hidden" : ""}">
@@ -1320,15 +1603,15 @@ class SofraGameApp {
                 : th.messages
                     .map(
                       (m) =>
-                        `<div><strong style="color:${m.fromMe ? "#ffd700" : "#e3b3ff"};">${
-                          m.senderNick
-                        }:</strong> ${m.text}</div>`
+                        `<div><strong style="color:${m.fromMe ? "#ffd700" : "#e3b3ff"};">${escapeHtml(
+                          String(m.senderNick || "")
+                        )}:</strong> ${escapeHtml(String(m.text || ""))}</div>`
                     )
                     .join("")
             }
           </div>
-          <form class="ko-pm-form" data-pm-form="${peerId}">
-            <input type="text" maxlength="120" placeholder="#${th.peerSeat} ${th.peerNick} kişisine fısılda..." />
+          <form class="ko-pm-form" data-pm-form="${safePeerId}">
+            <input type="text" maxlength="120" placeholder="#${Number(th.peerSeat)} ${safePeerNick} kişisine fısılda..." />
             <button type="submit" class="btn" style="padding:5px 9px;">Gönder</button>
           </form>
         </div>
@@ -1420,8 +1703,8 @@ class SofraGameApp {
       listEl.innerHTML = others
         .map(
           (o) => `
-        <button class="btn" data-pick-dm="${o.id}" data-nick="${o.nick}" data-seat="${o.seat}" style="display:flex; justify-content:space-between; width:100%; padding:9px 12px;">
-          <span>#${o.seat} ${o.nick}</span>
+        <button class="btn" data-pick-dm="${escapeHtml(o.id)}" data-seat="${o.seat}" style="display:flex; justify-content:space-between; width:100%; padding:9px 12px;">
+          <span>#${o.seat} ${escapeHtml(String(o.nick || ""))} ${!o.alive ? "👻" : ""}</span>
           <span style="color:#e3b3ff;">${state.phase === "DAY" ? `${o.dist}m mesafede` : "Fısılda"} ✉️</span>
         </button>
       `
@@ -1434,8 +1717,10 @@ class SofraGameApp {
     listEl.querySelectorAll("[data-pick-dm]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const b = btn as HTMLElement;
+        const sid = b.dataset.pickDm!;
+        const p = state.players?.get(sid);
         modal.classList.add("hidden");
-        this.openPMThread(b.dataset.pickDm!, b.dataset.nick!, Number(b.dataset.seat));
+        this.openPMThread(sid, p?.nick || "Oyuncu", Number(b.dataset.seat));
       });
     });
   }
@@ -1444,53 +1729,97 @@ class SofraGameApp {
     const log = document.getElementById("chat-log")!;
     const item = document.createElement("div");
     const canDM = senderId && this.room && senderId !== this.room.sessionId;
+    const safeSender = escapeHtml(String(sender || ""));
+    const safeScope = escapeHtml(String(scope || ""));
+    const safeText = escapeHtml(String(text || ""));
     const nameHtml = canDM
-      ? `<span class="chat-nick-link" data-chat-dm="${senderId}" data-nick="${sender}">[${scope}] ${sender}:</span>`
-      : `<span style="color:#ffd700;">[${scope}] ${sender}:</span>`;
+      ? `<span class="chat-nick-link" data-chat-dm="${escapeHtml(senderId)}">[${safeScope}] ${safeSender}:</span>`
+      : `<span style="color:#ffd700;">[${safeScope}] ${safeSender}:</span>`;
 
-    item.innerHTML = `${nameHtml} ${text}`;
+    item.innerHTML = `${nameHtml} ${safeText}`;
     log.appendChild(item);
+    while (log.children.length > 90) {
+      log.removeChild(log.firstChild!);
+    }
     log.scrollTop = log.scrollHeight;
 
     item.querySelector("[data-chat-dm]")?.addEventListener("click", (e) => {
       const el = e.currentTarget as HTMLElement;
       const sid = el.dataset.chatDm!;
       const p = (this.room?.state as any)?.players?.get(sid);
-      this.openPMThread(sid, p?.nick || el.dataset.nick || "Oyuncu", p?.seat || 1);
+      this.openPMThread(sid, p?.nick || sender || "Oyuncu", p?.seat || 1);
     });
+  }
+
+  private closeHudGearMenu(): void {
+    document.getElementById("hud-gear-dropdown")?.classList.add("hidden");
   }
 
   // ==========================================================================
   // HUD AKSİYONLARI & WILD RIFT + HİBRİT YÖN KONTROLLERİ
   // ==========================================================================
   private setupHUDActions(): void {
+    // 🔊 Ses Aç/Kapat Düğmesi
+    const btnSfx = document.getElementById("btn-hud-sfx");
+    const syncSfxBtn = () => {
+      if (!btnSfx) return;
+      const muted = sfx.isMuted();
+      btnSfx.textContent = muted ? "🔇" : "🔊";
+      btnSfx.style.opacity = muted ? "0.65" : "1";
+    };
+    syncSfxBtn();
+    btnSfx?.addEventListener("click", () => {
+      const muted = sfx.toggleMute();
+      syncSfxBtn();
+      if (!muted) sfx.playUiClick();
+    });
+
+    // ⚙️ Kasa & Ayarlar Çarkı Açılır Menüsü
+    const btnGear = document.getElementById("btn-hud-gear");
+    const gearDropdown = document.getElementById("hud-gear-dropdown");
+    btnGear?.addEventListener("click", (e) => {
+      e.stopPropagation();
+      sfx.playUiClick();
+      gearDropdown?.classList.toggle("hidden");
+    });
+    document.addEventListener("pointerdown", (e) => {
+      if (!gearDropdown || gearDropdown.classList.contains("hidden")) return;
+      const target = e.target as Node | null;
+      if (target && (gearDropdown.contains(target) || btnGear?.contains(target))) return;
+      this.closeHudGearMenu();
+    });
+
     const btnWatchAd = document.getElementById("btn-watch-ad")!;
     btnWatchAd.addEventListener("click", () => {
       btnWatchAd.setAttribute("disabled", "true");
       let left = 3;
-      btnWatchAd.textContent = `⏳${left}s`;
+      btnWatchAd.textContent = `⏳ Reklam (${left} sn)...`;
       const timer = setInterval(() => {
         left -= 1;
         if (left > 0) {
-          btnWatchAd.textContent = `⏳${left}s`;
+          btnWatchAd.textContent = `⏳ Reklam (${left} sn)...`;
         } else {
           clearInterval(timer);
           this.vault.gold += 50;
           this.saveVault();
           sfx.playGoldChime();
           btnWatchAd.removeAttribute("disabled");
-          btnWatchAd.textContent = "🎬+50";
+          btnWatchAd.textContent = "🎬 Reklam İzle (+50 🪙)";
           this.lastCenterRenderHash = "";
         }
       }, 1000);
     });
 
     const cycleLight = () => {
-      this.scene.cycleBrightnessBoost();
+      const lbl = this.scene.cycleBrightnessBoost();
+      const bEl = document.getElementById("btn-hud-brightness");
+      if (bEl) bEl.textContent = lbl;
+      sfx.playUiClick();
     };
     document.getElementById("btn-hud-zoom")?.addEventListener("click", () => {
       this.scene.cycleCameraZoom();
       this.syncCameraZoomUI();
+      sfx.playUiClick();
     });
     this.bindHoldZoomButton(document.getElementById("btn-hud-zoom-in"), -1);
     this.bindHoldZoomButton(document.getElementById("btn-hud-zoom-out"), 1);
@@ -1500,16 +1829,37 @@ class SofraGameApp {
       this.syncCameraZoomUI();
     });
     this.syncCameraZoomUI();
-    document.getElementById("btn-open-handbook")?.addEventListener("click", () => this.toggleHandbookModal());
+    document.getElementById("btn-open-handbook")?.addEventListener("click", () => {
+      this.closeHudGearMenu();
+      this.toggleHandbookModal();
+    });
     document.getElementById("handbook-modal")?.addEventListener("click", (e) => {
       if ((e.target as HTMLElement)?.id === "handbook-modal") {
         this.closeHandbookModal();
       }
     });
+    document.getElementById("puzzle-modal")?.addEventListener("click", (e) => {
+      if ((e.target as HTMLElement)?.id === "puzzle-modal") {
+        const card = document.getElementById("puzzle-card-content");
+        if (card) card.style.width = "";
+        document.getElementById("puzzle-modal")?.classList.add("hidden");
+      }
+    });
+    document.getElementById("dm-picker-modal")?.addEventListener("click", (e) => {
+      if ((e.target as HTMLElement)?.id === "dm-picker-modal") {
+        document.getElementById("dm-picker-modal")?.classList.add("hidden");
+      }
+    });
+    document.getElementById("btn-open-rules")?.addEventListener("click", () => {
+      this.closeHudGearMenu();
+    });
     document.getElementById("btn-hud-brightness")?.addEventListener("click", cycleLight);
     document.getElementById("btn-force-landscape")?.addEventListener("click", () => this.enterLandscapeFullscreen());
     document.getElementById("btn-menu-landscape")?.addEventListener("click", () => this.enterLandscapeFullscreen());
-    document.getElementById("btn-hud-landscape")?.addEventListener("click", () => this.enterLandscapeFullscreen());
+    document.getElementById("btn-hud-landscape")?.addEventListener("click", () => {
+      this.closeHudGearMenu();
+      this.enterLandscapeFullscreen();
+    });
     document.getElementById("btn-wheel-light")?.addEventListener("click", () => this.handleContextWheelClick());
     document.getElementById("btn-wheel-inspect")?.addEventListener("click", () => this.openInspectPickerModal());
 
@@ -1523,8 +1873,13 @@ class SofraGameApp {
     });
 
     document.getElementById("btn-ready-phase")?.addEventListener("click", () => {
+      this.isLocalReadyForPhase = true;
       this.room?.send("ready_next_phase");
-      sfx.playSealBreak();
+      const btn = document.getElementById("btn-ready-phase");
+      if (btn) {
+        btn.textContent = `✅ Hazırım${this.readyStatusText ? ` ${this.readyStatusText}` : ""}`;
+      }
+      sfx.playUiClick();
     });
 
     document.getElementById("btn-open-dm-list")?.addEventListener("click", () => this.openDMPickerModal());
@@ -1552,6 +1907,7 @@ class SofraGameApp {
 
     // Odadan Çık / Dramatik Veda Mektubu Bırak
     document.getElementById("btn-leave-room")?.addEventListener("click", () => {
+      this.closeHudGearMenu();
       if (!this.room) return;
       const phase = (this.room.state as any)?.phase || "LOBBY";
       if (phase !== "LOBBY" && phase !== "RESULT") {
@@ -1573,14 +1929,30 @@ class SofraGameApp {
       e.preventDefault();
       const text = chatInput.value.trim();
       if (!text || !this.room) return;
-      this.room.send("chat", { text });
+      const curPhase = (this.room.state as any)?.phase || "";
+      if (curPhase === "NIGHT" && this.myRole?.role === "HAIN") {
+        this.room.send("chat", { text, channel: "HAIN" });
+      } else {
+        this.room.send("chat", { text });
+      }
       chatInput.value = "";
     });
   }
 
   private async enterLandscapeFullscreen(): Promise<void> {
+    const docEl: any = document.documentElement;
+    const canReqFs = Boolean(docEl.requestFullscreen || docEl.webkitRequestFullscreen);
+    if (!canReqFs) {
+      // iPhone Safari: Fullscreen API desteklenmediğinde sessizce yutmak yerine nazik ipucu göster
+      this.showExecutionToast(
+        "📱 YATAY & TAM EKRAN OYUN İPUCU",
+        "Telefonu yan (yatay) çevirerek hemen oynayabilir veya Safari 'Paylaş ⬆️ ➔ Ana Ekrana Ekle' ile tam ekran açabilirsiniz.",
+        false,
+        "📱 MOBİL EKRAN BİLGİSİ"
+      );
+      return;
+    }
     try {
-      const docEl: any = document.documentElement;
       if (!document.fullscreenElement) {
         if (docEl.requestFullscreen) {
           await docEl.requestFullscreen();
@@ -1593,7 +1965,7 @@ class SofraGameApp {
         await orient.lock("landscape");
       }
     } catch {
-      // iOS Safari tam ekran / yatay kilidi desteklemiyorsa sessizce geçer; kullanıcı telefonu yan çevirerek oynar.
+      // Yatay kilit tarayıcı tarafından kısıtlıysa telefonu yan çevirerek devam edilir.
     }
   }
 
@@ -1612,35 +1984,269 @@ class SofraGameApp {
 
   private bindHoldZoomButton(btn: HTMLElement | null, dir: number): void {
     if (!btn) return;
+    let activePid: number | null = null;
     btn.addEventListener("pointerdown", (e) => {
       e.preventDefault();
       e.stopPropagation();
+      activePid = e.pointerId;
+      btn.setPointerCapture?.(e.pointerId);
       this.scene.adjustCameraZoom(dir * 0.45);
       this.syncCameraZoomUI();
       this.camZoomDir = dir;
     });
-    const stop = () => {
+    const stop = (e: PointerEvent) => {
+      if (activePid !== null && e.pointerId !== activePid) return;
+      activePid = null;
       if (this.camZoomDir === dir) this.camZoomDir = 0;
     };
     btn.addEventListener("pointerup", stop);
     btn.addEventListener("pointercancel", stop);
-    btn.addEventListener("pointerleave", stop);
+    btn.addEventListener("lostpointercapture", () => {
+      activePid = null;
+      if (this.camZoomDir === dir) this.camZoomDir = 0;
+    });
+  }
+
+  private isAnyBlockingModalOpen(): boolean {
+    if (this.handbookOpen || Boolean(this.scene.inspectTargetId)) return true;
+    for (const id of ["puzzle-modal", "dm-picker-modal", "welcome-modal"]) {
+      const el = document.getElementById(id);
+      if (el && !el.classList.contains("hidden")) return true;
+    }
+    return false;
+  }
+
+  private closeCharacterContextMenu(): void {
+    document.getElementById("char-context-menu")?.classList.add("hidden");
+  }
+
+  private openCharacterContextMenu(picked: PickedCharacterInfo): void {
+    if (!this.room) return;
+    const menu = document.getElementById("char-context-menu");
+    if (!menu) return;
+
+    const state: any = this.room.state;
+    const phase: string = state?.phase || "LOBBY";
+    const myId = this.room.sessionId;
+    const me = state?.players?.get(myId);
+    const isMeAlive = Boolean(me && me.alive && !me.ghost);
+    const isHain = this.myRole?.role === "HAIN";
+    const mateIds = new Set((this.myRole?.traitorMates || []).map((m) => m.id));
+    const targetPlayer = state?.players?.get(picked.sessionId);
+    const isPickedAlive = targetPlayer ? Boolean(targetPlayer.alive && !targetPlayer.ghost) : true;
+    const isMuted = this.mutedPlayerIds.has(picked.sessionId);
+    const curStamp: SuspectStamp = this.suspectTags[picked.seat] || "unknown";
+    const isPre = this.preTargetSeat === picked.seat;
+    const safeNick = escapeHtml(String(picked.name || `Koltuk #${picked.seat}`));
+
+    if (picked.isLocal) {
+      menu.innerHTML = `
+        <div class="char-ctx-header">
+          <div>
+            <strong>#${picked.seat} ${safeNick} (Sen)</strong>
+            <div style="font-size:0.65rem; color:var(--text-muted);">${isPickedAlive ? "Hayatta" : "👻 Hayalet"}</div>
+          </div>
+          <button class="btn" id="ctx-btn-close" style="padding:1px 6px; font-size:0.7rem;">✕</button>
+        </div>
+        <button class="char-ctx-btn" id="ctx-btn-inspect">🔍 Kendimi 360° İncele & Barlar</button>
+        <button class="char-ctx-btn" id="ctx-btn-handbook">📖 Dedektif El Kitapçığım (${this.clueJournal.length})</button>
+      `;
+    } else {
+      const activeTieIds = this.getActiveTieCandidateIds(state);
+      const tieLocked =
+        phase === "VOTE" &&
+        activeTieIds.length > 0 &&
+        !activeTieIds.includes(picked.sessionId);
+
+      let phaseActionBtns = "";
+      if (isPickedAlive && isMeAlive) {
+        if (phase === "VOTE") {
+          phaseActionBtns = `
+            ${
+              !tieLocked
+                ? `<button class="char-ctx-btn danger" id="ctx-btn-vote">🔥 #${picked.seat} İçin Oy Ver</button>`
+                : ""
+            }
+            <button class="char-ctx-btn" id="ctx-btn-accuse">👉 Masada Suçla</button>
+          `;
+        } else if (phase === "TABLE") {
+          phaseActionBtns = `
+            <button class="char-ctx-btn danger" id="ctx-btn-accuse">👉 Masada Suçla</button>
+            <button class="char-ctx-btn" id="ctx-btn-pretarget">${isPre ? "🎯 Ön-Hedefi Kaldır" : "🎯 Oylama Ön-Hedefi Seç"}</button>
+          `;
+        } else if (phase === "NIGHT" && isHain && !mateIds.has(picked.sessionId)) {
+          phaseActionBtns = `
+            <button class="char-ctx-btn danger" id="ctx-btn-night-pick">🩸 Gece İnfaz Hedefi Seç</button>
+          `;
+        } else if (phase === "DAY") {
+          phaseActionBtns = `
+            <button class="char-ctx-btn" id="ctx-btn-pretarget">${isPre ? "🎯 Ön-Hedefi Kaldır" : "🎯 Oylama Ön-Hedefi Kilitle"}</button>
+          `;
+        }
+      }
+
+      menu.innerHTML = `
+        <div class="char-ctx-header">
+          <div>
+            <strong>#${picked.seat} ${safeNick}</strong>
+            <div style="font-size:0.65rem; color:var(--text-muted);">${
+              !isPickedAlive
+                ? "👻 Hayalet"
+                : state?.necklaceHolder === picked.sessionId
+                ? "📿 Altın Kolye Sahibi"
+                : "Hayatta"
+            }</div>
+          </div>
+          <button class="btn" id="ctx-btn-close" style="padding:1px 6px; font-size:0.7rem;">✕</button>
+        </div>
+        <button class="char-ctx-btn" id="ctx-btn-pm" style="color:#efd2ff;">🤫 Özel Fısılda (PM Aç)</button>
+        <button class="char-ctx-btn" id="ctx-btn-inspect">🔍 360° İncele & Yakınlık Barı</button>
+        ${phaseActionBtns}
+        <div class="char-ctx-stamps">
+          <button class="char-ctx-stamp ${curStamp === "trust" ? "active" : ""}" data-ctx-stamp="trust" style="color:#9ef2c3;">🟢 Güven</button>
+          <button class="char-ctx-stamp ${curStamp === "suspect" ? "active" : ""}" data-ctx-stamp="suspect" style="color:#ffe49c;">🟡 Şüphe</button>
+          <button class="char-ctx-stamp ${curStamp === "traitor" ? "active" : ""}" data-ctx-stamp="traitor" style="color:#ff9aa6;">🔴 Hain</button>
+        </div>
+        <button class="char-ctx-btn" id="ctx-btn-mute">${isMuted ? "🔊 Susturmayı Kaldır" : "🔇 Oyuncuyu Sustur"}</button>
+      `;
+    }
+
+    menu.classList.remove("hidden");
+    // Ekran dışına taşmaması için pozisyonu sınırla
+    const menuW = Math.min(238, window.innerWidth - 16);
+    const menuH = Math.min(menu.offsetHeight || 230, window.innerHeight - 54);
+    const left = Math.max(8, Math.min(window.innerWidth - menuW - 8, picked.screenX + 12));
+    const top = Math.max(46, Math.min(window.innerHeight - menuH - 8, picked.screenY - 24));
+    menu.style.left = `${Math.round(left)}px`;
+    menu.style.top = `${Math.round(top)}px`;
+
+    sfx.playUiClick();
+
+    document.getElementById("ctx-btn-close")?.addEventListener("click", () => {
+      this.closeCharacterContextMenu();
+    });
+    document.getElementById("ctx-btn-inspect")?.addEventListener("click", () => {
+      this.closeCharacterContextMenu();
+      this.inspectedFromHandbook = false;
+      this.room?.send("request_inspect", { targetId: picked.sessionId });
+    });
+    document.getElementById("ctx-btn-handbook")?.addEventListener("click", () => {
+      this.closeCharacterContextMenu();
+      this.openHandbookModal("book");
+    });
+    document.getElementById("ctx-btn-pm")?.addEventListener("click", () => {
+      this.closeCharacterContextMenu();
+      this.openPMThread(picked.sessionId, targetPlayer?.nick || picked.name, picked.seat);
+    });
+    document.getElementById("ctx-btn-vote")?.addEventListener("click", () => {
+      this.closeCharacterContextMenu();
+      this.selectedVoteTargetId = picked.sessionId;
+      this.room?.send("vote", { targetId: picked.sessionId });
+      sfx.playVoteStamp();
+      this.lastCenterRenderHash = "";
+    });
+    document.getElementById("ctx-btn-accuse")?.addEventListener("click", () => {
+      this.closeCharacterContextMenu();
+      this.openAccuseModal(picked.sessionId, picked.seat, targetPlayer?.nick || picked.name);
+    });
+    document.getElementById("ctx-btn-night-pick")?.addEventListener("click", () => {
+      this.closeCharacterContextMenu();
+      this.selectedNightTargetId = picked.sessionId;
+      this.room?.send("night_pick", { targetId: picked.sessionId });
+      sfx.playHeartbeat();
+      this.lastCenterRenderHash = "";
+    });
+    document.getElementById("ctx-btn-pretarget")?.addEventListener("click", () => {
+      this.preTargetSeat = this.preTargetSeat === picked.seat ? 0 : picked.seat;
+      this.saveHandbookToSession();
+      this.lastCenterRenderHash = "";
+      sfx.playUiClick();
+      this.closeCharacterContextMenu();
+    });
+    menu.querySelectorAll("[data-ctx-stamp]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const val = (btn as HTMLElement).dataset.ctxStamp as SuspectStamp;
+        this.suspectTags[picked.seat] = this.suspectTags[picked.seat] === val ? "unknown" : val;
+        this.saveHandbookToSession();
+        this.lastCenterRenderHash = "";
+        sfx.playUiClick();
+        this.closeCharacterContextMenu();
+      });
+    });
+    document.getElementById("ctx-btn-mute")?.addEventListener("click", () => {
+      if (this.mutedPlayerIds.has(picked.sessionId)) {
+        this.mutedPlayerIds.delete(picked.sessionId);
+      } else {
+        this.mutedPlayerIds.add(picked.sessionId);
+      }
+      this.renderPMWindows();
+      sfx.playUiClick();
+      this.closeCharacterContextMenu();
+    });
   }
 
   private setupInputAndLoLWheel(): void {
+    document.addEventListener("gesturestart" as any, (e: Event) => e.preventDefault(), { passive: false });
+    document.addEventListener("gesturechange" as any, (e: Event) => e.preventDefault(), { passive: false });
+
+    document.addEventListener("pointerdown", (e) => {
+      const ctxMenu = document.getElementById("char-context-menu");
+      if (ctxMenu && !ctxMenu.classList.contains("hidden")) {
+        const target = e.target as Node | null;
+        if (target && !ctxMenu.contains(target) && target !== this.scene.renderer.domElement) {
+          this.closeCharacterContextMenu();
+        }
+      }
+    });
+
     window.addEventListener("keydown", (e) => {
-      if (document.activeElement?.tagName === "INPUT" || document.activeElement?.tagName === "TEXTAREA") {
+      const activeTag = document.activeElement?.tagName;
+      if (activeTag === "INPUT" || activeTag === "TEXTAREA" || activeTag === "SELECT") {
         if (e.key === "Escape") {
           (document.activeElement as HTMLElement).blur();
         }
         return;
       }
       const k = e.key.toLowerCase();
-      if (k === "escape" && this.handbookOpen) {
-        e.preventDefault();
-        this.closeHandbookModal();
-        return;
+      if (k === "escape") {
+        const ctxMenu = document.getElementById("char-context-menu");
+        if (ctxMenu && !ctxMenu.classList.contains("hidden")) {
+          e.preventDefault();
+          this.closeCharacterContextMenu();
+          return;
+        }
+        const gearMenu = document.getElementById("hud-gear-dropdown");
+        if (gearMenu && !gearMenu.classList.contains("hidden")) {
+          e.preventDefault();
+          this.closeHudGearMenu();
+          return;
+        }
+        const puzModal = document.getElementById("puzzle-modal");
+        if (puzModal && !puzModal.classList.contains("hidden")) {
+          e.preventDefault();
+          const pCard = document.getElementById("puzzle-card-content");
+          if (pCard) pCard.style.width = "";
+          puzModal.classList.add("hidden");
+          return;
+        }
+        if (this.scene.inspectTargetId) {
+          e.preventDefault();
+          this.closeInspectOverlay();
+          return;
+        }
+        const dmModal = document.getElementById("dm-picker-modal");
+        if (dmModal && !dmModal.classList.contains("hidden")) {
+          e.preventDefault();
+          dmModal.classList.add("hidden");
+          return;
+        }
+        if (this.handbookOpen) {
+          e.preventDefault();
+          this.closeHandbookModal();
+          return;
+        }
       }
+
       if ((k === "b" || k === "j") && this.room) {
         e.preventDefault();
         this.toggleHandbookModal();
@@ -1664,7 +2270,15 @@ class SofraGameApp {
           return;
         }
       }
-      if (k === "enter" && this.room) {
+
+      // 360° İnceleme açıkken Sol/Sağ yön tuşları karakterin etrafında dönsün
+      if (this.scene.inspectTargetId && (k === "arrowleft" || k === "arrowright")) {
+        e.preventDefault();
+        this.scene.inspectOrbitYaw += k === "arrowleft" ? -0.38 : 0.38;
+        return;
+      }
+
+      if (k === "enter" && this.room && !this.isAnyBlockingModalOpen()) {
         e.preventDefault();
         const bChat = document.getElementById("ko-bottom-chat");
         if (bChat?.classList.contains("minimized")) {
@@ -1686,6 +2300,10 @@ class SofraGameApp {
         }
         return;
       }
+
+      // Açık bir modal varken karakter arka planda körü körüne yürümesin veya kapı tetiklemesin!
+      if (this.isAnyBlockingModalOpen()) return;
+
       this.keys.add(k);
       if (k === "e") {
         this.tryInteractNearestDoor();
@@ -1703,63 +2321,73 @@ class SofraGameApp {
       }
     });
 
-    window.addEventListener("blur", () => {
-      this.keys.clear();
-      this.camTurnDir = 0;
-      this.camZoomDir = 0;
-    });
-
     // Sol Kamera Dönüş & Yakınlaş/Uzaklaş Tuşları (🔍− / ⟲ Sola / Sağa ⟳ / 🔍+)
     const bindTurnBtn = (id: string, dir: number) => {
       const btn = document.getElementById(id);
       if (!btn) return;
+      let turnPid: number | null = null;
       btn.addEventListener("pointerdown", (e) => {
         e.preventDefault();
+        e.stopPropagation();
+        turnPid = e.pointerId;
+        btn.setPointerCapture?.(e.pointerId);
         this.camTurnDir = dir;
       });
-      const stop = () => {
+      const stop = (e: PointerEvent) => {
+        if (turnPid !== null && e.pointerId !== turnPid) return;
+        turnPid = null;
         if (this.camTurnDir === dir) this.camTurnDir = 0;
       };
       btn.addEventListener("pointerup", stop);
       btn.addEventListener("pointercancel", stop);
-      btn.addEventListener("pointerleave", stop);
+      btn.addEventListener("lostpointercapture", () => {
+        turnPid = null;
+        if (this.camTurnDir === dir) this.camTurnDir = 0;
+      });
     };
     bindTurnBtn("btn-cam-left", 1);
     bindTurnBtn("btn-cam-right", -1);
     this.bindHoldZoomButton(document.getElementById("btn-cam-zoom-in"), -1);
     this.bindHoldZoomButton(document.getElementById("btn-cam-zoom-out"), 1);
 
-    // 1. STANDART WEB 3D & MOBİL KAMERA KONTROLÜ:
-    // - PC Web: İmleç her zaman serbest! Sol Tık veya Sağ Tık BASILI TUTUP SÜRÜKLEYİNCE kamera 360° döner; bırakınca sabit kalır.
-    // - Mobil Dokunmatik: 1 Parmak sürükleme 360° çevirir; 2 Parmak kıstırma/açma (Pinch-to-Zoom) yakınlaştırıp uzaklaştırır!
-    // - Fare Tekerleği / Trackpad: Her evrede ve 360° İnceleme modunda akıcı yakınlaştırır / uzaklaştırır.
+    // 1. STANDART WEB 3D & MOBİL KAMERA KONTROLÜ + 3B KARAKTER / NESNE TIKLAMA (RAYCAST):
     const canvas = this.scene.renderer.domElement;
     canvas.addEventListener("contextmenu", (e) => e.preventDefault());
-    canvas.addEventListener("gesturestart" as any, (e: Event) => e.preventDefault(), { passive: false });
-    canvas.addEventListener("gesturechange" as any, (e: Event) => e.preventDefault(), { passive: false });
 
     const activeTouchPointers = new Map<number, { x: number; y: number }>();
     let lookPointerId: number | null = null;
     let lastLookX = 0;
     let lastLookY = 0;
     let lastPinchDist: number | null = null;
+    let tapCandidate: {
+      pointerId: number;
+      startX: number;
+      startY: number;
+      maxDrag: number;
+      hadMultiTouch: boolean;
+    } | null = null;
+    let lastHoverCheckAt = 0;
 
     canvas.addEventListener("pointerdown", (e) => {
       if (e.pointerType === "mouse") {
-        // Yalnızca Sol Tık (0), Orta Tık (1) veya Sağ Tık (2) basılı tutulduğunda döndür!
         if (e.button !== 0 && e.button !== 1 && e.button !== 2) return;
         if (lookPointerId !== null) return;
         lookPointerId = e.pointerId;
         lastLookX = e.clientX;
         lastLookY = e.clientY;
+        tapCandidate =
+          e.button === 0 || e.button === 2
+            ? { pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, maxDrag: 0, hadMultiTouch: false }
+            : null;
         canvas.classList.add("dragging-cam");
         return;
       }
 
-      // Dokunmatik (Mobil / Tablet): 1 parmak = kamera bakışı, 2 parmak = kıstır/aç (Pinch Zoom)
+      // Dokunmatik (Mobil / Tablet): 1 parmak = kamera bakışı veya tıklama, 2 parmak = kıstır/aç (Pinch Zoom)
       activeTouchPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
       if (activeTouchPointers.size >= 2) {
         lookPointerId = null;
+        if (tapCandidate) tapCandidate.hadMultiTouch = true;
         const pts = Array.from(activeTouchPointers.values());
         lastPinchDist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
         return;
@@ -1769,17 +2397,45 @@ class SofraGameApp {
         lookPointerId = e.pointerId;
         lastLookX = e.clientX;
         lastLookY = e.clientY;
+        tapCandidate = {
+          pointerId: e.pointerId,
+          startX: e.clientX,
+          startY: e.clientY,
+          maxDrag: 0,
+          hadMultiTouch: false
+        };
       }
     });
 
     window.addEventListener("pointermove", (e) => {
+      // PC fare boşta gezinirken tıklanabilir 3B karakter veya nesne üzerinde imleci pointer yap
+      if (e.pointerType === "mouse" && e.buttons === 0 && e.target === canvas && this.room && !this.scene.inspectTargetId) {
+        const nowMs = performance.now();
+        if (nowMs - lastHoverCheckAt > 75) {
+          lastHoverCheckAt = nowMs;
+          const charHit = this.scene.pickCharacterAt(e.clientX, e.clientY);
+          const phaseNow = (this.room.state as any)?.phase;
+          const worldHit = !charHit && phaseNow === "DAY" ? this.scene.pickWorldInteractableAt(e.clientX, e.clientY) : null;
+          canvas.style.cursor = charHit || worldHit ? "pointer" : "";
+        }
+      }
+
+      if (tapCandidate && e.pointerId === tapCandidate.pointerId) {
+        const moved = Math.hypot(e.clientX - tapCandidate.startX, e.clientY - tapCandidate.startY);
+        if (moved > tapCandidate.maxDrag) {
+          tapCandidate.maxDrag = moved;
+          if (moved > 8) {
+            this.closeCharacterContextMenu();
+          }
+        }
+      }
+
       if (activeTouchPointers.has(e.pointerId)) {
         activeTouchPointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
         if (activeTouchPointers.size >= 2) {
           const pts = Array.from(activeTouchPointers.values());
           const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
           if (lastPinchDist !== null && Math.abs(dist - lastPinchDist) > 0.35) {
-            // İki parmağı açmak (dist artışı) = Yakınlaş (-delta), kıstırmak = Uzaklaş (+delta)
             const delta = -(dist - lastPinchDist) * 0.04;
             this.scene.adjustCameraZoom(delta);
             this.syncCameraZoomUI();
@@ -1791,7 +2447,6 @@ class SofraGameApp {
 
       if (e.pointerId !== lookPointerId) return;
 
-      // Güvenlik: Fare tuşu pencere dışında bırakıldıysa (buttons === 0) sürüklemeyi anında kes!
       if (e.pointerType === "mouse" && e.buttons === 0) {
         lookPointerId = null;
         canvas.classList.remove("dragging-cam");
@@ -1815,7 +2470,55 @@ class SofraGameApp {
       this.scene.cameraPitch = Math.max(0.15, Math.min(1.05, this.scene.cameraPitch + dy * pitchSens));
     });
 
-    const releaseLook = (e: PointerEvent) => {
+    const handleCanvasShortTap = (clientX: number, clientY: number) => {
+      if (!this.room || this.scene.inspectTargetId) return;
+      const pickedChar = this.scene.pickCharacterAt(clientX, clientY);
+      if (pickedChar && pickedChar.sessionId !== "__kahya_npc__" && pickedChar.sessionId !== "__preview_self__") {
+        this.openCharacterContextMenu(pickedChar);
+        return;
+      }
+      this.closeCharacterContextMenu();
+
+      const state: any = this.room.state;
+      if (state?.phase === "DAY") {
+        const worldHit = this.scene.pickWorldInteractableAt(clientX, clientY);
+        if (worldHit) {
+          const dist = Math.hypot(this.localX - worldHit.x, this.localZ - worldHit.z);
+          const maxReach = worldHit.kind === "door" ? SOFRA_CONFIG.DOOR_INTERACT_DIST + 0.6 : 4.8;
+          if (dist <= maxReach) {
+            if (worldHit.kind === "door") {
+              this.room.send("interact_door", { doorId: worldHit.id });
+            } else if (worldHit.kind === "altar") {
+              this.room.send("request_puzzle", { altarId: worldHit.id });
+            } else if (worldHit.kind === "station") {
+              const st = MEDIEVAL_STATIONS.find((s) => s.id === worldHit.id);
+              if (st) this.openMedievalStationModal(st);
+            } else if (worldHit.kind === "board") {
+              this.openCouncilBoardModal();
+            }
+          } else {
+            const annEl = document.getElementById("announcement-box");
+            if (annEl) {
+              this.announcementChangedAt = performance.now();
+              annEl.textContent = `"👣 ${worldHit.label} ile etkileşmek için biraz daha yaklaş (${dist.toFixed(1)}m)."`;
+              annEl.classList.remove("ann-auto-hidden");
+            }
+          }
+        }
+      }
+    };
+
+    const releaseLook = (e: PointerEvent, isCancel = false) => {
+      if (!isCancel && tapCandidate && e.pointerId === tapCandidate.pointerId) {
+        const validTap = !tapCandidate.hadMultiTouch && tapCandidate.maxDrag <= 7 && e.target === canvas;
+        tapCandidate = null;
+        if (validTap) {
+          handleCanvasShortTap(e.clientX, e.clientY);
+        }
+      } else if (tapCandidate && e.pointerId === tapCandidate.pointerId) {
+        tapCandidate = null;
+      }
+
       if (activeTouchPointers.delete(e.pointerId)) {
         if (activeTouchPointers.size < 2) {
           lastPinchDist = null;
@@ -1833,8 +2536,8 @@ class SofraGameApp {
         canvas.classList.remove("dragging-cam");
       }
     };
-    window.addEventListener("pointerup", releaseLook);
-    window.addEventListener("pointercancel", releaseLook);
+    window.addEventListener("pointerup", (e) => releaseLook(e, false));
+    window.addEventListener("pointercancel", (e) => releaseLook(e, true));
 
     // 1B. Global Fare Tekerleği & Trackpad Kıstırma ile Akıcı Yakınlaşma / Uzaklaşma
     const isInsideScrollableUI = (startEl: HTMLElement | null): boolean => {
@@ -1862,7 +2565,6 @@ class SofraGameApp {
         const welcomeOpen = !document.getElementById("welcome-modal")?.classList.contains("hidden");
         if (welcomeOpen) return;
 
-        // Laptop trackpad iki parmak kıstırma (ctrlKey) veya kaydırmasız alanda fare tekerleği -> 3D Kamera Zoom!
         if (!e.ctrlKey && isInsideScrollableUI(e.target as HTMLElement | null)) {
           return;
         }
@@ -1887,7 +2589,7 @@ class SofraGameApp {
       const rect = zone.getBoundingClientRect();
       const cx = rect.left + rect.width / 2;
       const cy = rect.top + rect.height / 2;
-      const maxR = rect.width * 0.38;
+      const maxR = Math.max(18, rect.width * 0.38);
       let dx = clientX - cx;
       let dy = clientY - cy;
       const dist = Math.hypot(dx, dy);
@@ -1901,9 +2603,11 @@ class SofraGameApp {
     };
 
     zone.addEventListener("pointerdown", (e) => {
+      if (joyPointerId !== null) return;
       e.preventDefault();
       e.stopPropagation();
       joyPointerId = e.pointerId;
+      zone.setPointerCapture?.(e.pointerId);
       updateJoystick(e.clientX, e.clientY);
     });
 
@@ -1927,9 +2631,11 @@ class SofraGameApp {
     let lastSprintX = 0;
 
     sprintBtn.addEventListener("pointerdown", (e) => {
+      if (sprintPointerId !== null) return;
       e.preventDefault();
       e.stopPropagation();
       sprintPointerId = e.pointerId;
+      sprintBtn.setPointerCapture?.(e.pointerId);
       lastSprintX = e.clientX;
       this.mobileSprintHeld = true;
       sprintBtn.classList.add("sprinting");
@@ -1939,7 +2645,10 @@ class SofraGameApp {
       if (e.pointerId !== sprintPointerId) return;
       const dx = e.clientX - lastSprintX;
       lastSprintX = e.clientX;
-      this.scene.cameraYaw -= dx * 0.0065;
+      // Başka bir parmak ekranda kamera/pinch-zoom yapmıyorsa koşarken yatay sürükleme bakışı çevirir
+      if (activeTouchPointers.size === 0 && lookPointerId === null) {
+        this.scene.cameraYaw -= dx * 0.0065;
+      }
     });
 
     const releaseSprint = (e: PointerEvent) => {
@@ -1950,6 +2659,30 @@ class SofraGameApp {
     };
     window.addEventListener("pointerup", releaseSprint);
     window.addEventListener("pointercancel", releaseSprint);
+
+    // Tüm basılı dokunma/tuş durumlarını tek noktadan temizleme (blur, sekme değişimi, yön çevirme)
+    this.resetPointersFn = () => {
+      this.keys.clear();
+      this.camTurnDir = 0;
+      this.camZoomDir = 0;
+      activeTouchPointers.clear();
+      lookPointerId = null;
+      lastPinchDist = null;
+      tapCandidate = null;
+      canvas.classList.remove("dragging-cam");
+      joyPointerId = null;
+      knob.style.transform = "translate(0px, 0px)";
+      this.joyX = 0;
+      this.joyY = 0;
+      sprintPointerId = null;
+      this.mobileSprintHeld = false;
+      sprintBtn.classList.remove("sprinting");
+    };
+
+    window.addEventListener("blur", () => this.resetPointersFn?.());
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) this.resetPointersFn?.();
+    });
   }
 
   private tryInteractNearestDoor(): void {
@@ -1989,13 +2722,32 @@ class SofraGameApp {
   // ==========================================================================
   // 360° KARAKTER İNCELEME, ARKADAŞLIK BARI, GÖREVLER & BULMACA MODALLARI
   // ==========================================================================
+  private closeInspectOverlay(): void {
+    const returnToHb = this.inspectedFromHandbook && Boolean(this.room);
+    this.inspectedFromHandbook = false;
+    const wasMenuPreview = this.previewSelfOnMenu;
+    this.previewSelfOnMenu = false;
+    this.scene.inspectTargetId = null;
+    this.syncCameraZoomUI();
+    document.getElementById("inspect-overlay")?.classList.add("hidden");
+    if (wasMenuPreview && !this.room) {
+      document.getElementById("main-menu-overlay")?.classList.remove("hidden");
+      return;
+    }
+    this.lastCenterRenderHash = "";
+    if (returnToHb) {
+      this.openHandbookModal();
+    }
+  }
+
   private openMenuSelfInspect360(): void {
-    const nickInput = document.getElementById("menu-nick-input") as HTMLInputElement | null;
+    const nickInput = document.getElementById("input-guest-nick") as HTMLInputElement | null;
     if (nickInput && nickInput.value.trim()) {
       this.vault.customName = nickInput.value.trim();
       this.saveVault(false);
     }
 
+    this.inspectedFromHandbook = false;
     this.previewSelfOnMenu = true;
     this.scene.inspectTargetId = "__preview_self__";
     this.scene.resetInspectCamera();
@@ -2010,6 +2762,7 @@ class SofraGameApp {
       const charDef = CHARACTERS.find((c) => c.seat === this.vault.selectedSeat) ?? CHARACTERS[0];
       const zoomProg = this.scene.getCameraZoomProgress();
       const zoomLbl = this.scene.getCameraZoomLabel();
+      const safePreviewName = escapeHtml(String(this.vault.customName || charDef.name));
       card.innerHTML = `
         <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
           <div>
@@ -2017,7 +2770,7 @@ class SofraGameApp {
               🔍 KAYIT ÖNCESİ 360° KARAKTER İNCELEME
             </div>
             <h3 style="font-size:1.05rem; color:var(--parchment); margin-top:2px;">
-              #${charDef.seat} ${this.vault.customName || charDef.name} (${charDef.title})
+              #${charDef.seat} ${safePreviewName} (${escapeHtml(charDef.title)})
             </h3>
           </div>
           <button class="btn btn-crimson" id="btn-close-menu-inspect" style="padding:5px 10px;">
@@ -2080,11 +2833,7 @@ class SofraGameApp {
         });
       });
       document.getElementById("btn-close-menu-inspect")?.addEventListener("click", () => {
-        this.previewSelfOnMenu = false;
-        this.scene.inspectTargetId = null;
-        this.syncCameraZoomUI();
-        overlay.classList.add("hidden");
-        document.getElementById("main-menu-overlay")?.classList.remove("hidden");
+        this.closeInspectOverlay();
       });
     };
 
@@ -2124,8 +2873,8 @@ class SofraGameApp {
         ${allPlayers
           .map(
             (p) => `
-          <button class="btn ${p.isMe ? "btn-crimson" : ""}" data-inspect-pick="${p.id}" style="display:flex; justify-content:space-between; width:100%; padding:9px 12px;">
-            <span>#${p.seat} ${p.nick} ${p.isMe ? "(Sen)" : ""}</span>
+          <button class="btn ${p.isMe ? "btn-crimson" : ""}" data-inspect-pick="${escapeHtml(p.id)}" style="display:flex; justify-content:space-between; width:100%; padding:9px 12px;">
+            <span>#${p.seat} ${escapeHtml(String(p.nick || ""))} ${p.isMe ? "(Sen)" : ""}</span>
             <span style="color:#7ab8ff;">${p.alive ? "🔍 İncele & Barlar" : "👻 Hayalet"}</span>
           </button>
         `
@@ -2143,6 +2892,7 @@ class SofraGameApp {
       btn.addEventListener("click", () => {
         const tid = (btn as HTMLElement).dataset.inspectPick!;
         modal.classList.add("hidden");
+        this.inspectedFromHandbook = false;
         this.room?.send("request_inspect", { targetId: tid });
       });
     });
@@ -2171,6 +2921,11 @@ class SofraGameApp {
     const isMe = data.id === this.room?.sessionId;
     const zoomProg = this.scene.getCameraZoomProgress();
     const zoomLbl = this.scene.getCameraZoomLabel();
+    const curStamp: SuspectStamp = this.suspectTags[data.seat] || "unknown";
+    const safeNick = escapeHtml(String(data.nick || ""));
+    const safeCharName = escapeHtml(String(data.charName || ""));
+    const safeRoomName = escapeHtml(String(data.roomName || ""));
+
     const bondsHtml =
       !data.topBonds || data.topBonds.length === 0
         ? `<div style="font-size:0.78rem; color:var(--text-muted); font-style:italic; padding:6px 0;">
@@ -2181,11 +2936,11 @@ class SofraGameApp {
               (b) => `
             <div style="margin-bottom:5px;">
               <div style="display:flex; justify-content:space-between; font-size:0.76rem;">
-                <strong>#${b.seat} ${b.nick}</strong>
-                <span style="color:${b.color};">${b.tier} (%${b.score})</span>
+                <strong>#${Number(b.seat)} ${escapeHtml(String(b.nick || ""))}</strong>
+                <span style="color:${escapeHtml(String(b.color || "#ffd166"))};">${escapeHtml(String(b.tier || ""))} (%${Number(b.score)})</span>
               </div>
               <div class="bond-bar-track">
-                <div class="bond-bar-fill" style="width:${b.score}%; background:${b.color};"></div>
+                <div class="bond-bar-fill" style="width:${Math.min(100, Math.max(0, Number(b.score)))}%; background:${escapeHtml(String(b.color || "#ffd166"))};"></div>
               </div>
             </div>
           `
@@ -2196,15 +2951,17 @@ class SofraGameApp {
       <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:8px;">
         <div>
           <div style="font-size:0.72rem; color:var(--gold);">
-            SANDALYE #${data.seat} · 📍 ${data.roomName} ${data.hasNecklace ? "· 📿 Altın Kolye" : ""}
+            SANDALYE #${Number(data.seat)} · 📍 ${safeRoomName} ${data.hasNecklace ? "· 📿 Altın Kolye" : ""}
           </div>
           <h3 style="font-size:1.05rem; color:var(--parchment);">
-            ${data.nick} <span style="font-size:0.78rem; color:var(--text-muted);">(${data.charName})</span>
+            ${safeNick} <span style="font-size:0.78rem; color:var(--text-muted);">(${safeCharName})</span>
           </h3>
         </div>
         <button class="btn btn-crimson" id="btn-close-inspect" style="padding:5px 11px; font-weight:bold;">
           ${
-            (this.room?.state as any)?.phase === "VOTE"
+            this.inspectedFromHandbook
+              ? "📖 Kitapçığa Dön"
+              : (this.room?.state as any)?.phase === "VOTE"
               ? "🗳️ Oylamaya Dön"
               : (this.room?.state as any)?.phase === "NIGHT"
               ? "🌑 Gece Ekranına Dön"
@@ -2225,6 +2982,16 @@ class SofraGameApp {
             : ""
         }
       </div>
+
+      ${
+        !isMe
+          ? `<div style="display:flex; gap:5px;">
+               <button class="btn ${curStamp === "trust" ? "btn-emerald" : ""}" data-insp-stamp="trust" style="flex:1; padding:4px 6px; font-size:0.7rem;">🟢 Güvenilir</button>
+               <button class="btn ${curStamp === "suspect" ? "btn-crimson" : ""}" data-insp-stamp="suspect" style="flex:1; padding:4px 6px; font-size:0.7rem;">🟡 Şüpheli</button>
+               <button class="btn ${curStamp === "traitor" ? "btn-crimson" : ""}" data-insp-stamp="traitor" style="flex:1; padding:4px 6px; font-size:0.7rem;">🔴 Hain</button>
+             </div>`
+          : ""
+      }
 
       <div class="inspect-zoom-row">
         <button class="hud-zoom-step" id="btn-inspect-zoom-out" type="button" title="Uzaklaş">−</button>
@@ -2262,11 +3029,18 @@ class SofraGameApp {
       this.scene.setCameraZoomProgress(Number(inspSlider.value) / 100);
       this.syncCameraZoomUI();
     });
+    card.querySelectorAll("[data-insp-stamp]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const val = (btn as HTMLElement).dataset.inspStamp as SuspectStamp;
+        this.suspectTags[data.seat] = this.suspectTags[data.seat] === val ? "unknown" : val;
+        this.saveHandbookToSession();
+        sfx.playUiClick();
+        this.renderInspectOverlay(data);
+      });
+    });
     document.getElementById("btn-inspect-dm")?.addEventListener("click", () => {
-      this.scene.inspectTargetId = null;
-      this.syncCameraZoomUI();
-      overlay.classList.add("hidden");
-      this.lastCenterRenderHash = "";
+      this.inspectedFromHandbook = false;
+      this.closeInspectOverlay();
       this.openPMThread(data.id, data.nick, data.seat);
     });
     document.getElementById("btn-inspect-mute")?.addEventListener("click", (e) => {
@@ -2280,10 +3054,7 @@ class SofraGameApp {
       this.renderPMWindows();
     });
     document.getElementById("btn-close-inspect")?.addEventListener("click", () => {
-      this.scene.inspectTargetId = null;
-      this.syncCameraZoomUI();
-      overlay.classList.add("hidden");
-      this.lastCenterRenderHash = "";
+      this.closeInspectOverlay();
     });
   }
 
@@ -2426,7 +3197,7 @@ class SofraGameApp {
           2. İsimsiz Sahte Not Bırak (Turda 1 Kez)
         </div>
         <select id="sabotage-note-target" style="width:100%; margin-bottom:6px;">
-          ${others.map((o) => `<option value="${o.id}">#${o.seat} ${o.nick}</option>`).join("")}
+          ${others.map((o) => `<option value="${escapeHtml(o.id)}">#${o.seat} ${escapeHtml(String(o.nick || ""))}</option>`).join("")}
         </select>
         <input
           type="text"
@@ -2485,11 +3256,11 @@ class SofraGameApp {
       <div style="display:flex; flex-direction:column; gap:6px;">
         <label style="font-size:0.74rem; color:var(--gold);">1. Koltuk:</label>
         <select id="kahya-seat-a">
-          ${seats.map((s, i) => `<option value="${s.seat}" ${i === 0 ? "selected" : ""}>#${s.seat} ${s.nick}</option>`).join("")}
+          ${seats.map((s, i) => `<option value="${s.seat}" ${i === 0 ? "selected" : ""}>#${s.seat} ${escapeHtml(String(s.nick || ""))}</option>`).join("")}
         </select>
         <label style="font-size:0.74rem; color:var(--gold);">2. Koltuk:</label>
         <select id="kahya-seat-b">
-          ${seats.map((s, i) => `<option value="${s.seat}" ${i === 1 ? "selected" : ""}>#${s.seat} ${s.nick}</option>`).join("")}
+          ${seats.map((s, i) => `<option value="${s.seat}" ${i === 1 ? "selected" : ""}>#${s.seat} ${escapeHtml(String(s.nick || ""))}</option>`).join("")}
         </select>
       </div>
       <button class="btn btn-emerald" id="btn-confirm-kahya-ask" style="width:100%; padding:9px;">
@@ -2546,9 +3317,13 @@ class SofraGameApp {
   }
 
   private openMedievalStationModal(station: MedievalStationDef): void {
-    sfx.playSealBreak();
+    sfx.playRuneChime();
     const modal = document.getElementById("puzzle-modal")!;
     const card = document.getElementById("puzzle-card-content")!;
+    const state: any = this.room?.state;
+    const maxUses = resolveDurationPreset(state?.paceMode, state?.fastMode).stationUsesPerDay || 2;
+    const alreadyUsed = this.usedStationIdsThisRound.has(station.id);
+    const usedCount = this.usedStationIdsThisRound.size;
 
     card.innerHTML = `
       <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--gold-soft); padding-bottom:6px;">
@@ -2558,6 +3333,13 @@ class SofraGameApp {
       <p style="font-size:0.8rem; color:var(--parchment); line-height:1.45;">
         ${station.description}
       </p>
+      ${
+        alreadyUsed
+          ? `<div style="font-size:0.74rem; color:#ffd166; background:rgba(212,175,55,0.14); border:1px solid var(--gold-soft); border-radius:8px; padding:5px 8px;">
+               ✅ Bu odadaki etkileşimi bu gündüz turunda kullandın.
+             </div>`
+          : ""
+      }
       <div style="display:flex; flex-direction:column; gap:7px;">
         ${station.options
           .map(
@@ -2578,7 +3360,7 @@ class SofraGameApp {
           .join("")}
       </div>
       <div style="font-size:0.7rem; color:var(--text-muted); text-align:center;">
-        🕯️ Her gündüz turunda en fazla 2 farklı Orta Çağ odası etkileşimi kullanabilirsin.
+        🕯️ Bu oyun süresinde her gündüz turunda en fazla <strong>${maxUses}</strong> farklı oda etkileşimi kullanabilirsin (${usedCount}/${maxUses} kullanıldı).
       </div>
     `;
     modal.classList.remove("hidden");
@@ -2589,6 +3371,7 @@ class SofraGameApp {
     card.querySelectorAll("[data-med-opt]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const optionId = (btn as HTMLElement).dataset.medOpt!;
+        this.usedStationIdsThisRound.add(station.id);
         modal.classList.add("hidden");
         this.room?.send("use_medieval_station", { stationId: station.id, optionId });
       });
@@ -2673,14 +3456,14 @@ class SofraGameApp {
         <button class="btn" id="btn-close-board" style="padding:3px 8px;">✕</button>
       </div>
       <p style="font-size:0.78rem; color:var(--text-muted);">
-        ${state.councilBoardNote || "Tahtaya tebeşirle şüpheli gördüğün koltuğu yaz (Tüm şatoya duyurulur!):"}
+        ${escapeHtml(String(state.councilBoardNote || "Tahtaya tebeşirle şüpheli gördüğün koltuğu yaz (Tüm şatoya duyurulur!):"))}
       </p>
       <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px;">
         ${suspects
           .map(
             (s) => `
           <button class="btn" data-chalk-seat="${s.seat}">
-            ✍️ #${s.seat} ${s.nick}
+            ✍️ #${s.seat} ${escapeHtml(String(s.nick || ""))}
           </button>
         `
           )
@@ -2696,7 +3479,7 @@ class SofraGameApp {
         const seat = Number((btn as HTMLElement).dataset.chalkSeat);
         modal.classList.add("hidden");
         this.room?.send("chalk_suspect", { suspectSeat: seat });
-        sfx.playSealBreak();
+        sfx.playUiClick();
       });
     });
   }
@@ -2712,18 +3495,18 @@ class SofraGameApp {
 
     card.innerHTML = `
       <div style="display:flex; justify-content:space-between; align-items:center;">
-        <strong style="color:var(--gold);">🧩 ${ch.title}</strong>
+        <strong style="color:var(--gold);">🧩 ${escapeHtml(String(ch.title || ""))}</strong>
         <button class="btn" id="btn-close-puzzle" style="padding:3px 8px;">✕</button>
       </div>
       <p style="font-size:0.88rem; color:var(--parchment); line-height:1.45;">
-        ${ch.prompt}
+        ${escapeHtml(String(ch.prompt || ""))}
       </p>
       <div style="display:flex; flex-direction:column; gap:7px;">
         ${ch.options
           .map(
             (opt, idx) => `
           <button class="btn" data-puz-opt="${idx}" style="text-align:left; padding:10px 12px;">
-            <strong>${idx + 1}.</strong> ${opt}
+            <strong>${idx + 1}.</strong> ${escapeHtml(String(opt || ""))}
           </button>
         `
           )
@@ -2743,14 +3526,15 @@ class SofraGameApp {
     });
   }
 
-  private showPuzzleFeedbackModal(text: string, ok: boolean): void {
+  private showPuzzleFeedbackModal(text: string, ok: boolean, customTitle?: string): void {
     const modal = document.getElementById("puzzle-modal")!;
     const card = document.getElementById("puzzle-card-content")!;
+    const heading = customTitle || (ok ? "✨ KADİM MÜHÜR AÇILDI!" : "⚠️ MÜHÜR KAPALI KALDI");
     card.innerHTML = `
       <h3 style="color:${ok ? "#8ce99a" : "#ff6b6b"}; font-size:1rem;">
-        ${ok ? "✨ KADİM MÜHÜR AÇILDI!" : "⚠️ MÜHÜR KAPALI KALDI"}
+        ${escapeHtml(heading)}
       </h3>
-      <p style="font-size:0.88rem; color:var(--parchment); line-height:1.45;">${text}</p>
+      <p style="font-size:0.88rem; color:var(--parchment); line-height:1.45;">${escapeHtml(String(text || ""))}</p>
       <button class="btn btn-crimson" id="btn-ok-puzzle-fb" style="width:100%; padding:9px;">Tamam</button>
     `;
     modal.classList.remove("hidden");
@@ -2877,6 +3661,7 @@ class SofraGameApp {
     }
     if (!this.handbookOpen && !opts.silent) {
       this.unreadClueCount += 1;
+      sfx.playClueChime();
     }
     this.saveHandbookToSession();
     this.lastCenterRenderHash = "";
@@ -2892,7 +3677,7 @@ class SofraGameApp {
     this.suspectTags[seat] = next;
     this.saveHandbookToSession();
     this.lastCenterRenderHash = "";
-    sfx.playSealBreak();
+    sfx.playUiClick();
   }
 
   private renderSeatSuspectBadge(seat: number): string {
@@ -2936,7 +3721,7 @@ class SofraGameApp {
     this.unreadClueCount = 0;
     this.updateHandbookHudBadge();
     this.lastDayExtraKey = "";
-    sfx.playSealBreak();
+    sfx.playPageFlip();
     const modal = document.getElementById("handbook-modal");
     modal?.classList.remove("hidden");
     this.renderHandbookModal();
@@ -2974,6 +3759,7 @@ class SofraGameApp {
       : `<span style="color:var(--text-muted); font-size:0.7rem;">Lobi Hazırlığı</span>`;
 
     // Üst Canlı Evre Taktik Şeridi
+    const activeTieIds = this.getActiveTieCandidateIds(state);
     let phaseActionHtml = "";
     if (phase === "VOTE") {
       const votedPlayer =
@@ -2982,7 +3768,9 @@ class SofraGameApp {
           : null;
       phaseActionHtml = `
         <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-          <strong style="color:#ff6b7a;">🗳️ ŞÖMİNE OYLAMASI AKTİF:</strong>
+          <strong style="color:#ff6b7a;">🗳️ ${
+            activeTieIds.length > 0 ? "⚖️ İKİNCİ TUR EŞİTLİK OYLAMASI:" : "SOFRA & ŞÖMİNE OYLAMASI:"
+          }</strong>
           <span>${
             !isAlive
               ? "👻 Hayalet olarak izliyorsun"
@@ -2990,10 +3778,15 @@ class SofraGameApp {
               ? "🏳️ Çekimser kaldın"
               : votedPlayer
               ? `✅ Oyun Mühürlendi: #${votedPlayer.seat} ${escapeHtml(votedPlayer.nick)}`
-              : "Sağ sayfadan kime oy atacağını tek tıkla seç!"
+              : "Sağ sayfadan kime oy atacağını veya kimi suçlayacağını tek tıkla seç!"
           }</span>
         </div>
         <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+          ${
+            isAlive && (state.pot || 0) >= 50
+              ? `<button class="btn" id="hb-btn-kahya" style="padding:4px 9px; font-size:0.72rem;">🔔 Kâhya'ya Sor (50🪙)</button>`
+              : ""
+          }
           ${
             isAlive
               ? `<button class="btn" id="hb-btn-abstain" style="padding:4px 9px; font-size:0.72rem;">🏳️ Çekimser Kal</button>`
@@ -3009,7 +3802,9 @@ class SofraGameApp {
           <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
             <strong style="color:#ff5768;">🩸 HAİNLER TOPLANTISI AKTİF:</strong>
             <span>${
-              picked
+              this.isNightSealed && picked
+                ? `✅ İnfaz Mühürlendi: #${picked.seat} ${escapeHtml(picked.nick)}`
+                : picked
                 ? `🎯 Seçili Kurban: #${picked.seat} ${escapeHtml(picked.nick)}`
                 : "Sağ sayfadan bu gece infaz edilecek Misafiri seç!"
             }</span>
@@ -3017,7 +3812,9 @@ class SofraGameApp {
           <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
             ${
               picked
-                ? `<button class="btn btn-crimson" id="hb-btn-seal-night" style="padding:4px 10px; font-size:0.73rem;">🩸 #${picked.seat} İnfazını Mühürle!</button>`
+                ? `<button class="btn ${this.isNightSealed ? "btn-emerald" : "btn-crimson"}" id="hb-btn-seal-night" style="padding:4px 10px; font-size:0.73rem;">${
+                    this.isNightSealed ? `✅ #${picked.seat} Mühürlendi` : `🩸 #${picked.seat} İnfazını Mühürle!`
+                  }</button>`
                 : ""
             }
             <button class="btn" id="hb-btn-focus-main" style="padding:4px 9px; font-size:0.72rem;">🌑 Meclis Sohbeti</button>
@@ -3026,7 +3823,7 @@ class SofraGameApp {
       } else {
         phaseActionHtml = `
           <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-            <strong style="color:var(--gold);">🌑 2 DK GECE MOLASI (Hainler Toplantıda):</strong>
+            <strong style="color:var(--gold);">🌑 GECE MOLASI (Hainler Toplantıda):</strong>
             <span>${
               this.nightWatchNote
                 ? "✅ Bu gece koridoru dinledin."
@@ -3047,7 +3844,7 @@ class SofraGameApp {
     } else if (phase === "TRIAL") {
       phaseActionHtml = `
         <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-          <strong style="color:#8ce99a;">🧩 1 DK ORTAK ŞATO BULMACA SINAVI AKTİF!</strong>
+          <strong style="color:#8ce99a;">🧩 ŞATO BULMACA SINAVI AKTİF!</strong>
           <span>3 aşamayı çözüp 📿 Altın Kolye ve Dedektif İpucu kazan!</span>
         </div>
         <div style="display:flex; gap:6px; align-items:center;">
@@ -3063,12 +3860,20 @@ class SofraGameApp {
       phaseActionHtml = `
         <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
           <strong style="color:var(--gold);">⚖️ SON KİŞİLER FİNAL KARARI:</strong>
-          <span>İpuçlarına göre son hükmünü buradan mühürleyebilirsin:</span>
+          <span>${
+            isAlive
+              ? "İpuçlarına göre son hükmünü buradan mühürleyebilirsin:"
+              : "👻 Hayalet olarak kalan davetlilerin final kararını izliyorsun."
+          }</span>
         </div>
-        <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
-          <button class="btn ${this.selectedFinalChoice === "TRUST" ? "btn-emerald" : ""}" id="hb-btn-final-trust" style="padding:4px 10px; font-size:0.73rem;">🤝 Hepimiz Misafiriz</button>
-          <button class="btn ${this.selectedFinalChoice === "DOUBT" ? "btn-crimson" : ""}" id="hb-btn-final-doubt" style="padding:4px 10px; font-size:0.73rem;">🔥 Aramızda Hain Var</button>
-        </div>
+        ${
+          isAlive
+            ? `<div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
+                 <button class="btn ${this.selectedFinalChoice === "TRUST" ? "btn-emerald" : ""}" id="hb-btn-final-trust" style="padding:4px 10px; font-size:0.73rem;">🤝 Hepimiz Misafiriz</button>
+                 <button class="btn ${this.selectedFinalChoice === "DOUBT" ? "btn-crimson" : ""}" id="hb-btn-final-doubt" style="padding:4px 10px; font-size:0.73rem;">🔥 Aramızda Hain Var</button>
+               </div>`
+            : ""
+        }
       `;
     } else if (phase === "TABLE") {
       phaseActionHtml = `
@@ -3082,7 +3887,9 @@ class SofraGameApp {
               ? `<button class="btn" id="hb-btn-kahya" style="padding:4px 9px; font-size:0.72rem;">🔔 Kâhya'ya Sor (50🪙)</button>`
               : ""
           }
-          <button class="btn" id="hb-btn-ready" style="padding:4px 9px; font-size:0.72rem;">⏩ Hazırım ${this.readyStatusText}</button>
+          <button class="btn ${this.isLocalReadyForPhase ? "btn-emerald" : ""}" id="hb-btn-ready" style="padding:4px 9px; font-size:0.72rem;">${
+            this.isLocalReadyForPhase ? "✅ Hazırım" : "⏩ Hazırım"
+          } ${this.readyStatusText}</button>
         </div>
       `;
     } else if (phase === "DAY") {
@@ -3102,7 +3909,9 @@ class SofraGameApp {
               ? `<button class="btn btn-emerald" id="hb-btn-open-station" style="padding:4px 9px; font-size:0.72rem;">${st.icon} ${escapeHtml(st.shortLabel)} Seçenekleri</button>`
               : ""
           }
-          <button class="btn" id="hb-btn-ready" style="padding:4px 9px; font-size:0.72rem;">⏩ Hazırım ${this.readyStatusText}</button>
+          <button class="btn ${this.isLocalReadyForPhase ? "btn-emerald" : ""}" id="hb-btn-ready" style="padding:4px 9px; font-size:0.72rem;">${
+            this.isLocalReadyForPhase ? "✅ Hazırım" : "⏩ Hazırım"
+          } ${this.readyStatusText}</button>
         </div>
       `;
     } else {
@@ -3250,9 +4059,15 @@ class SofraGameApp {
               if (p.alive && !isSelf) {
                 if (phase === "VOTE" && isAlive) {
                   const picked = this.selectedVoteTargetId === p.id;
-                  phaseBtnHtml = `<button class="btn ${picked ? "btn-emerald" : "btn-crimson"}" data-hb-vote="${p.id}" style="padding:4px 8px; font-size:0.7rem;">${
-                    picked ? "✅ Oyun Bunda" : "🔥 Oy Ver"
-                  }</button>`;
+                  const tieBlocked = activeTieIds.length > 0 && !activeTieIds.includes(p.id);
+                  phaseBtnHtml = `
+                    <button class="btn ${picked ? "btn-emerald" : tieBlocked ? "" : "btn-crimson"}" data-hb-vote="${p.id}" ${
+                    tieBlocked ? "disabled" : ""
+                  } style="padding:4px 8px; font-size:0.7rem;">${
+                    picked ? "✅ Oyun Bunda" : tieBlocked ? "⚖️ Eşitlik Dışı" : "🔥 Oy Ver"
+                  }</button>
+                    <button class="btn" data-hb-accuse="${p.id}" data-seat="${p.seat}" data-nick="${escapeHtml(p.nick)}" style="padding:3px 7px; font-size:0.68rem;">👉 Suçla</button>
+                  `;
                 } else if (phase === "NIGHT" && isHain && isAlive && !isMate) {
                   const picked = this.selectedNightTargetId === p.id;
                   phaseBtnHtml = `
@@ -3335,6 +4150,11 @@ class SofraGameApp {
       phase === "DAY" &&
       isAlive &&
       PUZZLE_ALTARS.find((a) => Math.hypot(this.localX - a.x, this.localZ - a.z) <= 4.3);
+    const nearBoard =
+      phase === "DAY" &&
+      isAlive &&
+      (Math.hypot(this.localX - COUNCIL_BOARD_POS.x, this.localZ - COUNCIL_BOARD_POS.z) <= 4.5 ||
+        curZone.id === "toplanti_salonu");
 
     const actionsPageHtml = `
       <div class="handbook-page">
@@ -3362,15 +4182,17 @@ class SofraGameApp {
                    </div>`
                 : nearAltar
                 ? `<button class="btn btn-emerald" data-hb-altar="${nearAltar.id}" style="width:100%;">🔮 ${nearAltar.label} Bulmacasını Aç</button>`
+                : nearBoard
+                ? `<button class="btn btn-emerald" id="hb-act-board" style="width:100%;">📋 Konsey Şüphe Tahtasını Aç</button>`
                 : `<div style="font-size:0.72rem; color:var(--text-muted); line-height:1.4;">
-                     Gündüz keşfinde <strong>📚 Kütüphane, ⚗️ Simya Mahzeni, ⚔️ Cephanelik, ⛓️ Zindan, ⛲ Kargalı Avlu</strong> veya <strong>🔮 Bulmaca Salonu</strong>'na gittiğinde oda seçenekleri burada aktifleşir!
+                     Gündüz keşfinde <strong>📚 Kütüphane, ⚗️ Simya Mahzeni, ⚔️ Cephanelik, ⛓️ Zindan, ⛲ Kargalı Avlu, 📋 Konsey Salonu</strong> veya <strong>🔮 Bulmaca Salonu</strong>'na gittiğinde oda seçenekleri burada aktifleşir!
                    </div>`
             }
 
             <div style="display:flex; flex-wrap:wrap; gap:6px; margin-top:4px;">
               <button class="btn" id="hb-act-castle-map" style="flex:1; font-size:0.72rem;">🗺️ 21 Oda Krokisi</button>
               ${
-                (phase === "DAY" || phase === "TABLE") && isAlive && (state.pot || 0) >= 50
+                (phase === "DAY" || phase === "TABLE" || phase === "VOTE") && isAlive && (state.pot || 0) >= 50
                   ? `<button class="btn btn-emerald" id="hb-act-kahya" style="flex:1; font-size:0.72rem;">🔔 Kâhya Zili (50🪙)</button>`
                   : ""
               }
@@ -3477,12 +4299,14 @@ class SofraGameApp {
     });
     shell.querySelectorAll("[data-hb-tab]").forEach((btn) => {
       btn.addEventListener("click", () => {
+        sfx.playPageFlip();
         this.handbookViewMode = (btn as HTMLElement).dataset.hbTab as any;
         this.renderHandbookModal();
       });
     });
     shell.querySelectorAll("[data-clue-filter]").forEach((btn) => {
       btn.addEventListener("click", () => {
+        sfx.playUiClick();
         this.clueFilter = (btn as HTMLElement).dataset.clueFilter as any;
         this.renderHandbookModal();
       });
@@ -3538,9 +4362,10 @@ class SofraGameApp {
       btn.addEventListener("click", () => {
         const targetId = (btn as HTMLElement).dataset.hbVote!;
         if (!isAlive || targetId === myId) return;
+        if (activeTieIds.length > 0 && !activeTieIds.includes(targetId)) return;
         this.selectedVoteTargetId = targetId;
         this.room?.send("vote", { targetId });
-        sfx.playSealBreak();
+        sfx.playVoteStamp();
         this.lastCenterRenderHash = "";
         this.renderHandbookModal();
       });
@@ -3549,7 +4374,7 @@ class SofraGameApp {
       if (!isAlive) return;
       this.selectedVoteTargetId = "ABSTAIN";
       this.room?.send("vote", { targetId: "ABSTAIN" });
-      sfx.playSealBreak();
+      sfx.playVoteStamp();
       this.lastCenterRenderHash = "";
       this.renderHandbookModal();
     });
@@ -3557,8 +4382,9 @@ class SofraGameApp {
       btn.addEventListener("click", () => {
         const targetId = (btn as HTMLElement).dataset.hbNightKill!;
         this.selectedNightTargetId = targetId;
+        this.isNightSealed = true;
         this.room?.send("night_pick", { targetId, instantSeal: true });
-        sfx.playCastleBell();
+        sfx.playDaggerDraw();
         this.lastCenterRenderHash = "";
         this.renderHandbookModal();
       });
@@ -3575,8 +4401,11 @@ class SofraGameApp {
     });
     document.getElementById("hb-btn-seal-night")?.addEventListener("click", () => {
       if (!this.selectedNightTargetId) return;
+      this.isNightSealed = true;
       this.room?.send("seal_night_execution");
-      sfx.playCastleBell();
+      sfx.playDaggerDraw();
+      this.lastCenterRenderHash = "";
+      this.renderHandbookModal();
     });
     document.getElementById("hb-btn-night-watch")?.addEventListener("click", () => {
       this.room?.send("night_watch");
@@ -3588,16 +4417,18 @@ class SofraGameApp {
       this.renderHandbookModal();
     });
     document.getElementById("hb-btn-final-trust")?.addEventListener("click", () => {
+      if (!isAlive) return;
       this.selectedFinalChoice = "TRUST";
       this.room?.send("final_decision", { decision: "TRUST" });
-      sfx.playSealBreak();
+      sfx.playVoteStamp();
       this.lastCenterRenderHash = "";
       this.renderHandbookModal();
     });
     document.getElementById("hb-btn-final-doubt")?.addEventListener("click", () => {
+      if (!isAlive) return;
       this.selectedFinalChoice = "DOUBT";
       this.room?.send("final_decision", { decision: "DOUBT" });
-      sfx.playSealBreak();
+      sfx.playVoteStamp();
       this.lastCenterRenderHash = "";
       this.renderHandbookModal();
     });
@@ -3605,8 +4436,13 @@ class SofraGameApp {
       this.closeHandbookModal();
     });
     document.getElementById("hb-btn-ready")?.addEventListener("click", () => {
+      this.isLocalReadyForPhase = true;
       this.room?.send("ready_next_phase");
       sfx.playSealBreak();
+      const topReadyBtn = document.getElementById("btn-ready-phase");
+      if (topReadyBtn) topReadyBtn.textContent = `✅ Hazırım ${this.readyStatusText}`;
+      this.lastCenterRenderHash = "";
+      this.renderHandbookModal();
     });
     document.getElementById("hb-btn-kahya")?.addEventListener("click", () => {
       this.openKahyaAskModal();
@@ -3632,6 +4468,7 @@ class SofraGameApp {
     shell.querySelectorAll("[data-hb-inspect]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const targetId = (btn as HTMLElement).dataset.hbInspect!;
+        this.inspectedFromHandbook = true;
         this.closeHandbookModal();
         this.room?.send("request_inspect", { targetId });
       });
@@ -3641,6 +4478,7 @@ class SofraGameApp {
     shell.querySelectorAll("[data-hb-station]").forEach((btn) => {
       btn.addEventListener("click", () => {
         const el = btn as HTMLElement;
+        this.usedStationIdsThisRound.add(el.dataset.hbStation!);
         this.room?.send("use_medieval_station", {
           stationId: el.dataset.hbStation!,
           optionId: el.dataset.hbOpt!
@@ -3652,6 +4490,10 @@ class SofraGameApp {
         const altarId = (btn as HTMLElement).dataset.hbAltar!;
         this.room?.send("request_puzzle", { altarId });
       });
+    });
+    document.getElementById("hb-act-board")?.addEventListener("click", () => {
+      this.closeHandbookModal();
+      this.openCouncilBoardModal();
     });
     document.getElementById("hb-act-castle-map")?.addEventListener("click", () => {
       this.openCastleRoomsGuideModal();
@@ -3667,6 +4509,16 @@ class SofraGameApp {
   // ==========================================================================
   // OYUN EVRELERİ ARAYÜZLERİ (LOBİ, ROL ZARFI, SINAV, SOFRA, GECE, FİNAL, SONUÇ)
   // ==========================================================================
+  private getActiveTieCandidateIds(state: any): string[] {
+    if (typeof state?.tieCandidateCsv === "string" && state.tieCandidateCsv.trim().length > 0) {
+      return state.tieCandidateCsv
+        .split(",")
+        .map((s: string) => s.trim())
+        .filter(Boolean);
+    }
+    return this.tieCandidateIds || [];
+  }
+
   private renderCenterPanel(state: any): void {
     const panel = document.getElementById("center-panel")!;
     const phase: string = state.phase || "LOBBY";
@@ -3678,7 +4530,7 @@ class SofraGameApp {
     }
 
     const playerSummary = Array.from(state.players?.values() || [])
-      .map((p: any) => `${p.id}:${p.seat}:${p.nick}:${p.alive}:${p.connected}:${p.coatColor}:${p.hat}:${p.mask}:${p.votedForId}`)
+      .map((p: any) => `${p.id}:${p.seat}:${p.nick}:${p.alive}:${p.connected}:${Boolean(p.isBot)}:${p.coatColor}:${p.hat}:${p.mask}:${p.votedForId}`)
       .join("|");
     const trialKey = this.activeTrial
       ? `${this.activeTrial.stage}:${this.activeTrial.puzzleId}:${this.activeTrial.canSabotage}:${this.activeTrial.completedClue || ""}`
@@ -3689,7 +4541,8 @@ class SofraGameApp {
     const stampsKey = Object.entries(this.suspectTags)
       .map(([s, t]) => `${s}:${t}`)
       .join(",");
-    const hash = `${phase}|${state.round}|${this.myRole?.role || ""}|${state.fastMode}|${state.paceMode || "normal"}|${state.targetPlayerCount || 10}|${state.atmosphereTheme || "torch"}|${state.autoStart}|${state.pot}|${state.lastBurnedId}|${state.lastBurnedFlame}|${state.winReason}|${this.lastVoteReveal.length}|${this.mobileLobbyTab}|${this.vault.gold}|${this.vault.selectedSeat}|${this.vault.coatColor}|${this.vault.hat}|${this.vault.mask}|${this.selectedVoteTargetId}|${this.selectedNightTargetId}|${this.selectedFinalChoice}|${this.preTargetSeat}|${stampsKey}|${this.clueJournal.length}|${trialKey}|${picksKey}|${this.nightConclaveLogs.length}|${this.nightWatchNote}|${Boolean(this.gameOverSummary)}|${playerSummary}`;
+    const tieKey = this.getActiveTieCandidateIds(state).join(",");
+    const hash = `${phase}|${state.round}|${this.myRole?.role || ""}|${state.fastMode}|${state.paceMode || "normal"}|${state.targetPlayerCount || 10}|${state.atmosphereTheme || "torch"}|${state.autoStart}|${state.pot}|${state.lastBurnedId}|${state.lastBurnedFlame}|${state.winReason}|${this.lastVoteReveal.length}|${this.mobileLobbyTab}|${this.vault.gold}|${this.vault.selectedSeat}|${this.vault.coatColor}|${this.vault.hat}|${this.vault.mask}|${this.selectedVoteTargetId}|${this.selectedNightTargetId}|${this.selectedFinalChoice}|${this.isLocalReadyForPhase}|${this.isNightSealed}|${this.readyStatusText}|${tieKey}|${this.preTargetSeat}|${stampsKey}|${this.clueJournal.length}|${trialKey}|${picksKey}|${this.nightConclaveLogs.length}|${this.nightWatchNote}|${Boolean(this.gameOverSummary)}|${playerSummary}`;
 
     if (hash === this.lastCenterRenderHash) return;
     this.lastCenterRenderHash = hash;
@@ -3731,18 +4584,28 @@ class SofraGameApp {
   private renderLobbyStudio(panel: HTMLElement, state: any): void {
     const selectableChars = CHARACTERS.filter((c) => c.selectable);
     const playerCount = state.players?.size || 1;
-    const isHost = state.hostId === this.room?.sessionId;
+    const myId = this.room?.sessionId || "";
+    const isHost = state.hostId === myId;
     const targetCount = state.targetPlayerCount || 10;
     const activePreset = resolveDurationPreset(state.paceMode, state.fastMode);
     const paceMode = activePreset.id;
     const atmo = state.atmosphereTheme || "torch";
 
+    const seatOccupants = new Map<number, { id: string; nick: string; isBot: boolean }>();
+    let botCount = 0;
+    state.players?.forEach((p: any, sid: string) => {
+      const idStr = String(p.id || sid);
+      const isBot = Boolean(p.isBot || idStr.startsWith("bot_"));
+      if (isBot) botCount += 1;
+      seatOccupants.set(p.seat, { id: idStr, nick: p.nick || "Misafir", isBot });
+    });
+
     panel.innerHTML = `
       <div class="panel-header">
         <div>
-          <h2>🏰 ${state.hasPassword ? "🔒" : "🔓"} ${state.roomTitle || "ORTA ÇAĞ SOFRA LOBİSİ"} (${playerCount}/${targetCount})</h2>
+          <h2>🏰 ${state.hasPassword ? "🔒" : "🔓"} ${escapeHtml(state.roomTitle || "ORTA ÇAĞ SOFRA LOBİSİ")} (${playerCount}/${targetCount})</h2>
           <span style="font-size:0.75rem; color:var(--text-muted);">
-            Oda Kodu: <strong style="color:var(--gold);">${state.code}</strong> · <strong style="color:#ffe6a1;">${activePreset.title}</strong> (${activePreset.summary})
+            Oda Kodu: <strong style="color:var(--gold);">${escapeHtml(state.code || "---")}</strong> · <strong style="color:#ffe6a1;">${escapeHtml(activePreset.title)}</strong> (${escapeHtml(activePreset.summary)})
           </span>
         </div>
         <div style="display:flex; gap:6px; flex-wrap:wrap;">
@@ -3752,6 +4615,11 @@ class SofraGameApp {
             isHost
               ? `
             <button class="btn" id="btn-add-bots">🤖 Bot Doldur</button>
+            ${
+              botCount > 0
+                ? `<button class="btn" id="btn-remove-bots">🧹 Botları Sil</button>`
+                : ""
+            }
             <button class="btn" id="btn-auto-start">⏱️ Oto: ${state.autoStart ? "AÇIK" : "KAPALI"}</button>
             <button class="btn btn-crimson" id="btn-start-game">🔥 SOFRAYI BAŞLAT</button>
           `
@@ -3766,7 +4634,7 @@ class SofraGameApp {
           ${[
             { n: 8, lbl: "8 Kişi (1 Hain)" },
             { n: 10, lbl: "10 Kişi (2 Hain)" },
-            { n: 12, lbl: "12 Kişi (Tam Şölen)" }
+            { n: 12, lbl: "12 Kişi (2 Hain)" }
           ]
             .map(
               (o) =>
@@ -3822,15 +4690,28 @@ class SofraGameApp {
         <div class="studio-col-seats">
           <div class="seat-grid">
             ${selectableChars
-              .map(
-                (c) => `
-              <div class="seat-card ${this.vault.selectedSeat === c.seat ? "active" : ""}" data-seat="${c.seat}">
+              .map((c) => {
+                const occ = seatOccupants.get(c.seat);
+                const isMine = occ?.id === myId || (!occ && this.vault.selectedSeat === c.seat);
+                const takenByHuman = Boolean(occ && !occ.isBot && occ.id !== myId);
+                const occLabel = isMine
+                  ? `<span style="color:#6ef2b1; font-weight:bold;">👑 Senin Koltuğun</span>`
+                  : takenByHuman
+                  ? `<span style="color:#ff8593;">👤 Dolu: ${escapeHtml(occ!.nick)}</span>`
+                  : occ?.isBot
+                  ? `<span style="color:#ffd166;">🤖 Bot (Dokun & Geç)</span>`
+                  : `<span style="color:#8ce99a;">🟢 Boş Koltuk</span>`;
+                return `
+              <div class="seat-card ${isMine ? "active" : ""}" data-seat="${c.seat}" data-human-locked="${
+                  takenByHuman ? "1" : "0"
+                }" style="${takenByHuman ? "opacity:0.65; cursor:not-allowed;" : ""}">
                 <div class="seat-num">SANDALYE #${c.seat} (Oda #${c.seat})</div>
-                <div class="seat-name">${c.name}</div>
-                <div class="seat-title">${c.title}</div>
+                <div class="seat-name">${escapeHtml(c.name)}</div>
+                <div class="seat-title">${escapeHtml(c.title)}</div>
+                <div style="margin-top:4px; font-size:0.68rem;">${occLabel}</div>
               </div>
-            `
-              )
+            `;
+              })
               .join("")}
           </div>
         </div>
@@ -3839,7 +4720,7 @@ class SofraGameApp {
           <h3 style="color:var(--gold); font-size:0.92rem;">🛡️ Orta Çağ Karakterini & Zırhını Seç</h3>
           <div class="field-row">
             <label>Görünecek Ünvan / Adın:</label>
-            <input type="text" id="input-custom-name" maxlength="18" value="${this.vault.customName}" placeholder="Örn: Şövalye Cenker..." />
+            <input type="text" id="input-custom-name" maxlength="18" value="${escapeHtml(this.vault.customName)}" placeholder="Örn: Şövalye Cenker..." />
           </div>
           <div class="field-row">
             <label>Orta Çağ Pelerin & Zırh Rengi:</label>
@@ -3937,9 +4818,14 @@ class SofraGameApp {
 
     panel.querySelectorAll(".seat-card").forEach((el) => {
       el.addEventListener("click", () => {
+        if ((el as HTMLElement).dataset.humanLocked === "1") {
+          sfx.playDoorLocked();
+          return;
+        }
         const seat = Number((el as HTMLElement).dataset.seat);
         const charDef = CHARACTERS.find((c) => c.seat === seat);
         if (!charDef) return;
+        sfx.playUiClick();
         this.vault.selectedSeat = seat;
         this.vault.coatColor = charDef.coatColor;
         this.vault.accentColor = charDef.accentColor;
@@ -3996,24 +4882,45 @@ class SofraGameApp {
     });
 
     document.getElementById("btn-add-bots")?.addEventListener("click", () => {
+      sfx.playUiClick();
       this.room?.send("add_bots", { count: 11 });
     });
+    document.getElementById("btn-remove-bots")?.addEventListener("click", () => {
+      sfx.playUiClick();
+      this.room?.send("remove_bots");
+    });
     document.getElementById("btn-auto-start")?.addEventListener("click", () => {
+      sfx.playUiClick();
       this.room?.send("toggle_auto_start");
     });
     document.getElementById("btn-fast-mode")?.addEventListener("click", () => {
       this.room?.send("toggle_fast_mode");
     });
     document.getElementById("btn-start-game")?.addEventListener("click", () => {
+      sfx.playSealBreak();
       this.sendCustomizeToServer();
       this.room?.send("start_game");
     });
   }
 
   private renderArrivalEnvelope(panel: HTMLElement): void {
-    const role = this.myRole?.role ?? "MISAFIR";
-    const isHain = role === "HAIN";
-    const fellows = this.myRole?.traitorMates ?? [];
+    if (!this.myRole) {
+      panel.innerHTML = `
+        <div style="text-align:center; padding:18px;">
+          <p style="color:var(--gold); letter-spacing:1.5px; font-size:0.8rem;">◆ KARGALI ŞATO KABUL SALONU ◆</p>
+          <h2 style="font-size:1.3rem; margin:10px 0; color:var(--parchment);">
+            📜 Mühürlü Rol Zarfın Açılıyor...
+          </h2>
+          <p style="font-size:0.86rem; color:var(--text-muted);">
+            Kâhya davetlilerin gizli mühürlerini dağıtıyor, lütfen bir an bekle.
+          </p>
+        </div>
+      `;
+      return;
+    }
+
+    const isHain = this.myRole.role === "HAIN";
+    const fellows = this.myRole.traitorMates ?? [];
 
     panel.innerHTML = `
       <div style="text-align:center; padding:10px;">
@@ -4031,21 +4938,29 @@ class SofraGameApp {
         ${
           isHain && fellows.length > 0
             ? `<div style="background:rgba(155,18,32,0.25); border:1px solid #ff4d5e; border-radius:10px; padding:8px 12px; display:inline-block; font-size:0.85rem; margin-bottom:10px;">
-                <strong>🗡️ Gizli Suç Ortağın:</strong> ${fellows.map((f) => `#${f.seat} ${f.nick}`).join(", ")}
+                <strong>🗡️ Gizli Suç Ortağın:</strong> ${fellows
+                  .map((f) => `#${f.seat} ${escapeHtml(f.nick)}`)
+                  .join(", ")}
               </div>`
             : ""
         }
         <div style="margin-top:8px;">
-          <button class="btn btn-crimson" id="btn-arrival-ready" style="padding:9px 18px; font-size:0.9rem;">
-            🔥 ZARFI ALDIM — ŞATO KEŞFİNE BAŞLA
+          <button class="btn ${this.isLocalReadyForPhase ? "btn-emerald" : "btn-crimson"}" id="btn-arrival-ready" style="padding:9px 18px; font-size:0.9rem;">
+            ${
+              this.isLocalReadyForPhase
+                ? `✅ Hazırım ${this.readyStatusText || "— Diğer Davetliler Bekleniyor"}`
+                : "🔥 ZARFI ALDIM — ŞATO KEŞFİNE BAŞLA"
+            }
           </button>
         </div>
       </div>
     `;
 
     document.getElementById("btn-arrival-ready")?.addEventListener("click", () => {
+      this.isLocalReadyForPhase = true;
       this.room?.send("ready_next_phase");
       sfx.playSealBreak();
+      this.lastCenterRenderHash = "";
     });
   }
 
@@ -4081,7 +4996,7 @@ class SofraGameApp {
         <div style="text-align:center; padding:14px;">
           <h2 style="color:#8ce99a; font-size:1.25rem;">🏆 3/3 AŞAMA TAMAMLANDI!</h2>
           <p style="margin:10px auto; max-width:560px; background:rgba(30,65,45,0.45); border:1px solid #8ce99a; border-radius:10px; padding:10px; font-size:0.9rem;">
-            ${tr.completedClue || "Dedektif ipucun açıldı! Birazdan Yuvarlak Sofra tartışması başlayacak."}
+            ${escapeHtml(tr.completedClue || "Dedektif ipucun açıldı! Birazdan Yuvarlak Sofra başlayacak.")}
           </p>
           <div style="font-size:0.82rem; color:var(--gold);">
             🪙 Ortak Şato Hazinesi: ${state.pot} · İstersen üstteki <strong>⏩ Hazırım</strong> düğmesine basabilirsin!
@@ -4094,7 +5009,7 @@ class SofraGameApp {
     panel.innerHTML = `
       <div class="panel-header">
         <div>
-          <h2>🧩 1 DAKİKALIK ŞATO BULMACA SINAVI — AŞAMA ${tr.stage}/${tr.totalStages}</h2>
+          <h2>🧩 ŞATO BULMACA SINAVI — AŞAMA ${tr.stage}/${tr.totalStages}</h2>
           <span style="font-size:0.75rem; color:var(--text-muted);">
             3 aşamayı tamamla: Hazineyi büyüt, <strong style="color:var(--gold);">📿 Altın Kolye</strong> ve Gerçek Dedektif İpucu kazan!
           </span>
@@ -4105,20 +5020,20 @@ class SofraGameApp {
       ${
         tr.feedback
           ? `<div style="margin-bottom:8px; padding:6px 10px; border-radius:8px; background:rgba(212,175,55,0.14); border:1px solid var(--gold-soft); font-size:0.8rem; color:var(--gold);">
-              ${tr.feedback}
+              ${escapeHtml(tr.feedback)}
             </div>`
           : ""
       }
 
       <div style="background:rgba(22,16,34,0.92); border:1px solid var(--gold-soft); border-radius:12px; padding:12px; margin-bottom:10px;">
-        <div style="font-size:0.76rem; color:var(--gold); margin-bottom:4px;">${tr.title}</div>
-        <p style="font-size:0.95rem; line-height:1.45; margin-bottom:10px;">${tr.prompt}</p>
+        <div style="font-size:0.76rem; color:var(--gold); margin-bottom:4px;">${escapeHtml(tr.title)}</div>
+        <p style="font-size:0.95rem; line-height:1.45; margin-bottom:10px;">${escapeHtml(tr.prompt)}</p>
         <div style="display:flex; flex-direction:column; gap:7px;">
           ${(tr.options || [])
             .map(
               (opt: string, idx: number) => `
             <button class="btn" data-trial-opt="${idx}" style="text-align:left; padding:10px 12px;">
-              <strong>${idx + 1}.</strong> ${opt}
+              <strong>${idx + 1}.</strong> ${escapeHtml(opt)}
             </button>
           `
             )
@@ -4158,14 +5073,14 @@ class SofraGameApp {
     const card = document.getElementById("puzzle-card-content")!;
     const presetReasons = [
       "Gizli odada şüpheli fısıltılaştı, Yakınlık Barı çok yüksek!",
-      "Az önceki Şato Bulmaca Sınavını sabote ettiğinden şüpheleniyorum!",
       "Koridorda sürekli takip edip kapı önlerinde bekledi!",
+      "Rün Kürsüsü ve istasyonlardan hep uzak durdu, ipucu paylaşmıyor!",
       "Savunması çelişkili, suçu masumların üstüne yıkıyor!"
     ];
 
     card.innerHTML = `
       <div style="display:flex; justify-content:space-between; align-items:center;">
-        <strong style="color:#ff4d5e;">👉 SUÇLA: #${targetSeat} ${targetNick}</strong>
+        <strong style="color:#ff4d5e;">👉 SUÇLA: #${targetSeat} ${escapeHtml(targetNick)}</strong>
         <button class="btn" id="btn-close-accuse" style="padding:3px 8px;">✕</button>
       </div>
       <p style="font-size:0.78rem; color:var(--text-muted);">
@@ -4175,8 +5090,8 @@ class SofraGameApp {
         ${presetReasons
           .map(
             (r) => `
-          <button class="btn" data-accuse-reason="${r}" style="text-align:left; font-size:0.78rem; padding:8px 10px;">
-            🗣️ "${r}"
+          <button class="btn" data-accuse-reason="${escapeHtml(r)}" style="text-align:left; font-size:0.78rem; padding:8px 10px;">
+            🗣️ "${escapeHtml(r)}"
           </button>
         `
           )
@@ -4250,7 +5165,7 @@ class SofraGameApp {
             (p: any) => `
           <div class="seat-card ${this.selectedVoteTargetId === p.id ? "active" : ""}" data-vote-id="${p.id}">
             <div class="seat-num">SANDALYE #${p.seat}</div>
-            <div class="seat-name">${p.nick} ${p.id === myId ? "(Sen)" : ""}</div>
+            <div class="seat-name">${escapeHtml(p.nick)} ${p.id === myId ? "(Sen)" : ""}</div>
             <div class="seat-title">${
               !p.connected
                 ? "⚡ Bağlantı Bekleniyor..."
@@ -4267,7 +5182,7 @@ class SofraGameApp {
               </button>
               ${
                 p.id !== myId
-                  ? `<button class="btn btn-crimson" data-table-accuse="${p.id}" data-seat="${p.seat}" data-nick="${p.nick}" style="flex:1; padding:3px 5px; font-size:0.68rem;">
+                  ? `<button class="btn btn-crimson" data-table-accuse="${p.id}" data-seat="${p.seat}" data-nick="${escapeHtml(p.nick)}" style="flex:1; padding:3px 5px; font-size:0.68rem;">
                       👉 Suçla
                     </button>`
                   : ""
@@ -4310,7 +5225,7 @@ class SofraGameApp {
           if (targetId === this.room?.sessionId) return;
           this.selectedVoteTargetId = targetId;
           this.room?.send("vote", { targetId });
-          sfx.playSealBreak();
+          sfx.playVoteStamp();
           this.lastCenterRenderHash = "";
         });
       });
@@ -4322,17 +5237,38 @@ class SofraGameApp {
     const myId = this.room?.sessionId;
     const me = myId ? state.players?.get(myId) : null;
     const canVote = Boolean(me && me.alive && !me.ghost);
-    const chosenPlayer = this.selectedVoteTargetId
-      ? state.players?.get(this.selectedVoteTargetId)
-      : null;
+    const activeTieIds = this.getActiveTieCandidateIds(state);
+    const isTieRunoff = activeTieIds.length > 0;
+    const chosenPlayer =
+      this.selectedVoteTargetId && this.selectedVoteTargetId !== "ABSTAIN"
+        ? state.players?.get(this.selectedVoteTargetId)
+        : null;
     const preTargetPlayer: any =
       this.preTargetSeat > 0
-        ? players.find((cand: any) => cand.seat === this.preTargetSeat && cand.id !== myId)
+        ? players.find(
+            (cand: any) =>
+              cand.seat === this.preTargetSeat &&
+              cand.id !== myId &&
+              (!isTieRunoff || activeTieIds.includes(cand.id))
+          )
         : null;
+
+    const tieRunoffBanner = isTieRunoff
+      ? `<div style="margin-bottom:8px; padding:9px 12px; border-radius:10px; background:linear-gradient(135deg, rgba(165,24,38,0.42), rgba(212,175,55,0.22)); border:2px solid var(--gold); font-size:0.84rem; color:#fff2cc;">
+           ⚖️ <strong>OYLAR EŞİT ÇIKTI — İKİNCİ TUR (RUNOFF) OYLAMA!</strong> Yalnızca en çok oyu paylaşan adaylara oy atılabilir:
+           <strong>${activeTieIds
+             .map((tid) => {
+               const tp = state.players?.get(tid);
+               return tp ? `#${tp.seat} ${escapeHtml(tp.nick)}` : "";
+             })
+             .filter(Boolean)
+             .join(" · ")}</strong>
+         </div>`
+      : "";
 
     const statusBanner = !canVote
       ? `<div style="margin-bottom:10px; padding:9px 12px; border-radius:10px; background:rgba(70,85,120,0.25); border:1px solid #7ab8ff; font-size:0.84rem; color:#cfe5ff;">
-           👻 Elenerek Hayalet oldun — yaşayan davetlilerin şömine oylamasını izliyorsun.
+           👻 Elenerek Hayalet oldun — yaşayan davetlilerin sofra tartışmasını ve şömine oylamasını izliyorsun.
          </div>`
       : this.selectedVoteTargetId === "ABSTAIN"
       ? `<div style="margin-bottom:10px; padding:9px 12px; border-radius:10px; background:rgba(212,175,55,0.18); border:1px solid var(--gold); font-size:0.86rem; color:var(--gold);">
@@ -4340,10 +5276,10 @@ class SofraGameApp {
          </div>`
       : chosenPlayer
       ? `<div style="margin-bottom:10px; padding:9px 12px; border-radius:10px; background:rgba(40,120,75,0.32); border:2px solid #6ef2b1; font-size:0.88rem; color:#d8ffeb;">
-           ✅ <strong>OYUN MÜHÜRLENDİ:</strong> Koltuk #${chosenPlayer.seat} (${chosenPlayer.nick}) seçildi! Herkes oy verdiğinde zarflar şömineye atılacak.
+           ✅ <strong>OYUN MÜHÜRLENDİ:</strong> Koltuk #${chosenPlayer.seat} (${escapeHtml(chosenPlayer.nick)}) seçildi! Süre dolana kadar tartışmaya devam edebilir veya oyunu değiştirebilirsin.
          </div>`
-      : `<div style="margin-bottom:10px; padding:10px 14px; border-radius:10px; background:rgba(178,22,30,0.34); border:2px solid #ff5768; font-size:0.9rem; color:#ffe5e8; font-weight:bold; display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
-           <span>🗳️ SIRA SENDE — OYUNU AT! Şömineye göndermek istediğin şüphelinin kartındaki "🔥 OY AT" butonuna bas!</span>
+      : `<div style="margin-bottom:10px; padding:10px 14px; border-radius:10px; background:rgba(178,22,30,0.34); border:2px solid #ff5768; font-size:0.88rem; color:#ffe5e8; font-weight:bold; display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+           <span>🗣️ Tartış, <strong>👉 Suçla</strong> ve gizli zarfını mühürlemek için <strong>"🔥 BU KİŞİYE OY AT"</strong> butonuna bas!</span>
            ${
              preTargetPlayer
                ? `<button class="btn btn-emerald" id="btn-vote-pretarget-fast" style="padding:6px 11px; font-size:0.76rem;">
@@ -4356,18 +5292,25 @@ class SofraGameApp {
     panel.innerHTML = `
       <div class="panel-header">
         <div>
-          <h2 style="color:#ff5768; font-size:1.08rem;">🗳️ ŞÖMİNE OYLAMASI SEÇİM EKRANI — KİM ELENSİN?</h2>
-          <span style="font-size:0.75rem; color:var(--text-muted);">
-            En çok oyu alan kişinin zarfı şömineye atılır: <strong>Kırmızı Alev = Hain</strong>, <strong>Beyaz Alev = Masum Misafir</strong>!
+          <h2 style="color:#ff5768; font-size:1.06rem;">🔔 YUVARLAK SOFRA & ŞÖMİNE OYLAMASI — KİM ELENSİN?</h2>
+          <span style="font-size:0.74rem; color:var(--text-muted);">
+            Alttan sofraya yaz, gerekçenle suçla ve oyunu mühürle! <strong>Kırmızı Alev = Hain</strong>, <strong>Beyaz Alev = Masum</strong> · 🪙 Hazine: <strong style="color:var(--gold);">${state.pot || 0}</strong>
           </span>
         </div>
         <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
-          <button class="btn" id="btn-vote-open-hb" style="padding:6px 10px; font-size:0.74rem; border-color:#ffd166; color:#ffe9a8;">
-            📖 El Kitapçığı & İpuçları (${this.clueJournal.length})
+          <button class="btn" id="btn-vote-open-hb" style="padding:5px 9px; font-size:0.73rem; border-color:#ffd166; color:#ffe9a8;">
+            📖 El Kitapçığı (${this.clueJournal.length})
           </button>
           ${
+            canVote && (state.pot || 0) >= 50
+              ? `<button class="btn" id="btn-vote-kahya-ask" style="padding:5px 9px; font-size:0.73rem;">
+                   🔔 Kâhya'ya Sor (50🪙)
+                 </button>`
+              : ""
+          }
+          ${
             canVote
-              ? `<button class="btn" id="btn-vote-abstain" style="padding:6px 10px; font-size:0.74rem;">
+              ? `<button class="btn" id="btn-vote-abstain" style="padding:5px 9px; font-size:0.73rem;">
                    🏳️ Çekimser Kal
                  </button>`
               : ""
@@ -4375,6 +5318,7 @@ class SofraGameApp {
         </div>
       </div>
 
+      ${tieRunoffBanner}
       ${statusBanner}
 
       <div class="seat-grid">
@@ -4382,37 +5326,57 @@ class SofraGameApp {
           .map((p: any) => {
             const isMe = p.id === myId;
             const isPicked = this.selectedVoteTargetId === p.id;
+            const tieBlocked = isTieRunoff && !activeTieIds.includes(p.id);
             return `
-              <div class="seat-card ${isPicked ? "active" : ""}" data-vote-card="${p.id}" style="border-width:${
+              <div class="seat-card ${isPicked ? "active" : ""}" style="border-width:${
               isPicked || this.preTargetSeat === p.seat ? "2px" : "1px"
-            }; display:flex; flex-direction:column; justify-content:space-between;">
+            }; ${tieBlocked && !isMe ? "opacity:0.65;" : ""} display:flex; flex-direction:column; justify-content:space-between;">
                 <div>
                   <div class="seat-num">SANDALYE #${p.seat}</div>
-                  <div class="seat-name">${p.nick} ${isMe ? "(Sen)" : ""}</div>
+                  <div class="seat-name">${escapeHtml(p.nick)} ${isMe ? "(Sen)" : ""}</div>
                   <div class="seat-title" style="color:${p.votedForId ? "#ffd700" : "var(--text-muted)"};">
                     ${
-                      state.necklaceHolder === p.id
+                      !p.connected
+                        ? "⚡ Bağlantı Bekleniyor · "
+                        : state.necklaceHolder === p.id
                         ? "📿 Altın Kolye · "
                         : ""
-                    }${p.votedForId ? "✉️ Oyunu Verdi" : "⏳ Düşünüyor..."}
+                    }${p.votedForId ? "✉️ Zarfını Mühürledi" : "⏳ Tartışıyor..."}
                   </div>
                   ${this.renderSeatSuspectBadge(p.seat)}
                 </div>
                 <div style="display:flex; flex-direction:column; gap:5px; margin-top:8px;">
                   ${
                     canVote && !isMe
-                      ? `<button class="btn ${isPicked ? "" : "btn-crimson"}" data-cast-vote="${p.id}" style="width:100%; padding:7px 8px; font-weight:bold; ${
+                      ? `<button class="btn ${isPicked ? "" : tieBlocked ? "" : "btn-crimson"}" data-cast-vote="${p.id}" ${
+                          tieBlocked ? "disabled" : ""
+                        } style="width:100%; padding:7px 8px; font-weight:bold; ${
                           isPicked ? "border-color:#6ef2b1; color:#6ef2b1;" : ""
                         }">
-                          ${isPicked ? "✅ OYUN BU KİŞİDE" : "🔥 BU KİŞİYE OY AT"}
+                          ${
+                            isPicked
+                              ? "✅ OYUN BU KİŞİDE"
+                              : tieBlocked
+                              ? "⚖️ Eşitlik Dışı"
+                              : "🔥 BU KİŞİYE OY AT"
+                          }
                         </button>`
                       : isMe
                       ? `<div style="font-size:0.7rem; color:var(--text-muted); text-align:center; padding:5px 0;">Kendi Koltuğun</div>`
                       : ""
                   }
-                  <button class="btn" data-vote-inspect="${p.id}" style="width:100%; padding:3px 5px; font-size:0.68rem;">
-                    🔍 Yakınlık Barı
-                  </button>
+                  <div style="display:flex; gap:4px;">
+                    <button class="btn" data-vote-inspect="${p.id}" style="flex:1; padding:4px 5px; font-size:0.68rem;">
+                      🔍 Bar
+                    </button>
+                    ${
+                      canVote && !isMe
+                        ? `<button class="btn" data-vote-accuse="${p.id}" data-seat="${p.seat}" data-nick="${escapeHtml(p.nick)}" style="flex:1; padding:4px 5px; font-size:0.68rem; border-color:rgba(255,87,104,0.5); color:#ffb3bc;">
+                            👉 Suçla
+                          </button>`
+                        : ""
+                    }
+                  </div>
                 </div>
               </div>
             `;
@@ -4423,14 +5387,19 @@ class SofraGameApp {
 
     const castVoteFor = (targetId: string) => {
       if (!canVote || targetId === myId) return;
+      if (isTieRunoff && !activeTieIds.includes(targetId)) return;
       this.selectedVoteTargetId = targetId;
       this.room?.send("vote", { targetId });
-      sfx.playSealBreak();
+      sfx.playVoteStamp();
       this.lastCenterRenderHash = "";
     };
 
     document.getElementById("btn-vote-open-hb")?.addEventListener("click", () => {
       this.openHandbookModal("book");
+    });
+
+    document.getElementById("btn-vote-kahya-ask")?.addEventListener("click", () => {
+      this.openKahyaAskModal();
     });
 
     document.getElementById("btn-vote-pretarget-fast")?.addEventListener("click", () => {
@@ -4443,7 +5412,7 @@ class SofraGameApp {
       if (!canVote) return;
       this.selectedVoteTargetId = "ABSTAIN";
       this.room?.send("vote", { targetId: "ABSTAIN" });
-      sfx.playSealBreak();
+      sfx.playVoteStamp();
       this.lastCenterRenderHash = "";
     });
 
@@ -4454,9 +5423,11 @@ class SofraGameApp {
       });
     });
 
-    panel.querySelectorAll("[data-vote-card]").forEach((cardEl) => {
-      cardEl.addEventListener("click", () => {
-        castVoteFor((cardEl as HTMLElement).dataset.voteCard!);
+    panel.querySelectorAll("[data-vote-accuse]").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const el = btn as HTMLElement;
+        this.openAccuseModal(el.dataset.voteAccuse!, Number(el.dataset.seat), el.dataset.nick!);
       });
     });
 
@@ -4475,23 +5446,27 @@ class SofraGameApp {
     const burnedMe = Boolean(state.lastBurnedId && state.lastBurnedId === this.room?.sessionId);
 
     const personalBanner = burnedMe
-      ? `<div style="margin-bottom:10px; padding:10px 14px; border-radius:10px; background:rgba(175,20,38,0.34); border:2px solid #ff4d5e; color:#ffdbe0; font-size:0.88rem; font-weight:bold;">
+      ? `<div style="margin-bottom:8px; padding:8px 12px; border-radius:10px; background:rgba(175,20,38,0.34); border:2px solid #ff4d5e; color:#ffdbe0; font-size:0.84rem; font-weight:bold;">
            🚨 DİKKAT: SOFRADA EN ÇOK OYU SEN ALDIN VE ZARFIN ŞÖMİNEYE ATILDI! Artık 👻 Hayalet olarak şatoyu izleyebilirsin.
          </div>`
       : "";
 
     const tallyHtml =
       this.lastVoteReveal.length > 0
-        ? `<div style="margin-top:12px; padding-top:10px; border-top:1px solid var(--gold-soft);">
-             <div style="font-size:0.75rem; color:var(--gold); font-weight:bold; margin-bottom:6px;">
+        ? `<div style="margin-top:8px; padding-top:8px; border-top:1px solid var(--gold-soft);">
+             <div style="font-size:0.73rem; color:var(--gold); font-weight:bold; margin-bottom:5px;">
                🗳️ AÇILAN MÜHÜRLÜ OYLAR (KİM KİME OY VERDİ?):
              </div>
-             <div style="display:flex; flex-wrap:wrap; justify-content:center; gap:6px;">
+             <div style="display:flex; flex-wrap:wrap; justify-content:center; gap:5px;">
                ${this.lastVoteReveal
                  .map(
                    (v) => `
-                 <span style="background:rgba(24,18,36,0.92); border:1px solid var(--gold-soft); border-radius:8px; padding:4px 8px; font-size:0.74rem;">
-                   <strong>#${v.voterSeat} ${v.voterNick}</strong> ➔ 🔥 #${v.targetSeat} ${v.targetNick}
+                 <span style="background:rgba(24,18,36,0.92); border:1px solid var(--gold-soft); border-radius:8px; padding:3px 7px; font-size:0.72rem;">
+                   <strong>#${v.voterSeat} ${escapeHtml(v.voterNick)}</strong> ➔ ${
+                     v.targetSeat > 0
+                       ? `🔥 #${v.targetSeat} ${escapeHtml(v.targetNick)}`
+                       : `🏳️ Çekimser`
+                   }
                  </span>
                `
                  )
@@ -4501,9 +5476,9 @@ class SofraGameApp {
         : "";
 
     panel.innerHTML = `
-      <div style="text-align:center; padding:14px;">
+      <div style="text-align:center; padding:8px 10px;">
         ${personalBanner}
-        <h2 style="font-size:1.35rem; color:${isRed ? "#ff3b4e" : isWhite ? "#a8d8ff" : "#d4af37"};">
+        <h2 style="font-size:1.22rem; color:${isRed ? "#ff3b4e" : isWhite ? "#a8d8ff" : "#d4af37"};">
           ${
             isRed
               ? "🔥 ŞÖMİNE KAN KIRMIZISI PARLADI! (HAİN YAKALANDI)"
@@ -4512,7 +5487,7 @@ class SofraGameApp {
               : "⚖️ OYLAR EŞİT ÇIKTI — ŞÖMİNEYE ZARF ATILMADI"
           }
         </h2>
-        <p style="margin-top:8px; font-size:0.95rem;">${state.announcement}</p>
+        <p style="margin-top:6px; font-size:0.9rem;">${escapeHtml(state.announcement || "")}</p>
         ${tallyHtml}
       </div>
     `;
@@ -4524,15 +5499,16 @@ class SofraGameApp {
     const alivePlayers = Array.from(state.players?.values() || []).filter((p: any) => p.alive);
 
     if (!isHain || !me?.alive || me?.ghost) {
+      const isGhostObserver = Boolean(me && (!me.alive || me.ghost));
       panel.innerHTML = `
         <div style="text-align:center; padding:14px;">
           <div style="font-size:0.76rem; letter-spacing:1.6px; color:#ff6b7a; font-weight:bold;">
-            ⏳ 2 DAKİKA GECE MOLASI — GİZLİ İNFAZ KONSEYİ TOPLANIYOR
+            ⏳ GECE MOLASI — GİZLİ İNFAZ KONSEYİ TOPLANIYOR
           </div>
-          <h2 style="color:var(--gold); font-size:1.25rem; margin:6px 0;">
-            🌑 ŞATODA MOLA: HAİNLER TOPLANTI YAPIYOR!
+          <h2 style="color:var(--gold); font-size:1.22rem; margin:6px 0;">
+            🌑 ŞATODA GECE: HAİNLER TOPLANTI YAPIYOR!
           </h2>
-          <p style="color:var(--text-muted); font-size:0.86rem; max-width:580px; margin:0 auto 12px; line-height:1.45;">
+          <p style="color:var(--text-muted); font-size:0.85rem; max-width:580px; margin:0 auto 12px; line-height:1.45;">
             Yatak odalarının kapıları kilitlendi. Hainler şu an gizli kulede buluşup bu gecenin <strong>İNFAZ KARARINI</strong> tartışıyor! Hainler mührü bastığında sabah çanı çalacak.
           </p>
 
@@ -4542,13 +5518,19 @@ class SofraGameApp {
                   ${
                     this.nightWatchNote
                       ? `<div style="background:rgba(212,175,55,0.14); border:1px solid var(--gold); border-radius:10px; padding:9px 12px; font-size:0.84rem; color:var(--parchment);">
-                          ${this.nightWatchNote}
+                          ${escapeHtml(this.nightWatchNote)}
                         </div>`
                       : `<button class="btn btn-crimson" id="btn-night-watch" style="padding:9px 16px;">
                           🕯️ Kapı Deliğinden Koridoru Dinle (+10🪙 & İpucu)
                         </button>`
                   }
                 </div>`
+              : isGhostObserver
+              ? `<div style="margin-bottom:10px;">
+                   <button class="btn" id="btn-night-ghost-haunt" style="padding:8px 14px; border-color:rgba(122,184,255,0.5); color:#cfe5ff;">
+                     👻 Şamdanların Mumlarını Titret (Ruh İşareti Ver)
+                   </button>
+                 </div>`
               : ""
           }
 
@@ -4557,7 +5539,7 @@ class SofraGameApp {
               📖 El Kitapçığı & İpuçlarım (${this.clueJournal.length})
             </button>
             <button class="btn" id="btn-night-inspect-bonds" style="padding:7px 14px;">
-              🔍 Mola Sırasında Oyuncuların Yakınlık Barlarını İncele
+              🔍 Oyuncuların Yakınlık Barlarını İncele
             </button>
           </div>
         </div>
@@ -4567,7 +5549,12 @@ class SofraGameApp {
         this.openHandbookModal("book");
       });
       document.getElementById("btn-night-watch")?.addEventListener("click", () => {
+        sfx.playDoorCreak(true);
         this.room?.send("night_watch");
+      });
+      document.getElementById("btn-night-ghost-haunt")?.addEventListener("click", () => {
+        sfx.playNightWind();
+        this.room?.send("ghost_haunt");
       });
       document.getElementById("btn-night-inspect-bonds")?.addEventListener("click", () => {
         this.openInspectPickerModal();
@@ -4579,7 +5566,10 @@ class SofraGameApp {
     mateIds.add(this.room?.sessionId || "");
     const innocentTargets = alivePlayers.filter((p: any) => !mateIds.has(p.id));
     const livePicksSummary = Array.from(this.traitorNightPicks.values())
-      .map((pk) => `#${pk.traitorSeat} ${pk.traitorNick} ➔ 🩸 #${pk.targetSeat} ${pk.targetNick}`)
+      .map(
+        (pk) =>
+          `#${pk.traitorSeat} ${escapeHtml(pk.traitorNick)} ➔ 🩸 #${pk.targetSeat} ${escapeHtml(pk.targetNick)}`
+      )
       .join(" · ");
     const pickedVictim = this.selectedNightTargetId
       ? state.players?.get(this.selectedNightTargetId)
@@ -4588,19 +5578,21 @@ class SofraGameApp {
     panel.innerHTML = `
       <div class="panel-header">
         <div>
-          <h2 style="color:#ff4d5e; font-size:1.08rem;">🩸 HAİN GECE İNFAZ SEÇİM EKRANI — KİM ÖLECEK?</h2>
-          <span style="font-size:0.75rem; color:var(--text-muted);">
-            Misafirler "2 Dakika Mola" ekranında bekliyor. Bu gece şatodan kimi sileceğini seç ve İnfaz Mührünü bas!
+          <h2 style="color:#ff4d5e; font-size:1.06rem;">🩸 HAİN GECE İNFAZ SEÇİM EKRANI — KİM ÖLECEK?</h2>
+          <span style="font-size:0.74rem; color:var(--text-muted);">
+            Misafirler odalarında bekliyor. Bu gece şatodan kimi sileceğini seç ve İnfaz Mührünü bas!
           </span>
         </div>
         <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
           <button class="btn" id="btn-night-open-hb-hain" style="padding:7px 11px; font-size:0.74rem; border-color:#ffd166; color:#ffe9a8;">
             📖 El Kitapçığı (${this.clueJournal.length})
           </button>
-          <button class="btn btn-crimson" id="btn-seal-execution" style="padding:8px 14px; font-weight:bold;">
+          <button class="btn ${this.isNightSealed ? "btn-emerald" : "btn-crimson"}" id="btn-seal-execution" style="padding:8px 14px; font-weight:bold;">
             ${
-              pickedVictim
-                ? `🩸 #${pickedVictim.seat} ${pickedVictim.nick} İNFAZINI ONAYLA!`
+              this.isNightSealed && pickedVictim
+                ? `✅ #${pickedVictim.seat} ${escapeHtml(pickedVictim.nick)} İnfaz Mührü Basıldı!`
+                : pickedVictim
+                ? `🩸 #${pickedVictim.seat} ${escapeHtml(pickedVictim.nick)} İNFAZINI ONAYLA!`
                 : "🩸 Önce Kurban Seç"
             }
           </button>
@@ -4610,10 +5602,14 @@ class SofraGameApp {
       ${
         pickedVictim
           ? `<div style="margin-bottom:8px; padding:9px 12px; border-radius:10px; background:rgba(40,120,75,0.3); border:2px solid #6ef2b1; font-size:0.86rem; color:#d8ffeb;">
-               🎯 <strong>SEÇİLEN İNFAZ KURBANI:</strong> Koltuk #${pickedVictim.seat} (${pickedVictim.nick})! Hazırsan sağ üstteki veya karttaki <strong>🗡️ İNFAZ ET</strong> butonuna bas!
+               ${
+                 this.isNightSealed
+                   ? `✅ <strong>İNFAZ MÜHRÜN BASILDI:</strong> Koltuk #${pickedVictim.seat} (${escapeHtml(pickedVictim.nick)}) onaylandı! Sabah çanı çalmak üzere...`
+                   : `🎯 <strong>SEÇİLEN İNFAZ KURBANI:</strong> Koltuk #${pickedVictim.seat} (${escapeHtml(pickedVictim.nick)})! Hazırsan sağ üstteki veya karttaki <strong>🗡️ HEMEN İNFAZ ET</strong> butonuna bas!`
+               }
              </div>`
-          : `<div style="margin-bottom:8px; padding:10px 14px; border-radius:10px; background:rgba(178,22,30,0.36); border:2px solid #ff5768; font-size:0.9rem; color:#ffe5e8; font-weight:bold;">
-               🗡️ SEN HAİNSİN! Bu gece infaz edilecek masum Misafiri aşağıdan seç ("🗡️ HEMEN İNFAZ ET" ile tek tıkta infaz edebilirsin)!
+          : `<div style="margin-bottom:8px; padding:10px 14px; border-radius:10px; background:rgba(178,22,30,0.36); border:2px solid #ff5768; font-size:0.88rem; color:#ffe5e8; font-weight:bold;">
+               🗡️ SEN HAİNSİN! Bu gece infaz edilecek masum Misafiri aşağıdan seç ("🗡️ HEMEN İNFAZ ET" ile tek tıkta mühürleyebilirsin)!
              </div>`
       }
 
@@ -4630,10 +5626,10 @@ class SofraGameApp {
           .map((p: any) => {
             const isPicked = this.selectedNightTargetId === p.id;
             return `
-              <div class="seat-card ${isPicked ? "active" : ""}" data-night-id="${p.id}" style="display:flex; flex-direction:column; justify-content:space-between;">
+              <div class="seat-card ${isPicked ? "active" : ""}" style="display:flex; flex-direction:column; justify-content:space-between;">
                 <div>
                   <div class="seat-num">KURBAN ADAYI #${p.seat}</div>
-                  <div class="seat-name">${p.nick}</div>
+                  <div class="seat-name">${escapeHtml(p.nick)}</div>
                   <div class="seat-title">${
                     state.necklaceHolder === p.id
                       ? "⚠️ 📿 Altın Kolye (Gece Korumalı!)"
@@ -4647,7 +5643,7 @@ class SofraGameApp {
                   <button class="btn btn-crimson" data-night-instant="${p.id}" style="width:100%; padding:7px 8px; font-weight:bold;">
                     🗡️ HEMEN İNFAZ ET!
                   </button>
-                  <button class="btn" data-night-pick-only="${p.id}" style="width:100%; padding:4px 6px; font-size:0.7rem;">
+                  <button class="btn ${isPicked ? "btn-emerald" : ""}" data-night-pick-only="${p.id}" style="width:100%; padding:4px 6px; font-size:0.7rem;">
                     ${isPicked ? "✅ Seçili Hedef" : "🎯 Sadece Hedef Göster"}
                   </button>
                 </div>
@@ -4680,8 +5676,9 @@ class SofraGameApp {
         e.stopPropagation();
         const targetId = (btn as HTMLElement).dataset.nightInstant!;
         this.selectedNightTargetId = targetId;
+        this.isNightSealed = true;
         this.room?.send("night_pick", { targetId, instantSeal: true });
-        sfx.playCastleBell();
+        sfx.playDaggerDraw();
         this.lastCenterRenderHash = "";
       });
     });
@@ -4690,16 +5687,6 @@ class SofraGameApp {
       btn.addEventListener("click", (e) => {
         e.stopPropagation();
         const targetId = (btn as HTMLElement).dataset.nightPickOnly!;
-        this.selectedNightTargetId = targetId;
-        this.room?.send("night_pick", { targetId });
-        sfx.playHeartbeat();
-        this.lastCenterRenderHash = "";
-      });
-    });
-
-    panel.querySelectorAll("[data-night-id]").forEach((el) => {
-      el.addEventListener("click", () => {
-        const targetId = (el as HTMLElement).dataset.nightId!;
         this.selectedNightTargetId = targetId;
         this.room?.send("night_pick", { targetId });
         sfx.playHeartbeat();
@@ -4716,8 +5703,10 @@ class SofraGameApp {
         alert("Önce yukarıdaki listeden infaz edilecek kurbanı seçmelisin!");
         return;
       }
+      this.isNightSealed = true;
       this.room?.send("seal_night_execution");
-      sfx.playCastleBell();
+      sfx.playDaggerDraw();
+      this.lastCenterRenderHash = "";
     });
 
     document.getElementById("conclave-chat-form")?.addEventListener("submit", (e) => {
@@ -4733,41 +5722,93 @@ class SofraGameApp {
   private renderMorningPanel(panel: HTMLElement, state: any): void {
     panel.innerHTML = `
       <div style="text-align:center; padding:14px;">
-        <h2 style="color:var(--gold); font-size:1.3rem;">🌅 ŞATODA SABAH OLDU — İNFAZ HÜKMÜ</h2>
-        <p style="margin-top:8px; font-size:0.95rem;">${state.announcement}</p>
+        <h2 style="color:var(--gold); font-size:1.28rem;">🌅 ŞATODA SABAH OLDU — İNFAZ HÜKMÜ</h2>
+        <p style="margin-top:8px; font-size:0.95rem;">${escapeHtml(state.announcement || "")}</p>
+        <div style="margin-top:10px;">
+          <button class="btn" id="btn-morning-open-hb" style="padding:6px 12px; font-size:0.76rem; border-color:#ffd166; color:#ffe9a8;">
+            📖 El Kitapçığı & Kanıtlar (${this.clueJournal.length})
+          </button>
+        </div>
       </div>
     `;
+    document.getElementById("btn-morning-open-hb")?.addEventListener("click", () => {
+      this.openHandbookModal("book");
+    });
   }
 
   private renderFinalPanel(panel: HTMLElement, state: any): void {
     const alive = Array.from(state.players?.values() || []).filter((p: any) => p.alive);
+    const myId = this.room?.sessionId;
+    const me = myId ? state.players?.get(myId) : null;
+    const canDecide = Boolean(me && me.alive && !me.ghost);
 
     panel.innerHTML = `
       <div class="panel-header">
-        <h2>⚖️ FİNAL KARARI — SON ${alive.length} KİŞİ</h2>
+        <div>
+          <h2>⚖️ FİNAL GÜVEN KARARI — SON ${alive.length} KİŞİ</h2>
+          <span style="font-size:0.75rem; color:var(--text-muted);">
+            <strong>Oybirliği Kuralı:</strong> Herkes <em>"🤝 Hepimiz Misafiriz"</em> derse oyun anında biter (içeride Hain gizliyse Hainler kazanır!). Tek kişi bile <em>"🔥 Aramızda Hain Var"</em> derse son Şömine Oylamasına gidilir!
+          </span>
+        </div>
+        <button class="btn" id="btn-final-open-hb" style="padding:6px 10px; font-size:0.74rem; border-color:#ffd166; color:#ffe9a8;">
+          📖 El Kitapçığı (${this.clueJournal.length})
+        </button>
       </div>
-      <p style="margin-bottom:12px; font-size:0.9rem;">
-        Birbirinize güvenip el mi sıkışacaksınız, yoksa son bir oylamaya mı gideceksiniz?
-      </p>
-      <div style="display:flex; gap:10px; justify-content:center; flex-wrap:wrap;">
-        <button class="btn ${this.selectedFinalChoice === "TRUST" ? "btn-crimson" : ""}" id="btn-final-trust" style="padding:10px 14px;">
-          🤝 HEPİMİZ MİSAFİRİZ
-        </button>
-        <button class="btn ${this.selectedFinalChoice === "DOUBT" ? "btn-crimson" : ""}" id="btn-final-doubt" style="padding:10px 14px;">
-          🔥 ARAMIZDA HAİN VAR
-        </button>
+
+      ${
+        canDecide
+          ? `<div style="display:flex; gap:10px; justify-content:center; flex-wrap:wrap; margin:10px 0 12px;">
+               <button class="btn ${this.selectedFinalChoice === "TRUST" ? "btn-emerald" : ""}" id="btn-final-trust" style="padding:10px 15px; font-weight:bold;">
+                 ${this.selectedFinalChoice === "TRUST" ? "✅ Seçimin: HEPİMİZ MİSAFİRİZ" : "🤝 HEPİMİZ MİSAFİRİZ (Güven & Bitir)"}
+               </button>
+               <button class="btn ${this.selectedFinalChoice === "DOUBT" ? "btn-crimson" : ""}" id="btn-final-doubt" style="padding:10px 15px; font-weight:bold;">
+                 ${this.selectedFinalChoice === "DOUBT" ? "✅ Seçimin: ARAMIZDA HAİN VAR" : "🔥 ARAMIZDA HAİN VAR (Son Oylamaya Git)"}
+               </button>
+             </div>`
+          : `<div style="margin:8px 0 12px; padding:9px 12px; border-radius:10px; background:rgba(70,85,120,0.25); border:1px solid #7ab8ff; font-size:0.84rem; color:#cfe5ff; text-align:center;">
+               👻 Hayalet olarak son ${alive.length} davetlinin kritik güven kararını izliyorsun.
+             </div>`
+      }
+
+      <div class="seat-grid">
+        ${alive
+          .map(
+            (p: any) => `
+          <div class="seat-card ${p.id === myId ? "active" : ""}">
+            <div class="seat-num">KALAN DAVETLİ #${p.seat}</div>
+            <div class="seat-name">${escapeHtml(p.nick)} ${p.id === myId ? "(Sen)" : ""}</div>
+            ${this.renderSeatSuspectBadge(p.seat)}
+            <button class="btn" data-final-inspect="${p.id}" style="width:100%; margin-top:6px; padding:4px 6px; font-size:0.68rem;">
+              🔍 Yakınlık Barı
+            </button>
+          </div>
+        `
+          )
+          .join("")}
       </div>
     `;
 
+    document.getElementById("btn-final-open-hb")?.addEventListener("click", () => {
+      this.openHandbookModal("book");
+    });
     document.getElementById("btn-final-trust")?.addEventListener("click", () => {
+      if (!canDecide) return;
       this.selectedFinalChoice = "TRUST";
       this.room?.send("final_decision", { decision: "TRUST" });
+      sfx.playVoteStamp();
       this.lastCenterRenderHash = "";
     });
     document.getElementById("btn-final-doubt")?.addEventListener("click", () => {
+      if (!canDecide) return;
       this.selectedFinalChoice = "DOUBT";
       this.room?.send("final_decision", { decision: "DOUBT" });
+      sfx.playVoteStamp();
       this.lastCenterRenderHash = "";
+    });
+    panel.querySelectorAll("[data-final-inspect]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        this.room?.send("request_inspect", { targetId: (btn as HTMLElement).dataset.finalInspect! });
+      });
     });
   }
 
@@ -4776,7 +5817,10 @@ class SofraGameApp {
     const rolesList: Array<{ id?: string; seat: number; nick: string; role: string; alive: boolean }> =
       this.gameOverSummary?.roles || [];
     const chronicle: string[] = this.gameOverSummary?.chronicle || [];
+    const topBond: { seatA: number; nickA: string; seatB: number; nickB: string; score: number } | null =
+      this.gameOverSummary?.topMatchBond || null;
     const myId = this.room?.sessionId;
+    const isHost = Boolean(myId && state.hostId === myId);
     const meState = myId ? state.players?.get(myId) : null;
     const myRoleStr = this.myRole?.role === "HAIN" ? "🗡️ HAİN" : "🕯️ MİSAFİR";
     const iWon = this.myRole?.role === state.winnerTeam;
@@ -4791,14 +5835,14 @@ class SofraGameApp {
         ${
           state.winReason
             ? `<div style="margin:8px auto 10px; max-width:640px; padding:9px 14px; border-radius:10px; background:rgba(212,175,55,0.14); border:1px solid var(--gold); color:var(--parchment); font-size:0.86rem; line-height:1.4;">
-                 <strong style="color:var(--gold);">📌 Maçın Bitme Sebebi:</strong> ${state.winReason}
+                 <strong style="color:var(--gold);">📌 Maçın Bitme Sebebi:</strong> ${escapeHtml(state.winReason)}
                </div>`
-            : `<p style="font-size:0.88rem; margin-bottom:10px;">${state.announcement}</p>`
+            : `<p style="font-size:0.88rem; margin-bottom:10px;">${escapeHtml(state.announcement || "")}</p>`
         }
 
         ${
           meState
-            ? `<div style="font-size:0.8rem; margin-bottom:10px; color:${iWon ? "#8ce99a" : "#ffa8a8"};">
+            ? `<div style="font-size:0.8rem; margin-bottom:8px; color:${iWon ? "#8ce99a" : "#ffa8a8"};">
                  Senin Rolün: <strong>${myRoleStr}</strong> · Durumun: <strong>${
                 meState.alive ? "Hayatta Kaldın" : "Şöminede / Gece İnfazında Elendin"
               }</strong> · Sonuç: <strong>${iWon ? "🏆 TAKIMIN KAZANDI!" : "💔 KAYBETTİN"}</strong>
@@ -4807,16 +5851,24 @@ class SofraGameApp {
         }
 
         ${
+          topBond && topBond.score >= 10
+            ? `<div style="font-size:0.76rem; color:var(--gold); margin-bottom:10px;">
+                 🤝 Maçın En Yüksek Fısıltı Bağı: <strong>#${topBond.seatA} ${escapeHtml(topBond.nickA)}</strong> &amp; <strong>#${topBond.seatB} ${escapeHtml(topBond.nickB)}</strong> (%${topBond.score})
+               </div>`
+            : ""
+        }
+
+        ${
           rolesList.length > 0
             ? `<div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(150px, 1fr)); gap:6px; text-align:left; margin-bottom:10px;">
-                ${rolesList
+                ${[...rolesList]
                   .sort((a, b) => a.seat - b.seat)
                   .map(
                     (r) => `
                   <div style="padding:6px 8px; border-radius:8px; background:rgba(24,18,36,0.9); border:1px solid ${
                     r.role === "HAIN" ? "#ff4d5e" : "rgba(122,184,255,0.4)"
                   }; font-size:0.75rem;">
-                    <strong>#${r.seat} ${r.nick}</strong><br/>
+                    <strong>#${r.seat} ${escapeHtml(r.nick)}</strong><br/>
                     <span style="color:${r.role === "HAIN" ? "#ff6b7a" : "#8ecae6"};">
                       ${r.role === "HAIN" ? "🗡️ HAİN" : "🕯️ MİSAFİR"}
                     </span>
@@ -4833,7 +5885,7 @@ class SofraGameApp {
           chronicle.length > 0
             ? `<div style="text-align:left; background:rgba(14,10,22,0.88); border:1px solid var(--gold-soft); border-radius:10px; padding:8px 10px; margin-bottom:10px; max-height:110px; overflow-y:auto; font-size:0.76rem;">
                 <strong style="color:var(--gold);">📜 Şato Gece İnfazları & Şömine Kayıtları:</strong>
-                ${chronicle.map((c) => `<div style="margin-top:3px;">• ${c}</div>`).join("")}
+                ${chronicle.map((c) => `<div style="margin-top:3px;">• ${escapeHtml(c)}</div>`).join("")}
               </div>`
             : ""
         }
@@ -4845,7 +5897,14 @@ class SofraGameApp {
           <button class="btn" id="btn-result-open-hb" style="border-color:#ffd166; color:#ffe9a8;">
             🕵️ El Kitapçığı Notlarım (${this.clueJournal.length})
           </button>
-          <button class="btn btn-crimson" id="btn-back-lobby">🔄 Yeni Oyun (Lobi)</button>
+          ${
+            isHost
+              ? `<button class="btn btn-crimson" id="btn-back-lobby">🔄 Yeni Oyun (Odayı Lobiye Döndür)</button>`
+              : ""
+          }
+          <button class="btn ${isHost ? "" : "btn-crimson"}" id="btn-result-leave-menu">
+            🏰 Ana Menüye Dön
+          </button>
         </div>
       </div>
     `;
@@ -4859,10 +5918,21 @@ class SofraGameApp {
     document.getElementById("btn-back-lobby")?.addEventListener("click", () => {
       this.room?.send("back_to_lobby");
     });
+    document.getElementById("btn-result-leave-menu")?.addEventListener("click", async () => {
+      sessionStorage.removeItem("sofra_reconnect_token");
+      this.activeReconnectRoomId = "";
+      if (this.room) {
+        await this.room.leave(true);
+        this.room = null;
+      }
+      document.getElementById("hud")?.classList.add("hidden");
+      document.getElementById("main-menu-overlay")?.classList.remove("hidden");
+      this.refreshLiveRooms();
+    });
   }
 
   private openStoryReaderModal(state: any): void {
-    sfx.playSealBreak();
+    sfx.playPageFlip();
     const modal = document.getElementById("puzzle-modal")!;
     const card = document.getElementById("puzzle-card-content")!;
     card.style.width = "min(650px, 94vw)";
@@ -4880,25 +5950,26 @@ class SofraGameApp {
 
     const traitorNames =
       traitors.length > 0
-        ? traitors.map((t) => `#${t.seat} ${t.nick}`).join(" ve ")
+        ? traitors.map((t) => `#${t.seat} ${escapeHtml(t.nick)}`).join(" ve ")
         : "meçhul bir gölge";
     const survivorNames =
       survivors.length > 0
-        ? survivors.map((s) => `#${s.seat} ${s.nick}`).join(", ")
+        ? survivors.map((s) => `#${s.seat} ${escapeHtml(s.nick)}`).join(", ")
         : "kimse";
     const fallenNames =
       fallen.length > 0
-        ? fallen.map((f) => `#${f.seat} ${f.nick}`).join(", ")
+        ? fallen.map((f) => `#${f.seat} ${escapeHtml(f.nick)}`).join(", ")
         : "";
 
     const myId = this.room?.sessionId;
+    const isHost = Boolean(myId && state.hostId === myId);
     const meState = myId ? state.players?.get(myId) : null;
     const myRoleLabel =
       this.myRole?.role === "HAIN" ? "pelerininin altında hançer gizleyen bir HAİN" : "gerçeğin peşindeki masum bir MİSAFİR";
 
     const bondParagraph =
       topBond && topBond.score >= 15
-        ? `Koridorlarda mum ışıkları titrerken en derin fısıltı bağı <strong>#${topBond.seatA} ${topBond.nickA}</strong> ile <strong>#${topBond.seatB} ${topBond.nickB}</strong> arasında kuruldu (<em>%${topBond.score} yakınlık</em>). Bakışlar bu ikilinin üzerinde toplandı.`
+        ? `Koridorlarda mum ışıkları titrerken en derin fısıltı bağı <strong>#${topBond.seatA} ${escapeHtml(topBond.nickA)}</strong> ile <strong>#${topBond.seatB} ${escapeHtml(topBond.nickB)}</strong> arasında kuruldu (<em>%${topBond.score} yakınlık</em>). Bakışlar bu ikilinin üzerinde toplandı.`
         : `Fırtına pencereleri döverken davetliler koridorlarda temkinli adımlarla yürüdü; kimse sırrını kolay kolay açık etmedi.`;
 
     const eventsHtml =
@@ -4907,7 +5978,7 @@ class SofraGameApp {
             .map(
               (item) => `
               <div style="padding:6px 9px; border-left:2px solid var(--gold); background:rgba(255,255,255,0.04); border-radius:0 6px 6px 0; font-size:0.8rem; line-height:1.45;">
-                ${item}
+                ${escapeHtml(item)}
               </div>
             `
             )
@@ -4917,19 +5988,19 @@ class SofraGameApp {
           </div>`;
 
     const endingProse = guestsWon
-      ? `Şafak sökerken şöminenin kızıl külleri soğudu. <strong>${
+      ? `Şafak sökerken şöminenin kızıl külleri soğudu. <strong>${escapeHtml(
           state.winReason || "Tüm Hainlerin maskesi düşürüldü ve şatoda hiçbir Hain kalmadı."
-        }</strong> Geride kalan davetliler (${survivorNames}) Kargalı Şato'nun ağır kapılarını aralayıp fırtınadan sağ kurtuldu.`
-      : `Gece yarısı çanları son kez çaldığında şatonun şamdanları kan kırmızısına büründü. <strong>${
+        )}</strong> Geride kalan davetliler (${survivorNames}) Kargalı Şato'nun ağır kapılarını aralayıp fırtınadan sağ kurtuldu.`
+      : `Gece yarısı çanları son kez çaldığında şatonun şamdanları kan kırmızısına büründü. <strong>${escapeHtml(
           state.winReason || "Hainler sayıca üstünlüğü ele geçirip Yuvarlak Sofraya hâkim oldu."
-        }</strong> Kargalı Şato'nun koridorları artık gölgelerin elindeydi.`;
+        )}</strong> Kargalı Şato'nun koridorları artık gölgelerin elindeydi.`;
 
     card.innerHTML = `
       <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--gold-soft); padding-bottom:8px;">
         <div>
           <div style="font-size:0.7rem; letter-spacing:1.8px; color:var(--gold);">◆ KARGALI ŞATO VAKAYİNAMESİ ◆</div>
           <h3 style="font-size:1.08rem; color:var(--parchment); margin-top:2px;">
-            📖 Bu Gecenin Hikâyesi (${state.roomTitle || "Yuvarlak Sofra"} · ${state.round || 1} Gün)
+            📖 Bu Gecenin Hikâyesi (${escapeHtml(state.roomTitle || "Yuvarlak Sofra")} · ${state.round || 1} Gün)
           </h3>
         </div>
         <button class="btn" id="btn-close-story-x" style="padding:4px 9px;">✕</button>
@@ -4942,7 +6013,7 @@ class SofraGameApp {
             rolesList.length || state.players?.size || 10
           } davetli</strong> oturdu. Herkes kadehini dostluk şerefine kaldırsa da karanlıkta gizlice yemin eden Hainler <strong>${traitorNames}</strong> idi.${
       meState
-        ? ` Sen bu gecede <strong>#${meState.seat} ${meState.nick}</strong> koltuğunda ${myRoleLabel} olarak yerini aldın.`
+        ? ` Sen bu gecede <strong>#${meState.seat} ${escapeHtml(meState.nick)}</strong> koltuğunda ${myRoleLabel} olarak yerini aldın.`
         : ""
     }
         </div>
@@ -4981,7 +6052,11 @@ class SofraGameApp {
 
       <div style="display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap; padding-top:4px;">
         <button class="btn" id="btn-close-story-modal">🔙 Sonuca Dön</button>
-        <button class="btn btn-crimson" id="btn-story-back-lobby">🔄 Yeni Oyun (Lobi)</button>
+        ${
+          isHost
+            ? `<button class="btn btn-crimson" id="btn-story-back-lobby">🔄 Yeni Oyun (Lobi)</button>`
+            : ""
+        }
       </div>
     `;
 
@@ -5093,7 +6168,7 @@ class SofraGameApp {
           x: Math.max(-25.2, Math.min(25.2, desiredX)),
           z: Math.max(-31, Math.min(33, desiredZ))
         }
-      : resolveCastleCollision(desiredX, desiredZ, this.getOpenDoorsMap(state), 0.42, {
+      : resolveCastleStep(this.localX, this.localZ, desiredX, desiredZ, this.getOpenDoorsMap(state), 0.42, {
           seat: me?.seat,
           currentRoomId: me?.roomId || detectRoomZone(this.localX, this.localZ).id,
           lockedDoors: this.getLockedDoorsMap(state),
@@ -5103,6 +6178,10 @@ class SofraGameApp {
     this.localX = resolved.x;
     this.localZ = resolved.z;
     this.localRotY = Math.atan2(vx, vz);
+
+    if (!me?.ghost) {
+      sfx.playFootstep(speed > SOFRA_CONFIG.WALK_SPEED);
+    }
 
     this.netSyncAccum += dt;
     if (this.netSyncAccum >= 0.05) {
@@ -5141,11 +6220,26 @@ class SofraGameApp {
     const state: any = this.room?.state;
     if (state && this.room) {
       this.scene.setActivePhase(state.phase);
+      if (state.round !== this.lastRoundNumber) {
+        this.lastRoundNumber = state.round || 1;
+        this.usedStationIdsThisRound.clear();
+      }
+
+      const me = state.players?.get(this.room.sessionId);
+
       if (state.phase !== this.lastPhase) {
+        const prevPhase = this.lastPhase;
         this.readyStatusText = "";
+        this.isLocalReadyForPhase = false;
+        this.lastCountdownSec = -1;
         this.announcementChangedAt = now;
+        this.closeCharacterContextMenu();
+        document.body.classList.toggle("in-fire-mode", state.phase === "FIRE");
+
         if (state.phase === "DAY") {
           this.dayPhaseEnteredAt = now;
+          this.tieCandidateIds = null;
+          sfx.playMorningHorn();
           document.getElementById("pc-mouse-hint")?.classList.remove("hint-faded");
         }
         const readyBtn = document.getElementById("btn-ready-phase");
@@ -5155,11 +6249,10 @@ class SofraGameApp {
         document.getElementById("puzzle-modal")?.classList.add("hidden");
         document.getElementById("dm-picker-modal")?.classList.add("hidden");
 
-        // ÇOK ÖNEMLİ: Evre her değiştiğinde açık kalan 360° İncele kartını kapat ki Oylama / Gece İnfazı seçim ekranı ASLA gizli kalmasın!
+        // Evre her değiştiğinde açık kalan 360° İncele kartını kapat ki Oylama / Gece İnfazı seçim ekranı ASLA gizli kalmasın!
         if (this.scene.inspectTargetId) {
-          this.scene.inspectTargetId = null;
-          this.syncCameraZoomUI();
-          document.getElementById("inspect-overlay")?.classList.add("hidden");
+          this.inspectedFromHandbook = false;
+          this.closeInspectOverlay();
         }
 
         // Oylama, Gece İnfazı ve Final seçim ekranlarına girerken soldaki PM pencerelerini küçült ki seçim ekranı tam odakta açılsın!
@@ -5175,16 +6268,22 @@ class SofraGameApp {
         }
 
         if (state.phase === "TRIAL") {
-          sfx.playSealBreak();
+          sfx.playRuneChime();
           this.room.send("request_my_state");
         } else if (state.phase === "TABLE") {
           sfx.playCastleBell();
           this.selectedVoteTargetId = "";
           this.lastVoteReveal = [];
+          this.tieCandidateIds = null;
         } else if (state.phase === "VOTE") {
           this.selectedVoteTargetId = "";
+          if (prevPhase !== "VOTE") {
+            this.tieCandidateIds = null;
+          }
           sfx.playCastleBell();
+          sfx.playTensionDrum();
         } else if (state.phase === "FIRE") {
+          this.tieCandidateIds = null;
           const burnedP = state.lastBurnedId ? state.players?.get(state.lastBurnedId) : null;
           if (state.lastBurnedFlame === "RED") {
             this.scene.triggerFireplaceFlame("red");
@@ -5227,22 +6326,42 @@ class SofraGameApp {
             });
           }
         } else if (state.phase === "NIGHT") {
+          this.isNightSealed = false;
           this.selectedNightTargetId = "";
-          if (this.myRole?.role === "HAIN" && this.preTargetSeat > 0) {
+          this.traitorNightPicks.clear();
+          this.nightConclaveLogs = [];
+          this.nightWatchNote = "";
+          if (this.myRole?.role === "HAIN" && me?.alive && !me?.ghost && this.preTargetSeat > 0) {
             const mateIds = new Set((this.myRole?.traitorMates || []).map((m) => m.id));
             mateIds.add(this.room.sessionId);
             state.players?.forEach((cand: any, cid: string) => {
               if (cand.seat === this.preTargetSeat && cand.alive && !mateIds.has(cid)) {
                 this.selectedNightTargetId = cid;
+                this.room?.send("night_pick", { targetId: cid });
               }
             });
           }
+          this.room.send("request_my_state");
+          sfx.playNightWind();
+          sfx.playHeartbeat();
+        } else if (state.phase === "FINAL") {
+          this.selectedFinalChoice = null;
+          sfx.playTensionDrum();
+        } else if (state.phase === "LOBBY") {
+          this.myRole = null;
+          document.getElementById("my-role-pill")?.classList.add("hidden");
+          this.selectedVoteTargetId = "";
+          this.selectedNightTargetId = "";
+          this.selectedFinalChoice = null;
+          this.tieCandidateIds = null;
+          this.isNightSealed = false;
+          this.activeTrial = null;
+          this.myQuests = [];
+          this.lastVoteReveal = [];
           this.traitorNightPicks.clear();
           this.nightConclaveLogs = [];
           this.nightWatchNote = "";
-          this.room.send("request_my_state");
-          sfx.playHeartbeat();
-        } else if (state.phase === "LOBBY") {
+          this.usedStationIdsThisRound.clear();
           this.gameOverSummary = null;
           this.resetHandbookForNewMatch();
         }
@@ -5250,7 +6369,12 @@ class SofraGameApp {
         this.lastCenterRenderHash = "";
       }
 
-      if (state.councilBoardNote && state.councilBoardNote !== this.lastRecordedBoardNote) {
+      if (
+        state.councilBoardNote &&
+        state.councilBoardNote !== this.lastRecordedBoardNote &&
+        state.phase !== "LOBBY" &&
+        !String(state.councilBoardNote).startsWith("Henüz Konsey")
+      ) {
         this.lastRecordedBoardNote = state.councilBoardNote;
         this.addClueEntry({
           category: "clue",
@@ -5269,8 +6393,27 @@ class SofraGameApp {
       }
 
       const canEarlyReady =
-        state.phase === "DAY" || state.phase === "TRIAL" || state.phase === "TABLE";
-      document.getElementById("btn-ready-phase")?.classList.toggle("hidden", !canEarlyReady);
+        state.phase === "ARRIVAL" ||
+        ((state.phase === "DAY" || state.phase === "TRIAL" || state.phase === "TABLE") &&
+          Boolean(me && me.alive && !me.ghost));
+      const readyBtnEl = document.getElementById("btn-ready-phase");
+      if (readyBtnEl) {
+        readyBtnEl.classList.toggle("hidden", !canEarlyReady);
+        if (canEarlyReady) {
+          const compactReady = window.innerWidth <= 880;
+          const baseLbl = this.isLocalReadyForPhase
+            ? compactReady
+              ? "✅ Hazır"
+              : "✅ Hazırım"
+            : compactReady
+            ? "⏩ Hazır"
+            : "⏩ Hazırım";
+          const nextReadyTxt = this.readyStatusText ? `${baseLbl} ${this.readyStatusText}` : baseLbl;
+          if (readyBtnEl.textContent !== nextReadyTxt) {
+            readyBtnEl.textContent = nextReadyTxt;
+          }
+        }
+      }
 
       const titleEl = document.getElementById("room-title-label");
       if (titleEl) titleEl.textContent = state.roomTitle || "SOFRA";
@@ -5280,32 +6423,146 @@ class SofraGameApp {
         codeEl.textContent = `Kod: ${state.code || "---"} · ${pBadge}`;
       }
 
+      const aliveCount = Array.from(state.players?.values() || []).filter((p: any) => p.alive).length;
+      const isTieVote = state.phase === "VOTE" && this.getActiveTieCandidateIds(state).length > 0;
+      const isCompactHud = window.innerWidth <= 940;
+
       const phaseTitleEl = document.getElementById("phase-title");
       if (phaseTitleEl) {
-        const phaseMap: Record<string, string> = {
-          LOBBY: "LOBİ — KARAKTER & SÜRE",
-          ARRIVAL: "GİRİŞ — GİZLİ ZARFLAR",
-          DAY: `GÜN ${state.round} — ŞATO KEŞFİ`,
-          TRIAL: `GÜN ${state.round} — BULMACA SINAVI`,
-          TABLE: `GÜN ${state.round} — SOFRA TARTIŞMASI`,
-          VOTE: `GÜN ${state.round} — ŞÖMİNE OYLAMASI`,
-          FIRE: `GÜN ${state.round} — ŞÖMİNE ALEVİ`,
-          NIGHT: `GECE ${state.round} — HAİNLER TOPLANTISI`,
-          MORNING: `SABAH ${state.round + 1} — İNFAZ HÜKMÜ`,
-          FINAL: "SON 4 KİŞİ — FİNAL KARARI",
-          RESULT: "OYUN SONUCU"
-        };
-        phaseTitleEl.textContent = phaseMap[state.phase] || state.phase;
+        const phaseMap: Record<string, string> = isCompactHud
+          ? {
+              LOBBY: "LOBİ",
+              ARRIVAL: "GİZLİ ZARF",
+              DAY: `GÜN ${state.round} · KEŞİF`,
+              TRIAL: `GÜN ${state.round} · SINAV`,
+              TABLE: `GÜN ${state.round} · SOFRA`,
+              VOTE: isTieVote ? `GÜN ${state.round} · EŞİTLİK` : `GÜN ${state.round} · SOFRA & OY`,
+              FIRE: `GÜN ${state.round} · ŞÖMİNE`,
+              NIGHT: `GECE ${state.round} · KONSEY`,
+              MORNING: `SABAH ${state.round + 1}`,
+              FINAL: `SON ${aliveCount || 4} · FİNAL`,
+              RESULT: "OYUN SONUCU"
+            }
+          : {
+              LOBBY: "LOBİ — KARAKTER & SÜRE",
+              ARRIVAL: "GİRİŞ — GİZLİ ZARFLAR",
+              DAY: `GÜN ${state.round} — ŞATO KEŞFİ`,
+              TRIAL: `GÜN ${state.round} — BULMACA SINAVI`,
+              TABLE: `GÜN ${state.round} — SOFRA TARTIŞMASI`,
+              VOTE: isTieVote
+                ? `GÜN ${state.round} — ⚖️ EŞİTLİK OYLAMASI`
+                : `GÜN ${state.round} — SOFRA & ŞÖMİNE OYLAMASI`,
+              FIRE: `GÜN ${state.round} — ŞÖMİNE ALEVİ`,
+              NIGHT: `GECE ${state.round} — HAİNLER TOPLANTISI`,
+              MORNING: `SABAH ${state.round + 1} — İNFAZ HÜKMÜ`,
+              FINAL: `SON ${aliveCount || 4} KİŞİ — GÜVEN KARARI`,
+              RESULT: "OYUN SONUCU"
+            };
+        const targetPhaseTitle = phaseMap[state.phase] || state.phase;
+        if (phaseTitleEl.textContent !== targetPhaseTitle) {
+          phaseTitleEl.textContent = targetPhaseTitle;
+        }
+      }
+
+      const compassEl = document.getElementById("phase-guide-compass");
+      if (compassEl) {
+        const isHain = this.myRole?.role === "HAIN";
+        let compassText = "";
+        switch (state.phase) {
+          case "LOBBY":
+            compassText = "🧭 Koltuğunu ve zırhını seç; kurucu başlattığında şato kapıları açılır.";
+            break;
+          case "ARRIVAL":
+            compassText = "🧭 Gizli rol zarfını incele ve şato keşfine başlamak için Hazırım'a bas.";
+            break;
+          case "DAY":
+            compassText =
+              "🧭 Odaları gez, 🔮 Rün Kürsüsünden 📿 Altın Kolye & ipucu kazan; karaktere tıklayıp incele!";
+            break;
+          case "VOTE":
+            compassText = isTieVote
+              ? "🧭 Oylar eşit çıktı! Eşit kalan adaylardan birine ikinci tur oyunu mühürle."
+              : "🧭 Yuvarlak Sofrada kanıtları tartış, 👉 Suçla ve gizli zarf oyunu mühürle!";
+            break;
+          case "FIRE":
+            compassText = "🧭 Şömine alevini izle: 🔥 Kırmızı Alev = Hain, ❄️ Beyaz Alev = Masum!";
+            break;
+          case "NIGHT":
+            compassText =
+              isHain && me?.alive && !me?.ghost
+                ? "🧭 Suç ortaklarınla infaz edilecek kurbanı seç ve mührünü bas!"
+                : me?.alive && !me?.ghost
+                ? "🧭 Kapı deliğinden koridoru dinleyerek ipucu yakala ve sabahı bekle."
+                : "🧭 Hayalet olarak gece konseyini izle veya mumları titret.";
+            break;
+          case "MORNING":
+            compassText = "🧭 Gece infazının sonucunu oku; birazdan yeni gün başlayacak.";
+            break;
+          case "FINAL":
+            compassText =
+              "🧭 Oybirliğiyle güvenip bitirecek misiniz, yoksa son oylamaya mı gideceksiniz?";
+            break;
+          case "RESULT":
+            compassText = "🧭 Tüm maskeler düştü! Vakayinameyi oku veya yeni oyuna geç.";
+            break;
+          default:
+            compassText = "🧭 İpuçlarını 📖 Kitapçıkta takip et ve şüphelileri damgala.";
+        }
+        if (compassEl.textContent !== compassText) {
+          compassEl.textContent = compassText;
+        }
+      }
+
+      const chatInput = document.getElementById("chat-input") as HTMLInputElement | null;
+      if (chatInput) {
+        const isGhost = Boolean(me && (!me.alive || me.ghost));
+        const isHainAlive = this.myRole?.role === "HAIN" && !isGhost;
+        if (state.phase === "NIGHT" && !isHainAlive && !isGhost) {
+          chatInput.disabled = true;
+          chatInput.placeholder = "🕯️ Gece sessizliği — sabah çanını bekle...";
+        } else {
+          chatInput.disabled = false;
+          if (isGhost) {
+            chatInput.placeholder = "👻 Ruhlar kanalına yaz (Enter)...";
+          } else if (state.phase === "NIGHT" && isHainAlive) {
+            chatInput.placeholder = "🗡️ Gizli Hain ortaklarına yaz (Enter)...";
+          } else if (state.phase === "DAY") {
+            chatInput.placeholder = "💬 Yakındakilere konuş (Enter)...";
+          } else if (state.phase === "VOTE" || state.phase === "TABLE" || state.phase === "FINAL") {
+            chatInput.placeholder = "🗣️ Yuvarlak Sofraya konuş (Enter)...";
+          } else {
+            chatInput.placeholder = "Mesaj yaz (Enter)...";
+          }
+        }
+      }
+
+      const remSec = Math.max(0, Math.ceil(((state.phaseEndsAt || 0) - Date.now()) / 1000));
+      const timedCountdownPhase =
+        state.phase === "DAY" ||
+        state.phase === "TRIAL" ||
+        state.phase === "TABLE" ||
+        state.phase === "VOTE" ||
+        state.phase === "NIGHT" ||
+        state.phase === "FINAL";
+      if (timedCountdownPhase && remSec !== this.lastCountdownSec) {
+        this.lastCountdownSec = remSec;
+        if (remSec >= 1 && remSec <= 10) {
+          sfx.playCountdownTick(remSec);
+        } else if (state.phase === "DAY" && remSec === 15) {
+          sfx.playEveningWarningBell();
+        }
       }
 
       const timerEl = document.getElementById("phase-timer");
       if (timerEl) {
-        const remSec = Math.max(0, Math.ceil(((state.phaseEndsAt || 0) - Date.now()) / 1000));
         const tText =
           state.phase === "LOBBY" && (!state.autoStart || remSec <= 0)
             ? "Hazır"
             : `⏳ ${remSec} sn`;
         timerEl.textContent = tText;
+        const isUrgent = timedCountdownPhase && remSec >= 1 && remSec <= 10;
+        timerEl.style.color = isUrgent ? (remSec <= 3 ? "#ff4d5e" : "#ffd166") : "";
+        timerEl.style.transform = isUrgent && remSec % 2 === 1 ? "scale(1.08)" : "";
         if (this.handbookOpen) {
           const hbTimer = document.getElementById("handbook-live-timer");
           if (hbTimer) hbTimer.textContent = tText;
@@ -5331,7 +6588,6 @@ class SofraGameApp {
 
       this.updateLocalDayMovement(dt, state);
 
-      const me = state.players?.get(this.room.sessionId);
       const zone = detectRoomZone(this.localX, this.localZ);
       const zoneEl = document.getElementById("zone-label");
       if (zoneEl) {
@@ -5404,7 +6660,7 @@ class SofraGameApp {
       this.renderCenterPanel(state);
     } else {
       this.scene.setActivePhase("LOBBY");
-      // Kayıt / Ana Menüde "🔍 Karakterimi 360° İncele" açıkken önizleme karakterini çiz!
+      // Kayıt / Ana Menüde "🔍 Karakterimi 360° İncele" açıkken önizleme karakterini Antre halısında çiz!
       if (this.previewSelfOnMenu) {
         const charDef = CHARACTERS.find((c) => c.seat === this.vault.selectedSeat) ?? CHARACTERS[0];
         this.scene.syncCharacters(
@@ -5415,7 +6671,7 @@ class SofraGameApp {
               seat: charDef.seat,
               x: 0,
               y: 0,
-              z: 6.2,
+              z: 15.2,
               rotY: 0,
               alive: true,
               isGhost: false,
@@ -5429,7 +6685,7 @@ class SofraGameApp {
           ],
           dt
         );
-        this.scene.updateCamera(0, 6.2, dt);
+        this.scene.updateCamera(0, 15.2, dt);
       } else {
         this.menuOrbitAngle += dt * 0.18;
         this.scene.cameraYaw = this.menuOrbitAngle;

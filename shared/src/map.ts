@@ -466,7 +466,7 @@ export function resolveCastleCollision(
 ): { x: number; z: number; hit: boolean } {
   let x = Math.max(-25.2, Math.min(25.2, nextX));
   let z = Math.max(-31.0, Math.min(33.0, nextZ));
-  let hit = false;
+  let hit = x !== nextX || z !== nextZ;
 
   // 1. Yuvarlak masa çarpışması (merkez 0,0)
   const distSq = x * x + z * z;
@@ -519,13 +519,65 @@ export function resolveCastleCollision(
         z += (dz / d) * overlap;
       } else {
         const leftPen = Math.abs(x - b.minX);
-        const rightPen = Math.abs(b.maxX - x);
-        x = leftPen < rightPen ? b.minX - playerRadius : b.maxX + playerRadius;
+        const rightPen = Math.abs(x - b.maxX);
+        const topPen = Math.abs(z - b.minZ);
+        const bottomPen = Math.abs(z - b.maxZ);
+        const minPen = Math.min(leftPen, rightPen, topPen, bottomPen);
+        if (minPen === leftPen) {
+          x = b.minX - playerRadius;
+        } else if (minPen === rightPen) {
+          x = b.maxX + playerRadius;
+        } else if (minPen === topPen) {
+          z = b.minZ - playerRadius;
+        } else {
+          z = b.maxZ + playerRadius;
+        }
       }
     }
   }
 
   return { x, z, hit };
+}
+
+/**
+ * Hızlı/koşu adımlarında ince kapı veya duvarlardan tünellemeyi (tunneling) önlemek için
+ * hareket vektörünü <= 0.18m alt adımlara (sub-step) bölerek çarpışmayı çözer.
+ */
+export function resolveCastleStep(
+  fromX: number,
+  fromZ: number,
+  toX: number,
+  toZ: number,
+  openDoors: Record<string, boolean>,
+  playerRadius = 0.42,
+  actor?: CollisionActorContext
+): { x: number; z: number; hit: boolean } {
+  const totalDist = Math.hypot(toX - fromX, toZ - fromZ);
+  const steps = Math.min(64, Math.max(1, Math.ceil(totalDist / 0.18)));
+  let curX = fromX;
+  let curZ = fromZ;
+  let anyHit = false;
+  let curRoomId = actor?.currentRoomId ?? detectRoomZone(fromX, fromZ).id;
+
+  const stepDX = (toX - fromX) / steps;
+  const stepDZ = (toZ - fromZ) / steps;
+
+  for (let i = 1; i <= steps; i++) {
+    const stepTargetX = curX + stepDX;
+    const stepTargetZ = curZ + stepDZ;
+    const res = resolveCastleCollision(stepTargetX, stepTargetZ, openDoors, playerRadius, {
+      ...actor,
+      currentRoomId: curRoomId
+    });
+    curX = res.x;
+    curZ = res.z;
+    if (res.hit) {
+      anyHit = true;
+    }
+    curRoomId = detectRoomZone(curX, curZ).id;
+  }
+
+  return { x: curX, z: curZ, hit: anyHit };
 }
 
 export const BOT_WAYPOINTS: Array<{ x: number; z: number; room: string }> = [

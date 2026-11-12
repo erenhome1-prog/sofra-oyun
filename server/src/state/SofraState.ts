@@ -51,7 +51,8 @@ export class SofraState extends Schema {
   @type("string") paceMode: string = "20m";
   @type("string") atmosphereTheme: string = "torch";
   @type("string") announcement: string = "Şato lobisinde davetliler bekleniyor... Hazır olduğunda '🔥 SOFRAYI BAŞLAT'a bas!";
-  @type("string") councilBoardNote: string = "Henüz Konsey Tahtasına şüpheli yazılmadı.";
+  @type("string") councilBoardNote: string = "";
+  @type("string") tieCandidateCsv: string = "";
   @type({ map: Player }) players = new MapSchema<Player>();
   @type({ map: DoorState }) doors = new MapSchema<DoorState>();
   @type("number") pot: number = 0;

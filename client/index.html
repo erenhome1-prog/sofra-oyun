@@ -131,13 +131,17 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        padding: max(10px, env(safe-area-inset-top)) 12px max(10px, env(safe-area-inset-bottom)) 12px;
+        padding: max(10px, env(safe-area-inset-top))
+          max(12px, env(safe-area-inset-right))
+          max(10px, env(safe-area-inset-bottom))
+          max(12px, env(safe-area-inset-left));
       }
 
       .menu-shell {
         width: min(920px, 100%);
         max-height: 94vh;
         max-height: 94dvh;
+        overflow-x: hidden;
         overflow-y: auto;
         -webkit-overflow-scrolling: touch;
         touch-action: pan-y;
@@ -165,12 +169,14 @@
         display: flex;
         align-items: center;
         gap: 12px;
+        min-width: 0;
       }
 
       .menu-brand-left img {
         width: 48px;
         height: 48px;
         object-fit: contain;
+        flex-shrink: 0;
         filter: drop-shadow(0 4px 10px rgba(200, 30, 45, 0.6));
       }
 
@@ -188,17 +194,18 @@
 
       .menu-columns {
         display: grid;
-        grid-template-columns: 1fr 1.35fr;
+        grid-template-columns: minmax(0, 1fr) minmax(0, 1.32fr);
         gap: 14px;
       }
 
-      @media (max-width: 780px) {
+      @media (max-width: 850px) {
         .menu-columns {
-          grid-template-columns: 1fr;
+          grid-template-columns: minmax(0, 1fr);
         }
       }
 
       .menu-card {
+        min-width: 0;
         background: rgba(24, 18, 36, 0.9);
         border: 1px solid var(--gold-soft);
         border-radius: 14px;
@@ -216,11 +223,13 @@
 
       .auth-tabs {
         display: flex;
+        flex-wrap: wrap;
         gap: 6px;
       }
 
       .auth-tabs button {
-        flex: 1;
+        flex: 1 1 auto;
+        min-width: 0;
       }
 
       .room-list-box {
@@ -257,7 +266,10 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        padding: max(12px, env(safe-area-inset-top)) 14px max(12px, env(safe-area-inset-bottom)) 14px;
+        padding: max(12px, env(safe-area-inset-top))
+          max(14px, env(safe-area-inset-right))
+          max(12px, env(safe-area-inset-bottom))
+          max(14px, env(safe-area-inset-left));
       }
 
       .cinematic-envelope-stage {
@@ -419,7 +431,7 @@
         display: flex;
         flex-direction: column;
         gap: 6px;
-        padding: max(8px, env(safe-area-inset-top))
+        padding: max(6px, env(safe-area-inset-top))
           max(10px, env(safe-area-inset-right))
           max(8px, env(safe-area-inset-bottom))
           max(10px, env(safe-area-inset-left));
@@ -430,8 +442,11 @@
         display: flex;
         justify-content: space-between;
         align-items: center;
-        gap: 5px;
-        flex-wrap: wrap;
+        gap: 6px;
+        flex-wrap: nowrap;
+        position: relative;
+        z-index: 55;
+        min-height: 36px;
       }
 
       .top-bar .btn {
@@ -444,47 +459,176 @@
         display: flex;
         align-items: center;
         gap: 6px;
-        background: rgba(16, 12, 24, 0.84);
+        min-width: 0;
+        flex: 0 0 auto;
+        overflow: hidden;
+        background: rgba(16, 12, 24, 0.86);
         border: 1px solid var(--gold-soft);
         border-radius: 9px;
-        padding: 3px 9px;
+        padding: 3px 8px;
       }
 
       .brand-pill img {
         width: 21px;
         height: 21px;
         object-fit: contain;
+        flex-shrink: 0;
+      }
+
+      #room-title-label {
+        max-width: 155px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      @media (max-width: 960px) {
+        #room-title-label {
+          max-width: 78px;
+          font-size: 0.73rem !important;
+        }
+        #room-code-label {
+          display: none;
+        }
+      }
+
+      @media (max-width: 740px) {
+        .brand-pill {
+          gap: 4px;
+          padding: 2px 5px;
+        }
+        .brand-pill img {
+          display: none;
+        }
+        #room-title-label {
+          max-width: 52px;
+          font-size: 0.68rem !important;
+        }
       }
 
       .phase-banner {
-        background: linear-gradient(180deg, rgba(26, 18, 34, 0.88), rgba(12, 9, 18, 0.88));
+        flex: 1 1 0;
+        min-width: 0;
+        overflow: hidden;
+        background: linear-gradient(180deg, rgba(26, 18, 34, 0.9), rgba(12, 9, 18, 0.9));
         border: 1px solid var(--gold);
         border-radius: 9px;
-        padding: 3px 11px;
+        padding: 3px 10px;
         text-align: center;
         display: flex;
+        flex-direction: column;
         align-items: center;
-        gap: 8px;
+        justify-content: center;
+        gap: 1px;
+      }
+
+      .phase-banner-main {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        width: 100%;
+        min-width: 0;
+        overflow: hidden;
       }
 
       .phase-name {
-        font-size: 0.78rem;
+        flex: 0 1 auto;
+        min-width: 68px;
+        font-size: 0.77rem;
         font-weight: bold;
         color: var(--gold);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .phase-banner-right {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 5px;
+        flex: 0 1 auto;
+        min-width: 0;
+        overflow: hidden;
+      }
+
+      #btn-ready-phase {
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 126px;
+        flex: 0 1 auto;
       }
 
       .phase-timer {
         font-size: 0.72rem;
+        flex-shrink: 0;
+        font-variant-numeric: tabular-nums;
+      }
+
+      .phase-guide-compass {
+        font-size: 0.67rem;
+        color: #ffe8a3;
+        opacity: 0.94;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 100%;
+        line-height: 1.2;
       }
 
       .vault-pill {
+        position: relative;
+        flex: 0 0 auto;
         display: flex;
         align-items: center;
         gap: 4px;
-        background: rgba(16, 12, 24, 0.84);
+        background: rgba(16, 12, 24, 0.86);
         border: 1px solid var(--gold-soft);
         border-radius: 9px;
-        padding: 3px 7px;
+        padding: 3px 6px;
+      }
+
+      .hud-gear-dropdown {
+        position: absolute;
+        top: calc(100% + 7px);
+        right: 0;
+        z-index: 120;
+        min-width: 234px;
+        max-width: min(290px, 90vw);
+        background: linear-gradient(180deg, rgba(24, 17, 35, 0.98), rgba(12, 9, 20, 0.99));
+        border: 1.5px solid var(--gold);
+        border-radius: 12px;
+        padding: 9px;
+        box-shadow: 0 18px 46px rgba(0, 0, 0, 0.94);
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        pointer-events: auto;
+      }
+
+      .hud-gear-wallet-row {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 8px;
+        border-radius: 8px;
+        background: rgba(226, 189, 83, 0.11);
+        border: 1px solid rgba(226, 189, 83, 0.34);
+      }
+
+      .hud-gear-dropdown .btn {
+        width: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: flex-start;
+        gap: 7px;
+        padding: 7px 10px;
+        font-size: 0.77rem;
+        min-height: 34px;
+        text-align: left;
       }
 
       .hud-zoom-group {
@@ -502,11 +646,11 @@
         color: var(--gold);
         border: 1px solid rgba(226, 189, 83, 0.55);
         border-radius: 6px;
-        width: 24px;
-        height: 24px;
+        width: 26px;
+        height: 26px;
         padding: 0;
         font-family: inherit;
-        font-size: 0.88rem;
+        font-size: 0.9rem;
         font-weight: bold;
         line-height: 1;
         display: inline-flex;
@@ -522,7 +666,7 @@
       }
 
       .hud-zoom-slider {
-        width: 62px;
+        width: 58px;
         height: 5px;
         padding: 0;
         border: none;
@@ -553,16 +697,53 @@
         cursor: pointer;
       }
 
-      @media (max-width: 900px) {
+      @media (max-width: 1160px) {
         .hud-zoom-slider {
           display: none;
+        }
+      }
+
+      @media (max-width: 920px) {
+        .hud-zoom-step {
+          display: none;
+        }
+        .hb-btn-label {
+          display: none;
+        }
+      }
+
+      @media (max-width: 740px) {
+        .top-bar .btn {
+          padding: 3px 5px;
+          font-size: 0.67rem;
+          min-height: 26px;
+        }
+        #btn-hud-zoom {
+          padding: 2px 5px !important;
+          font-size: 0.66rem !important;
+        }
+        .phase-name {
+          font-size: 0.71rem;
+          min-width: 62px;
+        }
+        .phase-timer {
+          font-size: 0.67rem;
+        }
+        #btn-ready-phase {
+          padding: 2px 5px !important;
+          font-size: 0.65rem !important;
+          max-width: 98px;
+        }
+        .role-badge {
+          padding: 2px 5px;
+          font-size: 0.64rem;
         }
       }
 
       .gold-badge {
         color: #ffd700;
         font-weight: bold;
-        font-size: 0.76rem;
+        font-size: 0.78rem;
       }
 
       .role-badge {
@@ -570,6 +751,7 @@
         border-radius: 6px;
         font-weight: bold;
         font-size: 0.69rem;
+        flex-shrink: 0;
       }
 
       .role-hain {
@@ -597,18 +779,32 @@
         font-style: italic;
         font-size: 0.75rem;
         color: var(--parchment);
-        transition: opacity 0.35s ease, transform 0.35s ease;
+        transition: opacity 0.35s ease;
       }
 
       #announcement-box.ann-auto-hidden {
+        display: none !important;
         opacity: 0;
         pointer-events: none;
-        transform: translateY(-6px);
+      }
+
+      @media (max-width: 1024px) {
+        body.in-day-mode #announcement-box {
+          align-self: flex-start;
+          width: auto;
+          max-width: calc(100% - 214px);
+          margin-right: 214px;
+          text-align: left;
+          white-space: nowrap;
+          overflow: hidden;
+          text-overflow: ellipsis;
+        }
       }
 
       .middle-slot {
-        flex: 1 1 auto;
+        flex: 1 1 0;
         min-height: 0;
+        overflow: hidden;
         display: flex;
         align-items: center;
         justify-content: center;
@@ -616,9 +812,11 @@
       }
 
       .center-panel {
-        width: min(920px, 100%);
+        width: min(920px, 96vw);
         max-height: 100%;
+        min-height: 0;
         overflow-y: auto;
+        overflow-x: hidden;
         -webkit-overflow-scrolling: touch;
         touch-action: pan-y;
         overscroll-behavior: contain;
@@ -627,6 +825,20 @@
         border-radius: 14px;
         padding: 12px 15px;
         box-shadow: 0 18px 50px rgba(0, 0, 0, 0.88);
+      }
+
+      /* FIRE evresinde şömine alevi %58 üst ekranda tamamen açık ve sinematik görünsün */
+      body.in-fire-mode .middle-slot {
+        align-items: flex-end;
+        padding-bottom: 2px;
+      }
+
+      body.in-fire-mode .center-panel {
+        width: min(620px, 92vw);
+        max-height: min(44%, 205px);
+        background: rgba(16, 11, 22, 0.8);
+        backdrop-filter: blur(4px);
+        padding: 8px 12px;
       }
 
       .panel-header {
@@ -657,23 +869,35 @@
 
       .studio-grid {
         display: grid;
-        grid-template-columns: 1.35fr 1fr;
+        grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
         gap: 14px;
       }
 
       .seat-grid {
         display: grid;
-        grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+        grid-template-columns: repeat(auto-fill, minmax(154px, 1fr));
         gap: 7px;
       }
 
       .seat-card {
+        min-width: 0;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
         background: rgba(28, 22, 40, 0.92);
         border: 1px solid rgba(226, 189, 83, 0.28);
         border-radius: 10px;
         padding: 8px 10px;
         cursor: pointer;
         touch-action: manipulation;
+      }
+
+      .seat-card .btn {
+        max-width: 100%;
+        white-space: normal;
+        line-height: 1.2;
+        text-align: center;
+        min-height: 31px;
       }
 
       .seat-card.active {
@@ -690,6 +914,8 @@
         font-weight: bold;
         font-size: 0.88rem;
         margin: 2px 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
       }
 
       .seat-card .seat-title {
@@ -698,6 +924,7 @@
       }
 
       .customizer-box {
+        min-width: 0;
         background: rgba(22, 16, 32, 0.92);
         border: 1px solid var(--gold-soft);
         border-radius: 12px;
@@ -749,12 +976,20 @@
         flex-direction: column;
         gap: 4px;
         width: min(224px, 74vw);
+        max-height: calc(100vh - 64px);
+        overflow-y: auto;
         pointer-events: none;
+      }
+
+      @media (max-width: 1024px) {
+        body:not(.in-day-mode) #ko-pm-container {
+          width: min(198px, 44vw);
+        }
       }
 
       .ko-pm-window {
         pointer-events: auto;
-        background: rgba(14, 9, 24, 0.86);
+        background: rgba(14, 9, 24, 0.88);
         border: 1px solid rgba(201, 139, 255, 0.75);
         border-radius: 8px;
         box-shadow: 0 8px 22px rgba(0, 0, 0, 0.75);
@@ -763,13 +998,29 @@
 
       .ko-pm-header {
         background: linear-gradient(90deg, #3a1954, #200e30);
-        padding: 4px 8px;
+        padding: 5px 8px;
         display: flex;
         justify-content: space-between;
         align-items: center;
+        gap: 6px;
         font-size: 0.72rem;
         font-weight: bold;
         color: #efd4ff;
+        cursor: pointer;
+      }
+
+      .ko-pm-act-btn {
+        background: rgba(255, 255, 255, 0.08);
+        border: 1px solid rgba(255, 255, 255, 0.22);
+        border-radius: 6px;
+        min-width: 26px;
+        min-height: 24px;
+        padding: 1px 5px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        color: #efd4ff;
+        font-size: 0.74rem;
         cursor: pointer;
       }
 
@@ -849,7 +1100,8 @@
         color: var(--text-muted);
         border: 1px solid transparent;
         border-radius: 5px;
-        padding: 2px 7px;
+        padding: 3px 8px;
+        min-height: 24px;
         font-size: 0.69rem;
         cursor: pointer;
       }
@@ -891,12 +1143,15 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        padding: 16px;
+        padding: max(14px, env(safe-area-inset-top))
+          max(16px, env(safe-area-inset-right))
+          max(14px, env(safe-area-inset-bottom))
+          max(16px, env(safe-area-inset-left));
       }
 
       .dm-picker-card {
         width: min(360px, 94vw);
-        max-height: 75dvh;
+        max-height: 82dvh;
         overflow-y: auto;
         background: var(--bg-panel);
         border: 1px solid #c98bff;
@@ -931,8 +1186,8 @@
         flex-direction: column;
         align-items: center;
         gap: 5px;
-        pointer-events: auto;
-        opacity: 0.76;
+        pointer-events: none;
+        opacity: 0.8;
         transition: opacity 0.18s ease;
       }
 
@@ -942,18 +1197,21 @@
 
       .cam-turn-row {
         display: flex;
-        gap: 5px;
+        gap: 4px;
+        pointer-events: auto;
       }
 
       .cam-turn-btn {
-        background: rgba(20, 15, 32, 0.82);
+        background: rgba(20, 15, 32, 0.86);
         border: 1px solid var(--gold-soft);
         color: var(--gold);
         border-radius: 7px;
-        padding: 4px 8px;
-        font-size: 0.7rem;
+        padding: 5px 7px;
+        min-height: 30px;
+        font-size: 0.69rem;
         font-weight: bold;
         touch-action: none;
+        pointer-events: auto;
       }
 
       .joystick-zone {
@@ -963,6 +1221,7 @@
         background: radial-gradient(circle, rgba(35, 26, 52, 0.72), rgba(14, 10, 22, 0.82));
         border: 1.5px solid var(--gold-soft);
         position: relative;
+        pointer-events: auto;
         touch-action: none;
         box-shadow: 0 6px 18px rgba(0, 0, 0, 0.55);
       }
@@ -1115,9 +1374,13 @@
       /* Üst Konum Etiketi & Gündüz Kişisel Görev Kartı (Kompakt & Katlanabilir) */
       .day-room-pill {
         position: absolute;
-        top: 50px;
+        top: 52px;
         right: max(10px, env(safe-area-inset-right));
-        background: rgba(16, 12, 26, 0.78);
+        max-width: 204px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        background: rgba(16, 12, 26, 0.8);
         border: 1px solid var(--gold-soft);
         border-radius: 99px;
         padding: 3px 10px;
@@ -1130,7 +1393,11 @@
         top: 78px;
         right: max(10px, env(safe-area-inset-right));
         width: min(214px, 68vw);
-        background: rgba(14, 10, 24, 0.78);
+        max-height: min(200px, calc(100vh - 235px));
+        overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+        touch-action: pan-y;
+        background: rgba(14, 10, 24, 0.82);
         border: 1px solid var(--gold-soft);
         border-radius: 9px;
         padding: 5px 8px;
@@ -1148,24 +1415,79 @@
         display: none !important;
       }
 
+      /* 3B Sahnede Karaktere Tıklayınca Açılan Hızlı Bağlam Menüsü (#char-context-menu) */
+      .char-context-menu {
+        position: fixed;
+        z-index: 94;
+        min-width: 214px;
+        max-width: min(268px, 88vw);
+        background: linear-gradient(175deg, rgba(28, 18, 38, 0.98), rgba(13, 9, 20, 0.99));
+        border: 2px solid var(--gold);
+        border-radius: 13px;
+        padding: 9px 10px;
+        box-shadow: 0 20px 55px rgba(0, 0, 0, 0.94), 0 0 18px rgba(226, 189, 83, 0.22);
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        pointer-events: auto;
+      }
+
+      .char-ctx-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        gap: 6px;
+        border-bottom: 1px solid var(--gold-soft);
+        padding-bottom: 5px;
+      }
+
+      .char-ctx-btn {
+        width: 100%;
+        display: flex;
+        align-items: center;
+        justify-content: flex-start;
+        gap: 7px;
+        padding: 6px 9px;
+        min-height: 32px;
+        font-size: 0.76rem;
+        text-align: left;
+      }
+
+      .char-ctx-stamps {
+        display: flex;
+        gap: 4px;
+        justify-content: space-between;
+      }
+
+      .char-ctx-stamps .stamp-btn {
+        flex: 1;
+        text-align: center;
+        padding: 4px 4px;
+        min-height: 28px;
+      }
+
       /* 360° Karakter İnceleme & Arkadaşlık / Yakınlık Barı Kartı */
       #inspect-overlay {
         position: fixed;
         inset: 0;
-        z-index: 88;
+        z-index: 93;
         pointer-events: none;
         display: flex;
         align-items: flex-end;
-        justify-content: center;
-        padding: 14px;
+        justify-content: flex-end;
+        padding: max(12px, env(safe-area-inset-top))
+          max(14px, env(safe-area-inset-right))
+          max(12px, env(safe-area-inset-bottom))
+          max(14px, env(safe-area-inset-left));
       }
 
       .inspect-card {
         pointer-events: auto;
-        width: min(440px, 95vw);
-        max-height: 62dvh;
+        width: min(390px, 94vw);
+        max-height: min(560px, 78dvh);
         overflow-y: auto;
         -webkit-overflow-scrolling: touch;
+        touch-action: pan-y;
         background: rgba(15, 11, 25, 0.94);
         border: 2px solid var(--gold);
         border-radius: 16px;
@@ -1200,13 +1522,18 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        padding: 14px;
+        padding: max(12px, env(safe-area-inset-top))
+          max(14px, env(safe-area-inset-right))
+          max(12px, env(safe-area-inset-bottom))
+          max(14px, env(safe-area-inset-left));
       }
 
       .puzzle-card {
         width: min(460px, 94vw);
-        max-height: 86dvh;
+        max-height: 88dvh;
         overflow-y: auto;
+        -webkit-overflow-scrolling: touch;
+        touch-action: pan-y;
         background: var(--bg-panel);
         border: 2px solid var(--gold);
         border-radius: 16px;
@@ -1275,12 +1602,15 @@
         display: flex;
         align-items: center;
         justify-content: center;
-        padding: 12px;
+        padding: max(10px, env(safe-area-inset-top))
+          max(12px, env(safe-area-inset-right))
+          max(10px, env(safe-area-inset-bottom))
+          max(12px, env(safe-area-inset-left));
       }
 
       .handbook-shell {
         width: min(980px, 96vw);
-        max-height: min(670px, 91dvh);
+        max-height: min(670px, 92dvh);
         background: linear-gradient(165deg, #281911 0%, #171019 52%, #23150f 100%);
         border: 2px solid var(--gold);
         border-radius: 18px;
@@ -1315,10 +1645,12 @@
         border: 1px solid var(--gold-soft);
         border-radius: 8px;
         padding: 5px 10px;
+        min-height: 30px;
         font-family: inherit;
         font-size: 0.75rem;
         font-weight: bold;
         cursor: pointer;
+        white-space: nowrap;
       }
 
       .handbook-tab-btn.active {
@@ -1342,7 +1674,7 @@
 
       .handbook-open-book {
         display: grid;
-        grid-template-columns: 1.02fr 1.12fr;
+        grid-template-columns: minmax(0, 1.02fr) minmax(0, 1.12fr);
         gap: 10px;
         flex: 1;
         min-height: 0;
@@ -1350,7 +1682,7 @@
       }
 
       .handbook-open-book.single-col {
-        grid-template-columns: 1fr;
+        grid-template-columns: minmax(0, 1fr);
       }
 
       .handbook-page {
@@ -1362,6 +1694,7 @@
         flex-direction: column;
         gap: 8px;
         min-height: 0;
+        min-width: 0;
         overflow-y: auto;
         touch-action: pan-y;
         -webkit-overflow-scrolling: touch;
@@ -1412,7 +1745,8 @@
 
       .stamp-btn {
         border-radius: 999px;
-        padding: 3px 8px;
+        padding: 4px 8px;
+        min-height: 26px;
         font-family: inherit;
         font-size: 0.69rem;
         font-weight: bold;
@@ -1440,12 +1774,16 @@
         color: #ffd6dc;
       }
 
-      @media (max-width: 700px) {
+      @media (max-width: 720px) {
         .handbook-open-book {
-          grid-template-columns: 1fr;
+          display: flex;
+          flex-direction: column;
           overflow-y: auto;
+          -webkit-overflow-scrolling: touch;
+          touch-action: pan-y;
         }
         .handbook-page {
+          flex: 0 0 auto;
           overflow-y: visible;
         }
       }
@@ -1453,33 +1791,25 @@
       /* Veda Mektubu Dramatik Bildirim Bandı */
       #farewell-toast {
         position: fixed;
-        top: 50%;
+        top: 52px;
         left: 50%;
-        transform: translate(-50%, -50%);
+        transform: translateX(-50%);
         z-index: 95;
-        width: min(480px, 92vw);
+        width: min(460px, 92vw);
         background: linear-gradient(165deg, #2a0d16, #130812);
         border: 2px solid #ff4d5e;
-        border-radius: 16px;
-        padding: 18px 20px;
+        border-radius: 14px;
+        padding: 13px 16px;
         text-align: center;
         box-shadow: 0 24px 70px rgba(0, 0, 0, 0.95);
       }
 
       @media (max-width: 860px) {
-        .phase-banner {
-          order: 3;
-          width: 100%;
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          padding: 4px 10px;
-        }
         .mobile-lobby-tabs {
           display: flex;
         }
         .studio-grid {
-          grid-template-columns: 1fr;
+          grid-template-columns: minmax(0, 1fr);
         }
         .studio-grid.mobile-tab-custom .studio-col-seats {
           display: none;
@@ -1488,25 +1818,24 @@
           display: none;
         }
         .seat-grid {
-          grid-template-columns: repeat(2, 1fr);
+          grid-template-columns: repeat(auto-fill, minmax(146px, 1fr));
         }
-        /* Gündüz keşfinde alt sohbet kutusu sol joystick ve sağ çark arasına sığsın veya üste çekilsin */
         body.in-day-mode #ko-bottom-chat {
-          width: min(320px, 56vw);
-          margin-bottom: 4px;
+          width: clamp(190px, calc(100vw - 360px), 340px);
+          margin-bottom: 2px;
         }
       }
 
-      @media (max-width: 540px) {
-        /* Dar dikey telefonlarda Gündüz keşfinde alt sohbet kontrollerin biraz üstünde dursun ki parmaklara hiç değmesin */
+      @media (max-width: 560px) {
         body.in-day-mode #ko-bottom-chat {
           width: 94%;
-          margin-bottom: 168px;
+          margin-bottom: 164px;
         }
       }
 
       /* =========================================================
          MOBİL WEB YATAY (LANDSCAPE) EKRAN ZORUNLULUĞU & OTOMATİK AÇILMA KAPISI
+         (JS updateOrientationGate tek otoritedir: sanal klavye açılınca veya büyük tablette kilitlenmez)
          ========================================================= */
       #portrait-rotate-overlay {
         display: none;
@@ -1517,7 +1846,10 @@
         height: 100dvh;
         z-index: 9999;
         background: radial-gradient(circle at center, rgba(42, 12, 24, 0.98), rgba(7, 5, 13, 0.995));
-        padding: 24px;
+        padding: max(20px, env(safe-area-inset-top))
+          max(22px, env(safe-area-inset-right))
+          max(20px, env(safe-area-inset-bottom))
+          max(22px, env(safe-area-inset-left));
         flex-direction: column;
         align-items: center;
         justify-content: center;
@@ -1541,160 +1873,205 @@
         animation: phoneTiltAnim 1.6s ease-in-out infinite alternate;
       }
 
-      /* Mobil / dokunmatik cihaz dikey (portrait) tutulduğunda ekranı kilitle, yataya çevrilince ANINDA otomatik aç! */
       body.force-rotate-gate #portrait-rotate-overlay {
         display: flex !important;
       }
 
-      body.is-landscape #portrait-rotate-overlay {
+      /* Mobil sanal klavye açıkken (body.keyboard-open) oyun kontrollerini gizle, input'a tam alan ver */
+      body.keyboard-open .left-control-cluster,
+      body.keyboard-open .lol-wheel-cluster,
+      body.keyboard-open .day-quest-box,
+      body.keyboard-open .day-room-pill,
+      body.keyboard-open #announcement-box {
         display: none !important;
       }
 
-      @media (pointer: coarse) and (orientation: portrait) {
-        body:not(.is-landscape) #portrait-rotate-overlay {
-          display: flex;
-        }
-      }
-
-      @media (orientation: landscape) {
-        #portrait-rotate-overlay {
-          display: none !important;
-        }
+      body.keyboard-open #hud {
+        justify-content: space-between;
       }
 
       /* Telefonda YATAY (Landscape) Web Görünümü: Ekran yüksekliği 560px altındayken milimetrik MOBA düzeni */
       @media (max-height: 560px) and (orientation: landscape) {
         .env-3d-box {
-          height: 158px;
+          height: 152px;
           margin-bottom: 8px;
         }
         .env-3d-box.opening .env-rising-letter {
-          transform: translateY(-46px) scale(1.02);
+          transform: translateY(-44px) scale(1.02);
         }
         .seal-button {
-          width: 68px;
-          height: 68px;
+          width: 66px;
+          height: 66px;
         }
         .envelope-card {
           max-height: 94dvh;
           padding: 10px 14px;
         }
+        #inspect-overlay {
+          align-items: center;
+          justify-content: flex-end;
+        }
         .inspect-card {
-          max-height: 82dvh;
-          padding: 8px 12px;
+          width: min(320px, 48vw);
+          max-height: calc(100dvh - 20px);
+          padding: 8px 11px;
+          gap: 6px;
         }
         .puzzle-card {
           max-height: 92dvh;
           padding: 10px 12px;
         }
         .handbook-shell {
-          max-height: 94dvh;
-          padding: 8px 10px;
-          gap: 6px;
+          max-height: 95dvh;
+          padding: 7px 10px;
+          gap: 5px;
+        }
+        .handbook-header {
+          flex-wrap: nowrap;
+          padding-bottom: 5px;
+        }
+        .handbook-tabs {
+          flex-wrap: nowrap;
+          overflow-x: auto;
+          -webkit-overflow-scrolling: touch;
+          max-width: 62vw;
+        }
+        .handbook-tab-btn {
+          padding: 4px 8px;
+          font-size: 0.71rem;
         }
         .handbook-page {
           padding: 7px 9px;
           gap: 6px;
         }
         .handbook-phase-strip {
-          padding: 5px 9px;
-          font-size: 0.73rem;
+          padding: 4px 8px;
+          font-size: 0.71rem;
         }
         #hud {
-          padding: 4px max(8px, env(safe-area-inset-right)) 4px max(8px, env(safe-area-inset-left));
+          padding: max(4px, env(safe-area-inset-top))
+            max(8px, env(safe-area-inset-right))
+            max(6px, env(safe-area-inset-bottom))
+            max(8px, env(safe-area-inset-left));
           gap: 3px;
         }
         .top-bar {
           gap: 4px;
+          min-height: 32px;
         }
         .phase-banner {
-          order: 0;
-          width: auto;
-          padding: 2px 10px;
+          padding: 2px 8px;
+        }
+        .phase-guide-compass {
+          font-size: 0.63rem;
         }
         .brand-pill,
         .vault-pill {
-          padding: 2px 7px;
+          padding: 2px 6px;
         }
         #announcement-box {
-          padding: 2px 10px;
-          font-size: 0.73rem;
+          padding: 2px 9px;
+          font-size: 0.7rem;
           max-width: 72vw;
           white-space: nowrap;
           overflow: hidden;
           text-overflow: ellipsis;
         }
+        body.in-day-mode #announcement-box {
+          align-self: flex-start;
+          width: auto;
+          max-width: calc(100% - 208px);
+          margin-right: 208px;
+          text-align: left;
+        }
         .center-panel {
-          width: min(760px, 72vw);
-          max-height: calc(100dvh - 128px);
+          width: min(860px, 94vw);
+          max-height: 100%;
           padding: 8px 11px;
         }
+        body.in-fire-mode .center-panel {
+          width: min(560px, 90vw);
+          max-height: min(46%, 168px);
+          padding: 6px 10px;
+        }
         .seat-grid {
-          grid-template-columns: repeat(auto-fill, minmax(128px, 1fr));
+          grid-template-columns: repeat(auto-fill, minmax(144px, 1fr));
           gap: 5px;
         }
         #ko-pm-container {
-          top: 44px;
+          top: 52px;
           left: max(6px, env(safe-area-inset-left));
-          width: 224px;
-          max-height: calc(100dvh - 50px);
+          width: 204px;
+          max-height: calc(100vh - 60px);
           overflow-y: auto;
         }
         body.in-day-mode #ko-pm-container {
-          max-height: calc(100dvh - 188px);
+          top: 70px;
+          max-height: max(96px, calc(100vh - 206px));
         }
         .ko-pm-messages {
-          max-height: 62px;
-          font-size: 0.72rem;
+          max-height: 58px;
+          font-size: 0.71rem;
         }
         #ko-bottom-chat {
-          width: min(390px, 44vw);
-          padding: 4px 7px;
+          width: min(380px, 46vw);
+          padding: 3px 7px;
           gap: 3px;
         }
         body.in-day-mode #ko-bottom-chat {
-          width: min(360px, 42vw);
+          width: clamp(188px, calc(100vw - 354px), 350px);
           margin-bottom: 2px;
         }
         #chat-log {
-          height: 38px;
-          font-size: 0.71rem;
+          height: 34px;
+          font-size: 0.7rem;
         }
         .left-control-cluster {
           left: max(8px, env(safe-area-inset-left));
           bottom: max(6px, env(safe-area-inset-bottom));
           gap: 4px;
         }
+        .cam-turn-row {
+          gap: 3px;
+        }
+        .cam-turn-btn {
+          padding: 4px 5px;
+          min-height: 28px;
+          font-size: 0.65rem;
+        }
         .joystick-zone {
-          width: 106px;
-          height: 106px;
+          width: 102px;
+          height: 102px;
         }
         .joystick-knob {
-          width: 38px;
-          height: 38px;
-          top: 32px;
-          left: 32px;
+          width: 36px;
+          height: 36px;
+          top: 31px;
+          left: 31px;
         }
         .lol-wheel-cluster {
           right: max(8px, env(safe-area-inset-right));
           bottom: max(6px, env(safe-area-inset-bottom));
-          transform: scale(0.88);
+          transform: scale(0.85);
           transform-origin: bottom right;
         }
         .day-room-pill {
-          top: 44px;
+          top: 52px;
+          max-width: 194px;
+          padding: 2px 8px;
+          font-size: 0.66rem;
         }
         .day-quest-box {
-          top: 74px;
-          width: 230px;
-          padding: 5px 8px;
+          top: 76px;
+          width: 210px;
+          max-height: max(92px, calc(100vh - 234px));
+          padding: 4px 7px;
         }
         .menu-shell {
           padding: 8px 12px;
           gap: 8px;
         }
         .menu-columns {
-          grid-template-columns: 1fr 1.15fr;
           gap: 8px;
         }
       }
@@ -1703,14 +2080,18 @@
       #pc-mouse-hint {
         display: none;
         position: absolute;
-        top: 50px;
-        left: max(10px, env(safe-area-inset-left));
+        bottom: max(10px, env(safe-area-inset-bottom));
+        left: max(12px, env(safe-area-inset-left));
+        max-width: calc(50vw - 200px);
         background: rgba(14, 10, 24, 0.78);
         border: 1px solid var(--gold-soft);
         border-radius: 99px;
         padding: 3px 10px;
-        font-size: 0.68rem;
+        font-size: 0.67rem;
         color: var(--parchment);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
         transition: opacity 0.45s ease;
       }
 
@@ -1727,8 +2108,8 @@
           display: none;
         }
         body:not(.touch-detected) .lol-wheel-cluster {
-          transform: scale(0.76);
-          opacity: 0.65;
+          transform: scale(0.78);
+          opacity: 0.72;
         }
         body:not(.touch-detected) .lol-wheel-cluster:hover {
           opacity: 1;
@@ -1869,7 +2250,7 @@
 
           <!-- SAĞ SÜTUN: HIZLI MAÇ, ŞİFRELİ ODA KURMA & CANLI ODALAR -->
           <div class="menu-card">
-            <div style="display: flex; justify-content: space-between; align-items: center;">
+            <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;">
               <h3>🏰 2. Odaya Gir veya Şifreli Oda Kur</h3>
               <button class="btn" id="btn-quick-play" style="background: linear-gradient(180deg,#9c1928,#570b14); color:#fff;">
                 ⚡ Hemen Açık Odaya Gir
@@ -1897,14 +2278,14 @@
                   id="input-create-title"
                   maxlength="24"
                   placeholder="Oda Adı (Örn: Dostlar Sofrası)"
-                  style="flex: 1.2 1 130px;"
+                  style="flex: 1.2 1 130px; min-width: 0;"
                 />
                 <input
                   type="text"
                   id="input-create-pass"
                   maxlength="16"
                   placeholder="Şifre (Boş = Açık)"
-                  style="flex: 1 1 110px;"
+                  style="flex: 1 1 110px; min-width: 0;"
                 />
                 <button class="btn btn-crimson" id="btn-create-room">🏰 Oda Kur</button>
               </div>
@@ -1965,18 +2346,18 @@
                 id="create-duration-desc"
                 style="font-size: 0.69rem; color: var(--parchment); opacity: 0.9;"
               >
-                ⏳ 20 Dakikalık Standart Oyun (10 Kişi) — Gündüz 3 dk · Sofra 1.5 dk · Oylama 65 sn
+                ⏳ 20 Dakikalık Standart Oyun (10 Kişi) — Gündüz 3 dk · Sofra & Oylama ~1.5 dk · Gece ~1 dk
               </div>
             </div>
 
             <!-- Kodla Katılma -->
-            <div style="display: flex; gap: 6px;">
+            <div style="display: flex; gap: 6px; flex-wrap: wrap;">
               <input
                 type="text"
                 id="input-join-code"
                 maxlength="14"
                 placeholder="Oda Koduyla Gir (Örn: 4821)"
-                style="flex: 1;"
+                style="flex: 1 1 130px; min-width: 0;"
               />
               <button class="btn" id="btn-join-by-code">🔑 Kodla Gir</button>
               <button class="btn" id="btn-refresh-rooms" title="Odaları Yenile">🔄</button>
@@ -2004,8 +2385,8 @@
           ◆ KARGALI ŞATO DAVETİYESİ ◆
         </p>
         <div class="env-3d-box" id="env-3d-box">
-          <div class="env-rising-letter">
-            📜 Kâhya'nın Mektubu & +150 🪙 Kasa Hediyesi
+          <div class="env-rising-letter" id="env-rising-letter-text">
+            📜 Kâhya'nın Mektubu & +100 🪙 Hoş Geldin Hediyesi
           </div>
           <div class="env-pocket-front"></div>
           <div class="env-top-flap"></div>
@@ -2022,7 +2403,7 @@
       <div class="envelope-card hidden" id="envelope-open-view">
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
           <span style="font-size: 0.74rem; letter-spacing: 1.5px; color: #7d131e; font-weight: bold;">
-            ◆ KÂHYA'NIN MEKTUBU & ŞATO KURALLARI ◆
+            ◆ KÂHYA'NIN MEKTUBU & 3 ADIMDA ŞATO KURALLARI ◆
           </span>
           <button
             id="btn-close-envelope-x"
@@ -2033,21 +2414,21 @@
         </div>
 
         <div class="envelope-scroll-body">
-          <h2 style="font-size: 1.1rem; margin: 4px 0 8px;">
+          <h2 style="font-size: 1.08rem; margin: 4px 0 8px;">
             "Sofraya hoş geldiniz. Herkes davetli… ama herkes dost değil."
           </h2>
           <ul class="rules-list">
             <li>
-              <strong>1. Gizli Zarf:</strong> Oyun başladığında yalnızca senin gördüğün rol zarfın açılır (<em>Misafir</em> veya <em>Hain</em>).
+              <strong>📜 Gizli Zarf:</strong> Oyun başladığında yalnızca senin gördüğün rol zarfın açılır (<em>Misafir</em> veya <em>Hain</em>).
             </li>
             <li>
-              <strong>2. Gündüz Keşfi & Özel Fısıltı (DM):</strong> Sol yön tuşları/joystick ve sağdaki <strong>⚡ KOŞ</strong> çarkıyla şatoyu gez. Yakınındakilere <strong>🤫 DM</strong> ile gizlice fısılda veya yatak odası kapısını kapatıp baş başa konuş!
+              <strong>☀️ 1. Evre — Gündüz Keşfi & Altın Kolye:</strong> Şatoyu gez, 3B karakterlere tıklayarak <strong>🤫 Özel DM</strong> at veya <strong>🔍 360° İncele</strong>! Sahnedeki <strong>🔮 Rün Kürsüsünü</strong> o gün ilk çözen gece koruyan <strong>📿 Altın Kolye</strong> kazanır!
             </li>
             <li>
-              <strong>3. Yuvarlak Sofra & Şömine:</strong> Çan çaldığında en çok oy alanın zarfı şömineye atılır: <strong>Kırmızı Alev = Hain</strong>, <strong>Beyaz Alev = Masum Misafir</strong>.
+              <strong>🔥 2. Evre — Yuvarlak Sofra & Şömine Oylaması:</strong> Çan çaldığında herkes masada toplanır, tartışır ve şömineye atılacak kişiyi oylar: <strong>Kırmızı Alev = Hain</strong>, <strong>Beyaz Alev = Masum Misafir</strong>.
             </li>
             <li>
-              <strong>4. Gece & Altın Kolye:</strong> Gece Hainler bir kurban seçer; <strong>Altın Kolye</strong> sahibi o gece korunur!
+              <strong>🌙 3. Evre — Gece Konseyi & Nöbet:</strong> Gece Hainler gizlice bir kurban mühürler; Misafirler kapı deliğini dinleyerek koridor ipucu yakalar!
             </li>
           </ul>
           <div
@@ -2059,7 +2440,7 @@
               font-size: 0.84rem;
             "
           >
-            🎁 <strong id="welcome-bonus-text">Kişisel Kasanıza Hoş Geldin Altın Hediyesi Eklendi!</strong>
+            🎁 <strong id="welcome-bonus-text">Kişisel Kasanıza +100 Altın Hoş Geldin Hediyesi Eklendi!</strong>
           </div>
         </div>
 
@@ -2096,6 +2477,9 @@
     <!-- Dramatik Veda Mektubu / Gece İnfazı Bildirimi -->
     <div id="farewell-toast" class="hidden"></div>
 
+    <!-- 3B Karakter Tıklama Hızlı Bağlam Menüsü -->
+    <div id="char-context-menu" class="char-context-menu interactive hidden"></div>
+
     <!-- 360° Karakter İnceleme & Arkadaşlık / Yakınlık Barı Kartı -->
     <div id="inspect-overlay" class="hidden">
       <div class="inspect-card" id="inspect-card-content"></div>
@@ -2118,11 +2502,11 @@
       <div class="top-bar">
         <div class="brand-pill interactive">
           <img src="/marka/muhur.png" alt="SOFRA" />
-          <div>
-            <div style="font-size: 0.82rem; font-weight: bold; color: var(--gold);" id="room-title-label">
+          <div style="min-width: 0;">
+            <div style="font-size: 0.8rem; font-weight: bold; color: var(--gold);" id="room-title-label">
               SOFRA
             </div>
-            <div style="font-size: 0.68rem; color: var(--text-muted);" id="room-code-label">
+            <div style="font-size: 0.67rem; color: var(--text-muted); white-space: nowrap;" id="room-code-label">
               Kod: ---
             </div>
           </div>
@@ -2130,22 +2514,28 @@
         </div>
 
         <div class="phase-banner interactive">
-          <div class="phase-name" id="phase-title">LOBİ</div>
-          <div style="display: flex; align-items: center; justify-content: center; gap: 8px;">
-            <span class="phase-timer" id="phase-timer">Hazır</span>
-            <button class="btn hidden" id="btn-ready-phase" style="padding: 2px 8px; font-size: 0.7rem;">
-              ⏩ Hazırım
-            </button>
+          <div class="phase-banner-main">
+            <div class="phase-name" id="phase-title">LOBİ</div>
+            <div class="phase-banner-right">
+              <span class="phase-timer" id="phase-timer">Hazır</span>
+              <button class="btn hidden" id="btn-ready-phase" style="padding: 2px 7px; font-size: 0.69rem;">
+                ⏩ Hazırım
+              </button>
+            </div>
+          </div>
+          <div class="phase-guide-compass" id="phase-guide-compass">
+            👑 Koltuğunu seç, karakterini hazırla ve şato şölenini başlat!
           </div>
         </div>
 
-        <div class="vault-pill interactive">
+        <div class="vault-pill interactive" id="hud-vault-pill">
           <button
             class="btn handbook-hud-btn"
             id="btn-open-handbook"
+            type="button"
             title="Dedektif & Taktik El Kitapçığı (Kısayol: B)"
           >
-            📖 Kitapçık <span id="handbook-badge" class="handbook-badge">0</span>
+            📖 <span class="hb-btn-label">Kitapçık</span> <span id="handbook-badge" class="handbook-badge">0</span>
           </button>
           <div class="hud-zoom-group" title="Kamera Yakınlaş / Uzaklaş (Fare Tekerleği, İki Parmak veya +/- Tuşları)">
             <button class="hud-zoom-step" id="btn-hud-zoom-out" type="button" title="Uzaklaş (-)">−</button>
@@ -2163,18 +2553,36 @@
               class="btn"
               id="btn-hud-zoom"
               type="button"
-              style="padding: 3px 7px; font-size: 0.71rem;"
+              style="padding: 3px 6px; font-size: 0.7rem;"
               title="Hazır Kamera Açıları (Kısayol: V)"
             >
               🔭 Uzak
             </button>
           </div>
-          <span class="gold-badge" id="gold-balance-label">🪙 100</span>
-          <button class="btn" id="btn-watch-ad" title="Reklam İzle +50 Altın">🎬+50</button>
-          <button class="btn" id="btn-hud-landscape" title="Tam Ekran & Yatay Mod">⛶</button>
-          <button class="btn" id="btn-hud-brightness" title="Şato Işık Seviyesi">💡</button>
-          <button class="btn" id="btn-open-rules" title="Kurallar Zarfı">📜</button>
-          <button class="btn btn-crimson" id="btn-leave-room" title="Odadan Çık / Veda Et">🚪</button>
+          <button class="btn" id="btn-hud-sfx" type="button" title="Ses Efektleri Aç / Kapat">🔊</button>
+          <button class="btn" id="btn-hud-gear" type="button" title="Kasa, Ayarlar & Oda Menüsü">⚙️</button>
+
+          <div id="hud-gear-dropdown" class="hud-gear-dropdown hidden">
+            <div class="hud-gear-wallet-row">
+              <span style="font-size: 0.75rem; color: var(--parchment);">💰 Kişisel Kasan:</span>
+              <span class="gold-badge" id="gold-balance-label">🪙 100</span>
+            </div>
+            <button class="btn" id="btn-watch-ad" type="button" title="Reklam İzle +50 Altın">
+              🎬 Reklam İzle (+50 🪙)
+            </button>
+            <button class="btn" id="btn-hud-brightness" type="button" title="Şato Işık Seviyesi">
+              💡 Şato Işık Seviyesi
+            </button>
+            <button class="btn" id="btn-hud-landscape" type="button" title="Tam Ekran & Yatay Mod">
+              ⛶ Tam Ekran Yatay Mod
+            </button>
+            <button class="btn" id="btn-open-rules" type="button" title="Kurallar & Rehber Zarfı">
+              📜 Kurallar & Rehber Zarfı
+            </button>
+            <button class="btn btn-crimson" id="btn-leave-room" type="button" title="Odadan Çık / Veda Et">
+              🚪 Odadan Çık / Veda Et
+            </button>
+          </div>
         </div>
       </div>
 

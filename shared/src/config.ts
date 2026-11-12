@@ -19,7 +19,7 @@ export const SOFRA_CONFIG = {
     DAY: 300,
     TRIAL: 75,
     TABLE: 120,
-    VOTE: 90,
+    VOTE: 100,
     TIE_VOTE: 40,
     FIRE: 16,
     NIGHT: 120,
@@ -85,7 +85,7 @@ export const MATCH_DURATION_PRESETS: Record<MatchDurationMode, MatchDurationPres
     badge: "⚡ 10 Dk",
     shortTitle: "⚡ 10 Dk Hızlı",
     title: "⚡ 10 Dakikalık Hızlı Oyun",
-    summary: "Gündüz 1.5 dk · Sofra 50 sn · Oylama 40 sn (Mobil & Hızlı Mola)",
+    summary: "Gündüz 1.5 Dk · Sofra & Oylama 65 sn · Gece 50 sn",
     defaultPlayers: 8,
     stationUsesPerDay: 2,
     rewardMultiplier: 1.0,
@@ -94,7 +94,7 @@ export const MATCH_DURATION_PRESETS: Record<MatchDurationMode, MatchDurationPres
       DAY: 95,
       TRIAL: 40,
       TABLE: 50,
-      VOTE: 40,
+      VOTE: 65,
       TIE_VOTE: 25,
       FIRE: 12,
       NIGHT: 50,
@@ -107,7 +107,7 @@ export const MATCH_DURATION_PRESETS: Record<MatchDurationMode, MatchDurationPres
     badge: "⏳ 20 Dk",
     shortTitle: "⏳ 20 Dk Standart",
     title: "⏳ 20 Dakikalık Standart Oyun",
-    summary: "Gündüz 3 dk · Sofra 1.5 dk · Oylama 65 sn (Dengeli Klasik)",
+    summary: "Gündüz 3 Dk · Sofra & Oylama 100 sn · Gece 80 sn",
     defaultPlayers: 10,
     stationUsesPerDay: 2,
     rewardMultiplier: 1.2,
@@ -116,7 +116,7 @@ export const MATCH_DURATION_PRESETS: Record<MatchDurationMode, MatchDurationPres
       DAY: 180,
       TRIAL: 60,
       TABLE: 90,
-      VOTE: 65,
+      VOTE: 100,
       TIE_VOTE: 35,
       FIRE: 14,
       NIGHT: 80,
@@ -129,7 +129,7 @@ export const MATCH_DURATION_PRESETS: Record<MatchDurationMode, MatchDurationPres
     badge: "🕵️ 35 Dk",
     shortTitle: "🕵️ 35 Dk Dedektif",
     title: "🕵️ 35 Dakikalık Derin Dedektiflik",
-    summary: "Gündüz 5 dk · Sofra 2.5 dk · Oylama 90 sn (3 İstasyon Hakkı)",
+    summary: "Gündüz 5 Dk · Sofra & Oylama 135 sn · Gece 115 sn (3 İstasyon Hakkı)",
     defaultPlayers: 10,
     stationUsesPerDay: 3,
     rewardMultiplier: 1.5,
@@ -138,7 +138,7 @@ export const MATCH_DURATION_PRESETS: Record<MatchDurationMode, MatchDurationPres
       DAY: 300,
       TRIAL: 75,
       TABLE: 150,
-      VOTE: 90,
+      VOTE: 135,
       TIE_VOTE: 40,
       FIRE: 16,
       NIGHT: 115,
@@ -151,7 +151,7 @@ export const MATCH_DURATION_PRESETS: Record<MatchDurationMode, MatchDurationPres
     badge: "👑 1 Saat",
     shortTitle: "👑 1 Saat Destansı",
     title: "👑 1 Saatlik Destansı Şölen (RP)",
-    summary: "Gündüz 8 dk · Sofra 3.5 dk · Oylama 110 sn (12 Kişi · 4 İstasyon · 2x Altın)",
+    summary: "Gündüz 8 Dk · Sofra & Oylama 170 sn · Gece 2.5 Dk (12 Kişi · 4 İstasyon · 2x Altın)",
     defaultPlayers: 12,
     stationUsesPerDay: 4,
     rewardMultiplier: 2.0,
@@ -160,7 +160,7 @@ export const MATCH_DURATION_PRESETS: Record<MatchDurationMode, MatchDurationPres
       DAY: 480,
       TRIAL: 95,
       TABLE: 210,
-      VOTE: 110,
+      VOTE: 170,
       TIE_VOTE: 50,
       FIRE: 18,
       NIGHT: 150,
@@ -180,9 +180,12 @@ export function resolveDurationPreset(paceOrDuration?: string, fastMode?: boolea
 }
 
 export function formatDurationLabelTR(sec: number): string {
-  if (sec < 60) return `${sec} sn`;
-  const mins = sec / 60;
-  return Number.isInteger(mins) ? `${mins} Dk` : `${mins.toFixed(1).replace(".0", "")} Dk`;
+  const totalSec = Math.max(0, Math.round(sec));
+  if (totalSec < 60) return `${totalSec} sn`;
+  const mins = Math.floor(totalSec / 60);
+  const remSec = totalSec % 60;
+  if (remSec === 0) return `${mins} Dk`;
+  return `${mins} Dk ${remSec} sn`;
 }
 
 export interface CharacterDef {
