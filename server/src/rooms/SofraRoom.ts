@@ -587,6 +587,9 @@ export class SofraRoom extends Room<SofraState> {
         this.necklaceClaimedByPuzzleThisRound = true;
         this.state.necklaceHolder = p.id;
         wonNecklace = true;
+        this.chronicleLog.push(
+          `📿 Gün #${this.state.round}: Koltuk #${p.seat} (${p.nick}) kadim bulmacayı çözüp Gece Korumalı Altın Kolye'yi boynuna taktı.`
+        );
         this.broadcast("chat_msg", {
           senderId: p.id,
           senderNick: "ETKİNLİK SALONU",
@@ -670,6 +673,9 @@ export class SofraRoom extends Room<SofraState> {
         this.necklaceClaimedByPuzzleThisRound = true;
         this.state.necklaceHolder = p.id;
         wonNecklace = true;
+        this.chronicleLog.push(
+          `📿 Gün #${this.state.round}: Koltuk #${p.seat} (${p.nick}) kadim bulmacayı çözüp Gece Korumalı Altın Kolye'yi boynuna taktı.`
+        );
         this.broadcast("chat_msg", {
           senderId: p.id,
           senderNick: "ŞATO SINAVI",
@@ -694,6 +700,9 @@ export class SofraRoom extends Room<SofraState> {
       this.trialSabotagedPlayers.add(p.id);
       this.trialSabotageCount += 1;
       this.state.pot = Math.max(0, this.state.pot - 25);
+      this.chronicleLog.push(
+        `🗡️ Gün #${this.state.round}: Gizli bir el Şato Bulmaca düzeneğini sabote edip ortak hazineden altın sızdırdı.`
+      );
       client.send("match_reward", { bonusGold: 25, won: true });
       client.send("puzzle_feedback", {
         ok: true,
@@ -717,6 +726,9 @@ export class SofraRoom extends Room<SofraState> {
       if (!this.aiControlledIds.has(sender.id)) {
         this.accusedByHumansThisRound.add(target.id);
       }
+      this.chronicleLog.push(
+        `👉 Gün #${this.state.round} Sofra: #${sender.seat} ${sender.nick}, masada #${target.seat} ${target.nick} için "${cleanReason}" diyerek suçlama yöneltti.`
+      );
 
       this.broadcast("chat_msg", {
         senderId: sender.id,
@@ -1386,6 +1398,9 @@ export class SofraRoom extends Room<SofraState> {
       }
 
       this.lastLightSabotageAt = now;
+      this.chronicleLog.push(
+        `🕯️ Gün #${this.state.round}: Hainler avize ve şamdanları söndürerek şatoya 12 saniyelik zifiri karanlık çöktürdü.`
+      );
       this.broadcast("blackout_event", { durationSec: 12 });
       this.broadcast("chat_msg", {
         senderId: "",
@@ -2499,10 +2514,31 @@ export class SofraRoom extends Room<SofraState> {
       }
     });
 
+    let topMatchBond: { seatA: number; nickA: string; seatB: number; nickB: string; score: number } | null = null;
+    let bestAff = 0;
+    this.affinities.forEach((val, key) => {
+      if (val > bestAff) {
+        const [a, b] = key.split("|");
+        const pA = this.state.players.get(a);
+        const pB = this.state.players.get(b);
+        if (pA && pB) {
+          bestAff = val;
+          topMatchBond = {
+            seatA: pA.seat,
+            nickA: pA.nick,
+            seatB: pB.seat,
+            nickB: pB.nick,
+            score: Math.round(val)
+          };
+        }
+      }
+    });
+
     this.broadcast("game_over_roles", {
       winner,
       roles: revealedRoles,
-      chronicle: this.chronicleLog
+      chronicle: this.chronicleLog,
+      topMatchBond
     });
 
     // Sonuç ekranı aceleyle kapanmasın: oyuncu 'Yeni Oyun (Lobi)' butonuna basana veya 120 sn dolana kadar açık kalır!

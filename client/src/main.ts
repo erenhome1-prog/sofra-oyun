@@ -144,6 +144,7 @@ class SofraGameApp {
     winner: string;
     roles: Array<{ id: string; nick: string; seat: number; role: string; alive: boolean }>;
     chronicle: string[];
+    topMatchBond?: { seatA: number; nickA: string; seatB: number; nickB: string; score: number } | null;
   } | null = null;
 
   // Menu idle rotation, PC zero-click mouse edge pan & FPS
@@ -2987,59 +2988,159 @@ class SofraGameApp {
         }
 
         <div style="display:flex; gap:8px; justify-content:center; flex-wrap:wrap;">
-          <button class="btn" id="btn-download-story">📸 9:16 Story İndir</button>
+          <button class="btn" id="btn-read-story" style="border-color:var(--gold); color:var(--gold);">
+            📖 Hikayeyi Oku
+          </button>
           <button class="btn btn-crimson" id="btn-back-lobby">🔄 Yeni Oyun (Lobi)</button>
         </div>
       </div>
     `;
 
-    document.getElementById("btn-download-story")?.addEventListener("click", () => {
-      this.downloadStoryCard(state);
+    document.getElementById("btn-read-story")?.addEventListener("click", () => {
+      this.openStoryReaderModal(state);
     });
     document.getElementById("btn-back-lobby")?.addEventListener("click", () => {
       this.room?.send("back_to_lobby");
     });
   }
 
-  private downloadStoryCard(state: any): void {
-    const c = document.createElement("canvas");
-    c.width = 1080;
-    c.height = 1920;
-    const ctx = c.getContext("2d")!;
+  private openStoryReaderModal(state: any): void {
+    sfx.playSealBreak();
+    const modal = document.getElementById("puzzle-modal")!;
+    const card = document.getElementById("puzzle-card-content")!;
+    card.style.width = "min(650px, 94vw)";
 
-    const grad = ctx.createLinearGradient(0, 0, 0, 1920);
-    grad.addColorStop(0, "#120914");
-    grad.addColorStop(0.5, "#260c16");
-    grad.addColorStop(1, "#08060c");
-    ctx.fillStyle = grad;
-    ctx.fillRect(0, 0, 1080, 1920);
+    const guestsWon = state.winnerTeam === "MISAFIR";
+    const rolesList: Array<{ id?: string; seat: number; nick: string; role: string; alive: boolean }> =
+      this.gameOverSummary?.roles || [];
+    const chronicle: string[] = this.gameOverSummary?.chronicle || [];
+    const topBond: { seatA: number; nickA: string; seatB: number; nickB: string; score: number } | null =
+      this.gameOverSummary?.topMatchBond || null;
 
-    ctx.strokeStyle = "#d4af37";
-    ctx.lineWidth = 8;
-    ctx.strokeRect(48, 48, 984, 1824);
+    const traitors = rolesList.filter((r) => r.role === "HAIN");
+    const survivors = rolesList.filter((r) => r.alive);
+    const fallen = rolesList.filter((r) => !r.alive);
 
-    ctx.fillStyle = "#d4af37";
-    ctx.font = "bold 64px Georgia, serif";
-    ctx.textAlign = "center";
-    ctx.fillText("SOFRA: KARGALI ŞATO", 540, 220);
+    const traitorNames =
+      traitors.length > 0
+        ? traitors.map((t) => `#${t.seat} ${t.nick}`).join(" ve ")
+        : "meçhul bir gölge";
+    const survivorNames =
+      survivors.length > 0
+        ? survivors.map((s) => `#${s.seat} ${s.nick}`).join(", ")
+        : "kimse";
+    const fallenNames =
+      fallen.length > 0
+        ? fallen.map((f) => `#${f.seat} ${f.nick}`).join(", ")
+        : "";
 
-    ctx.fillStyle = "#f4ebd9";
-    ctx.font = "bold 82px Georgia, serif";
-    ctx.fillText(
-      state.winnerTeam === "MISAFIR" ? "MİSAFİRLER KAZANDI" : "HAİNLER KAZANDI",
-      540,
-      420
-    );
+    const myId = this.room?.sessionId;
+    const meState = myId ? state.players?.get(myId) : null;
+    const myRoleLabel =
+      this.myRole?.role === "HAIN" ? "pelerininin altında hançer gizleyen bir HAİN" : "gerçeğin peşindeki masum bir MİSAFİR";
 
-    ctx.fillStyle = "#cfb891";
-    ctx.font = "42px Georgia, serif";
-    ctx.fillText(`Rolüm: ${this.myRole?.role === "HAIN" ? "HAİN" : "MİSAFİR"}`, 540, 560);
-    ctx.fillText(`Tur Sayısı: ${state.round} · Hazine: ${state.pot} Altın`, 540, 640);
+    const bondParagraph =
+      topBond && topBond.score >= 15
+        ? `Koridorlarda mum ışıkları titrerken en derin fısıltı bağı <strong>#${topBond.seatA} ${topBond.nickA}</strong> ile <strong>#${topBond.seatB} ${topBond.nickB}</strong> arasında kuruldu (<em>%${topBond.score} yakınlık</em>). Bakışlar bu ikilinin üzerinde toplandı.`
+        : `Fırtına pencereleri döverken davetliler koridorlarda temkinli adımlarla yürüdü; kimse sırrını kolay kolay açık etmedi.`;
 
-    const link = document.createElement("a");
-    link.download = `sofra-hikaye-${Date.now()}.png`;
-    link.href = c.toDataURL("image/png");
-    link.click();
+    const eventsHtml =
+      chronicle.length > 0
+        ? chronicle
+            .map(
+              (item) => `
+              <div style="padding:6px 9px; border-left:2px solid var(--gold); background:rgba(255,255,255,0.04); border-radius:0 6px 6px 0; font-size:0.8rem; line-height:1.45;">
+                ${item}
+              </div>
+            `
+            )
+            .join("")
+        : `<div style="font-size:0.8rem; color:var(--text-muted); font-style:italic;">
+            İlk oylamayla birlikte maskeler erkenden düştü ve şöminenin hükmü gecenin kaderini mühürledi.
+          </div>`;
+
+    const endingProse = guestsWon
+      ? `Şafak sökerken şöminenin kızıl külleri soğudu. <strong>${
+          state.winReason || "Tüm Hainlerin maskesi düşürüldü ve şatoda hiçbir Hain kalmadı."
+        }</strong> Geride kalan davetliler (${survivorNames}) Kargalı Şato'nun ağır kapılarını aralayıp fırtınadan sağ kurtuldu.`
+      : `Gece yarısı çanları son kez çaldığında şatonun şamdanları kan kırmızısına büründü. <strong>${
+          state.winReason || "Hainler sayıca üstünlüğü ele geçirip Yuvarlak Sofraya hâkim oldu."
+        }</strong> Kargalı Şato'nun koridorları artık gölgelerin elindeydi.`;
+
+    card.innerHTML = `
+      <div style="display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid var(--gold-soft); padding-bottom:8px;">
+        <div>
+          <div style="font-size:0.7rem; letter-spacing:1.8px; color:var(--gold);">◆ KARGALI ŞATO VAKAYİNAMESİ ◆</div>
+          <h3 style="font-size:1.08rem; color:var(--parchment); margin-top:2px;">
+            📖 Bu Gecenin Hikâyesi (${state.roomTitle || "Yuvarlak Sofra"} · ${state.round || 1} Gün)
+          </h3>
+        </div>
+        <button class="btn" id="btn-close-story-x" style="padding:4px 9px;">✕</button>
+      </div>
+
+      <div style="display:flex; flex-direction:column; gap:10px; font-size:0.83rem; line-height:1.52; color:var(--parchment); max-height:60dvh; overflow-y:auto; padding-right:4px;">
+        <div style="background:rgba(212,175,55,0.08); border:1px solid rgba(212,175,55,0.3); border-radius:10px; padding:10px 12px;">
+          <strong style="color:var(--gold); display:block; margin-bottom:4px;">Ⅰ. Fırtınalı Davet & Gizli Maskeler</strong>
+          Kargalı Şato'nun demir kapıları kilitlendiğinde Yuvarlak Sofranın etrafına <strong>${
+            rolesList.length || state.players?.size || 10
+          } davetli</strong> oturdu. Herkes kadehini dostluk şerefine kaldırsa da karanlıkta gizlice yemin eden Hainler <strong>${traitorNames}</strong> idi.${
+      meState
+        ? ` Sen bu gecede <strong>#${meState.seat} ${meState.nick}</strong> koltuğunda ${myRoleLabel} olarak yerini aldın.`
+        : ""
+    }
+        </div>
+
+        <div style="background:rgba(20,14,30,0.85); border:1px solid var(--gold-soft); border-radius:10px; padding:10px 12px; display:flex; flex-direction:column; gap:6px;">
+          <strong style="color:var(--gold);">Ⅱ. Koridorlardaki Fısıltılar & Olaylar Zinciri</strong>
+          <p style="font-size:0.81rem; color:#dfd4c3;">${bondParagraph}</p>
+          <div style="display:flex; flex-direction:column; gap:5px; margin-top:2px;">
+            ${eventsHtml}
+          </div>
+        </div>
+
+        <div style="background:${
+          guestsWon ? "rgba(40,85,140,0.22)" : "rgba(150,20,36,0.24)"
+        }; border:1px solid ${
+      guestsWon ? "rgba(122,184,255,0.5)" : "rgba(255,77,94,0.55)"
+    }; border-radius:10px; padding:10px 12px;">
+          <strong style="color:${guestsWon ? "#8ecae6" : "#ff6b7a"}; display:block; margin-bottom:4px;">
+            Ⅲ. Son Perde — ${guestsWon ? "Misafirlerin Kurtuluşu" : "Hainlerin Saltanatı"}
+          </strong>
+          <p>${endingProse}</p>
+          ${
+            fallenNames
+              ? `<div style="margin-top:6px; font-size:0.76rem; color:var(--text-muted);">
+                   🕯️ <strong>Bu Gecede Elenen / İnfaz Edilenler:</strong> ${fallenNames} · 🪙 <strong>Ortak Hazine:</strong> ${
+                  state.pot || 0
+                } Altın
+                 </div>`
+              : ""
+          }
+          <div style="margin-top:8px; font-style:italic; font-size:0.78rem; color:var(--gold);">
+            "Kâhya #11 numaralı tahtından kalkıp son şamdanı üfledi: 'Şöminenin külü yalan söylemez; yeni bir fırtınada tekrar görüşeceğiz...'"
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap; padding-top:4px;">
+        <button class="btn" id="btn-close-story-modal">🔙 Sonuca Dön</button>
+        <button class="btn btn-crimson" id="btn-story-back-lobby">🔄 Yeni Oyun (Lobi)</button>
+      </div>
+    `;
+
+    modal.classList.remove("hidden");
+
+    const closeStory = () => {
+      card.style.width = "";
+      modal.classList.add("hidden");
+    };
+
+    document.getElementById("btn-close-story-x")?.addEventListener("click", closeStory);
+    document.getElementById("btn-close-story-modal")?.addEventListener("click", closeStory);
+    document.getElementById("btn-story-back-lobby")?.addEventListener("click", () => {
+      closeStory();
+      this.room?.send("back_to_lobby");
+    });
   }
 
   // ==========================================================================
@@ -3182,6 +3283,8 @@ class SofraGameApp {
         }
         const readyBtn = document.getElementById("btn-ready-phase");
         if (readyBtn) readyBtn.textContent = "⏩ Hazırım";
+        const pCard = document.getElementById("puzzle-card-content");
+        if (pCard) pCard.style.width = "";
         document.getElementById("puzzle-modal")?.classList.add("hidden");
 
         if (state.phase === "DAY" && this.scene.inspectTargetId) {
