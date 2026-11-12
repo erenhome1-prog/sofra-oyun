@@ -144,6 +144,8 @@ export class SofraRoom extends Room<SofraState> {
   private lastLightSabotageAt = 0;
   private noteSabotageUsedRound = new Map<string, number>();
   private ghostHauntCooldown = new Map<string, number>();
+  private finalAskedForRound = 0;
+  private voteLockdownPending = false;
 
   // BOT YAPAY ZEKÂ HAFIZASI
   private aiControlledIds = new Set<string>();
@@ -251,13 +253,13 @@ export class SofraRoom extends Room<SofraState> {
     if (this.autoLobbyTimer) {
       this.autoLobbyTimer.clear();
     }
-    const waitSec = this.state.hasPassword ? 28 : 18;
+    const waitSec = this.state.hasPassword ? 60 : 45;
     this.state.phaseEndsAt = Date.now() + waitSec * 1000;
-    this.state.announcement = `🕯️ Kâhya sofrayı hazırlıyor... ${waitSec} sn içinde eksik koltuklar akıllı botlarla tamamlanıp otomatik başlayacak!`;
+    this.state.announcement = `🕯️ Kâhya sofrayı hazırlıyor... ${waitSec} sn içinde eksik koltuklar 10 kişiye tamamlanıp başlayacak (İstediğin an 'Oto' kapatabilirsin)!`;
 
     this.autoLobbyTimer = this.clock.setTimeout(() => {
       if (this.state.phase !== "LOBBY" || !this.state.autoStart || this.clients.length === 0) return;
-      while (this.state.players.size < 10) {
+      while (this.state.players.size < SOFRA_CONFIG.DEFAULT_MATCH_CLIENTS) {
         this.spawnBot();
       }
       this.startGameLoop();
@@ -699,23 +701,36 @@ export class SofraRoom extends Room<SofraState> {
     // 5D. ERKEN HAZIR OYU (Uzun konuşma/tartışma evrelerinde tüm canlı insanlar hazırsa beklemeden geç!)
     this.onMessage("ready_next_phase", (client) => {
       const p = this.state.players.get(client.sessionId);
-      if (!p || !p.alive || p.ghost) return;
+      if (!p) return;
       if (this.state.phase !== "DAY" && this.state.phase !== "TRIAL" && this.state.phase !== "TABLE") return;
 
-      this.readyPhasePlayers.add(p.id);
       const aliveHumans = this.getAliveConnectedHumanIds();
-      const readyCount = aliveHumans.filter((id) => this.readyPhasePlayers.has(id)).length;
+      // Canlı insan varsa yalnız canlı insanlar oy kullanır; tüm insanlar elenip Hayalet olduysa Hayaletler botları hızlandırabilir!
+      if (aliveHumans.length > 0 && (!p.alive || p.ghost)) return;
+
+      this.readyPhasePlayers.add(p.id);
+      const voterPool =
+        aliveHumans.length > 0
+          ? aliveHumans
+          : this.clients.map((c) => c.sessionId).filter((sid) => this.state.players.has(sid));
+      const readyCount = voterPool.filter((id) => this.readyPhasePlayers.has(id)).length;
 
       this.broadcast("ready_count_update", {
         readyCount,
-        totalHumans: aliveHumans.length,
+        totalHumans: voterPool.length,
         phase: this.state.phase
       });
 
-      if (aliveHumans.length > 0 && readyCount >= aliveHumans.length) {
+      if (voterPool.length > 0 && readyCount >= voterPool.length) {
         if (this.state.phase === "DAY") this.enterTrialPhase();
         else if (this.state.phase === "TRIAL") this.enterTablePhase();
-        else if (this.state.phase === "TABLE") this.enterVotePhase([]);
+        else if (this.state.phase === "TABLE") {
+          if (this.getAlivePlayerIds().length <= 4 && this.finalAskedForRound !== this.state.round) {
+            this.enterFinalPhase();
+          } else {
+            this.enterVotePhase([]);
+          }
+        }
       }
     });
 
@@ -789,7 +804,8 @@ export class SofraRoom extends Room<SofraState> {
     this.onMessage("start_game", (client) => {
       if (this.state.hostId !== client.sessionId || this.state.phase !== "LOBBY") return;
       if (this.autoLobbyTimer) this.autoLobbyTimer.clear();
-      while (this.state.players.size < SOFRA_CONFIG.MIN_CLIENTS) {
+      // 6 kişiyle (tek Hain) başlayınca ilk oylamada oyun hemen bitebildiği için varsayılan 10 kişilik (2 Hain + 8 Misafir) tam kadro tamamlanır!
+      while (this.state.players.size < SOFRA_CONFIG.DEFAULT_MATCH_CLIENTS) {
         this.spawnBot();
       }
       this.startGameLoop();
@@ -907,6 +923,14 @@ export class SofraRoom extends Room<SofraState> {
       const p = this.state.players.get(client.sessionId);
       if (!p || !p.alive) return;
       this.finalDecisions.set(p.id, data?.decision === "DOUBT" ? "DOUBT" : "TRUST");
+
+      const aliveIds = this.getAlivePlayerIds();
+      if (aliveIds.length > 0 && aliveIds.every((id) => this.finalDecisions.has(id))) {
+        if (this.phaseTimer) this.phaseTimer.clear();
+        this.state.announcement = "⚖️ Son Sofra kararları mühürlendi! Sonuç açıklanıyor...";
+        this.state.phaseEndsAt = Date.now() + 2500;
+        this.phaseTimer = this.clock.setTimeout(() => this.resolveFinalPhaseNow(), 2500);
+      }
     });
 
     // 10. GENEL / YAKIN / GECE HAİN MECLİSİ SOHBETİ + ZEKİ BOT CEVABI!
@@ -1727,6 +1751,8 @@ export class SofraRoom extends Room<SofraState> {
     this.lastLightSabotageAt = 0;
     this.noteSabotageUsedRound.clear();
     this.ghostHauntCooldown.clear();
+    this.finalAskedForRound = 0;
+    this.voteLockdownPending = false;
 
     // Herkesin özel yatak odası kilitli başlar (yalnız kendi anahtarına açık!)
     this.state.doors.forEach((d) => {
@@ -1939,12 +1965,6 @@ export class SofraRoom extends Room<SofraState> {
       p.votedForId = "";
     });
 
-    const aliveIds = this.getAlivePlayerIds();
-    if (aliveIds.length <= 4) {
-      this.enterFinalPhase();
-      return;
-    }
-
     if (this.trialSabotageCount > 0) {
       this.broadcast("chat_msg", {
         senderId: "",
@@ -2002,13 +2022,20 @@ export class SofraRoom extends Room<SofraState> {
     this.setPhase(
       "TABLE",
       SOFRA_CONFIG.DURATIONS.TABLE,
-      `${sabMsg}Yuvarlak Sofra Tartışması · '👉 Suçla' ile gerekçeni söyle, '🔍 İncele' ile kimin kiminle fısıldaştığını ortaya dök!`,
-      () => this.enterVotePhase([])
+      `${sabMsg}Yuvarlak Sofra Tartışması (2 Dk) · '👉 Suçla' ile gerekçeni söyle, '🔍 İncele' ile kimin kiminle fısıldaştığını ortaya dök!`,
+      () => {
+        if (this.getAlivePlayerIds().length <= 4 && this.finalAskedForRound !== this.state.round) {
+          this.enterFinalPhase();
+        } else {
+          this.enterVotePhase([]);
+        }
+      }
     );
   }
 
   private enterVotePhase(tieCandidates: string[]) {
     this.votes.clear();
+    this.voteLockdownPending = false;
     this.tieCandidates = tieCandidates;
     this.state.players.forEach((p) => {
       p.votedForId = "";
@@ -2054,7 +2081,7 @@ export class SofraRoom extends Room<SofraState> {
   }
 
   private checkIfAllVoted() {
-    if (this.state.phase !== "VOTE") return;
+    if (this.state.phase !== "VOTE" || this.voteLockdownPending) return;
     const activeVoters: string[] = [];
     this.state.players.forEach((p) => {
       if (p.alive && !p.ghost && (this.aiControlledIds.has(p.id) || p.connected)) {
@@ -2062,7 +2089,15 @@ export class SofraRoom extends Room<SofraState> {
       }
     });
     if (activeVoters.length > 0 && activeVoters.every((id) => this.votes.has(id))) {
-      this.resolveVotePhase();
+      this.voteLockdownPending = true;
+      if (this.phaseTimer) this.phaseTimer.clear();
+      this.state.announcement =
+        "✉️ Tüm koltuklar mührünü bastı! Son 4 saniye içinde karar değiştirilebilir, zarflar şömineye gidiyor...";
+      this.state.phaseEndsAt = Date.now() + 4000;
+      this.phaseTimer = this.clock.setTimeout(() => {
+        this.voteLockdownPending = false;
+        this.resolveVotePhase();
+      }, 4000);
     }
   }
 
@@ -2161,7 +2196,11 @@ export class SofraRoom extends Room<SofraState> {
         (id) => this.secretRoles.get(id) === "MISAFIR" && id !== this.state.necklaceHolder
       );
       const fallbackGuests = this.getAlivePlayerIds().filter((id) => this.secretRoles.get(id) === "MISAFIR");
-      const targetPool = aliveGuests.length > 0 ? aliveGuests : fallbackGuests;
+      const basePool = aliveGuests.length > 0 ? aliveGuests : fallbackGuests;
+      // 1. Gece koruması: İlk geceden insan oyuncuyu şanssızca oyundan düşürmemek için bot Misafir varsa önce onu hedef alırlar!
+      const botOnlyFirstNight =
+        this.state.round === 1 ? basePool.filter((id) => this.aiControlledIds.has(id)) : [];
+      const targetPool = botOnlyFirstNight.length > 0 ? botOnlyFirstNight : basePool;
 
       this.state.players.forEach((bot) => {
         if (!this.aiControlledIds.has(bot.id) || !bot.alive) return;
@@ -2195,10 +2234,10 @@ export class SofraRoom extends Room<SofraState> {
         }
       });
 
-      // Eğer canlı Hainlerin tamamı botsa, oyuncuları 2 dakika bekletmemek için 14 sn gerilimli mola sonrası infazı gerçekleştir!
+      // Eğer canlı Hainlerin tamamı botsa, Misafirlerin kapı dinleme ve yakınlık barı incelemesi yapabilmesi için 24 sn gerilimli gece molası verilir!
       if (aliveHumanTraitors.length === 0) {
         if (this.phaseTimer) this.phaseTimer.clear();
-        const botNightMs = this.state.fastMode ? 7000 : 14000;
+        const botNightMs = this.state.fastMode ? 10000 : 24000;
         this.state.phaseEndsAt = Date.now() + botNightMs;
         this.phaseTimer = this.clock.setTimeout(() => this.enterMorningPhase(), botNightMs);
       }
@@ -2271,34 +2310,50 @@ export class SofraRoom extends Room<SofraState> {
   }
 
   private enterFinalPhase() {
+    this.finalAskedForRound = this.state.round;
     this.finalDecisions.clear();
+
     this.clock.setTimeout(() => {
       if (this.state.phase !== "FINAL") return;
+      const aliveIdsNow = this.getAlivePlayerIds();
+      const aliveTraitorsCount = aliveIdsNow.filter((id) => this.secretRoles.get(id) === "HAIN").length;
+
       this.state.players.forEach((bot) => {
         if (!this.aiControlledIds.has(bot.id) || !bot.alive) return;
-        this.finalDecisions.set(bot.id, Math.random() < 0.35 ? "DOUBT" : "TRUST");
+        const bRole = this.secretRoles.get(bot.id) || "MISAFIR";
+        if (bRole === "HAIN") {
+          // Hain bot masumları kandırıp oyunu hemen kazanmak için "Hepimiz Misafiriz (TRUST)" der!
+          this.finalDecisions.set(bot.id, "TRUST");
+        } else {
+          // Masum bot şöminede tüm hainler yanmadıysa ASLA körü körüne güvenmez, "Aramızda Hain Var (DOUBT)" der!
+          this.finalDecisions.set(bot.id, aliveTraitorsCount > 0 ? "DOUBT" : "TRUST");
+        }
       });
     }, 2000);
 
     this.setPhase(
       "FINAL",
       SOFRA_CONFIG.DURATIONS.FINAL,
-      "SON SOFRA (4 Kişi Kaldı) · 'Hepimiz misafiriz' mi diyorsunuz, yoksa 'Aramızda hâlâ hain var' mı?",
-      () => {
-        const aliveIds = this.getAlivePlayerIds();
-        const roleObj = this.getRolesRecord();
-        const decObj: Record<string, "TRUST" | "DOUBT"> = {};
-        aliveIds.forEach((id) => {
-          decObj[id] = this.finalDecisions.get(id) || "TRUST";
-        });
-        const outcome = resolveFinalDecision(decObj, aliveIds, roleObj);
-        if (outcome === "VOTE_AGAIN") {
-          this.enterVotePhase([]);
-        } else {
-          this.enterResultPhase(outcome === "HAIN_WINS" ? "HAIN" : "MISAFIR");
-        }
-      }
+      "⚖️ SON SOFRA KARARI · 'Hepimiz misafiriz' diyerek oyunu bitiriyor musunuz, yoksa 'Aramızda hâlâ hain var' diyerek şömine oylamasına mı gidiyorsunuz?",
+      () => this.resolveFinalPhaseNow()
     );
+  }
+
+  private resolveFinalPhaseNow() {
+    if (this.state.phase !== "FINAL") return;
+    const aliveIds = this.getAlivePlayerIds();
+    const roleObj = this.getRolesRecord();
+    const decObj: Record<string, "TRUST" | "DOUBT"> = {};
+    aliveIds.forEach((id) => {
+      // Süre dolarsa ihtiyatlı davranıp oylamaya (DOUBT) gidilir; oyun yanlışlıkla erken bitmez!
+      decObj[id] = this.finalDecisions.get(id) || "DOUBT";
+    });
+    const outcome = resolveFinalDecision(decObj, aliveIds, roleObj);
+    if (outcome === "VOTE_AGAIN") {
+      this.enterVotePhase([]);
+    } else {
+      this.enterResultPhase(outcome === "HAIN_WINS" ? "HAIN" : "MISAFIR");
+    }
   }
 
   private checkWinOrContinue(nextPhase: "DAY" | "NIGHT") {
