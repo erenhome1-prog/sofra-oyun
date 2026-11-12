@@ -1447,10 +1447,22 @@
         align-items: center;
         justify-content: flex-start;
         gap: 7px;
-        padding: 6px 9px;
-        min-height: 32px;
-        font-size: 0.76rem;
+        padding: 6px 10px;
+        min-height: 33px;
+        font-size: 0.77rem;
+        font-weight: 600;
         text-align: left;
+        background: rgba(34, 22, 46, 0.92);
+        color: var(--parchment);
+        border: 1px solid var(--gold-soft);
+        border-radius: 8px;
+        cursor: pointer;
+        transition: background 0.15s ease, border-color 0.15s ease;
+      }
+
+      .char-ctx-btn:hover {
+        background: rgba(72, 42, 62, 0.96);
+        border-color: var(--gold);
       }
 
       .char-ctx-stamps {
@@ -1463,7 +1475,19 @@
         flex: 1;
         text-align: center;
         padding: 4px 4px;
-        min-height: 28px;
+        min-height: 29px;
+        font-size: 0.72rem;
+        font-weight: 700;
+        background: rgba(28, 18, 38, 0.92);
+        color: var(--parchment);
+        border: 1px solid var(--gold-soft);
+        border-radius: 7px;
+        cursor: pointer;
+      }
+
+      .char-ctx-stamps .stamp-btn:hover {
+        border-color: var(--gold);
+        background: rgba(58, 34, 54, 0.96);
       }
 
       /* 360° Karakter İnceleme & Arkadaşlık / Yakınlık Barı Kartı */
