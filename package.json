@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "concurrently -n SERVER,CLIENT -c red,yellow \"pnpm --filter @sofra/server dev\" \"pnpm --filter @sofra/client dev\"",
     "build": "pnpm --filter @sofra/shared build && pnpm --filter @sofra/server build && pnpm --filter @sofra/client build",
+    "start": "pnpm --filter @sofra/server start",
     "test": "vitest run"
   },
   "devDependencies": {

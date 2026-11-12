@@ -162,6 +162,21 @@ app.post("/auth/sync-vault", (req, res) => {
   res.json({ profile });
 });
 
+// Bulut kurulumlarında (Render / VPS) derlenmiş 3B istemciyi de aynı sunucudan doğrudan sunabilsin
+const clientDistCandidates = [
+  path.resolve(process.cwd(), "client", "dist"),
+  path.resolve(process.cwd(), "..", "client", "dist")
+];
+const activeClientDist = clientDistCandidates.find((dir) =>
+  fs.existsSync(path.join(dir, "index.html"))
+);
+if (activeClientDist) {
+  app.use(express.static(activeClientDist));
+  app.get("/", (_req, res) => {
+    res.sendFile(path.join(activeClientDist, "index.html"));
+  });
+}
+
 const httpServer = http.createServer(app);
 const gameServer = new Server({
   transport: new WebSocketTransport({ server: httpServer })

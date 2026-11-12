@@ -249,10 +249,39 @@ class SofraGameApp {
       { once: true, passive: true }
     );
 
-    const isHttps = window.location.protocol === "https:";
-    const host = window.location.hostname || "localhost";
-    this.apiBase = `${isHttps ? "https:" : "http:"}//${host}:${SOFRA_CONFIG.SERVER_PORT}`;
-    const wsUrl = `${isHttps ? "wss:" : "ws:"}//${host}:${SOFRA_CONFIG.SERVER_PORT}`;
+    const rawConfiguredUrl = String(
+      (window as any).__SOFRA_SERVER_URL__ ||
+        (import.meta as any).env?.VITE_SERVER_URL ||
+        ""
+    )
+      .trim()
+      .replace(/\/+$/, "");
+
+    let wsUrl: string;
+    if (rawConfiguredUrl) {
+      const normalizedHttp = rawConfiguredUrl
+        .replace(/^wss:/i, "https:")
+        .replace(/^ws:/i, "http:");
+      this.apiBase = normalizedHttp;
+      wsUrl = normalizedHttp.replace(/^http/i, "ws");
+    } else {
+      const isHttps = window.location.protocol === "https:";
+      const host = window.location.hostname || "localhost";
+      const isLocalOrLan =
+        host === "localhost" ||
+        host === "127.0.0.1" ||
+        host.endsWith(".local") ||
+        window.location.port === "5173" ||
+        /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(host);
+      if (isLocalOrLan) {
+        this.apiBase = `${isHttps ? "https:" : "http:"}//${host}:${SOFRA_CONFIG.SERVER_PORT}`;
+        wsUrl = `${isHttps ? "wss:" : "ws:"}//${host}:${SOFRA_CONFIG.SERVER_PORT}`;
+      } else {
+        // Bulutta aynı domain üzerinde (Render / VPS :443) çalışıyorsa port eklemeden doğrudan bağlan
+        this.apiBase = window.location.origin;
+        wsUrl = window.location.origin.replace(/^http/i, "ws");
+      }
+    }
     this.client = new Client(wsUrl);
 
     this.vault = this.loadVault();
