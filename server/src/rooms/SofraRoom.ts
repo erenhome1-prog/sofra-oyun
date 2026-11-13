@@ -946,7 +946,8 @@ export class SofraRoom extends Room<SofraState> {
         return;
       }
 
-      const challenge = createPuzzleChallenge(altar.kind);
+      const histKey = this.sessionToToken.get(client.sessionId) || client.sessionId;
+      const challenge = createPuzzleChallenge(altar.kind, histKey);
       this.activePuzzles.set(p.id, challenge);
 
       client.send("puzzle_challenge", {
@@ -3366,9 +3367,8 @@ export class SofraRoom extends Room<SofraState> {
   }
 
   private sendTrialStageToClient(client: Client, stage: number, feedback?: string) {
-    const kinds: Array<"RUNE" | "RIDDLE" | "CLOCK"> = ["RUNE", "RIDDLE", "CLOCK"];
-    const kind = kinds[(stage - 1) % kinds.length];
-    const ch = createPuzzleChallenge(kind);
+    const histKey = this.sessionToToken.get(client.sessionId) || client.sessionId;
+    const ch = createPuzzleChallenge("ANY", histKey);
     this.trialActiveChallenge.set(client.sessionId, ch);
     client.send("trial_challenge", {
       stage,

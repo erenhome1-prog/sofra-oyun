@@ -235,6 +235,7 @@ class SofraGameApp {
   private inspectedFromHandbook = false;
   private resetPointersFn: (() => void) | null = null;
   private toastHideTimer: number | null = null;
+  private curtainHideTimer: number | null = null;
   private chatUserLogHeight: number | null = null;
   private chatUserBoxWidth: number | null = null;
   private chatSizePresetIdx = 0;
@@ -557,20 +558,43 @@ class SofraGameApp {
     const accSubmitBtn = document.getElementById("btn-acc-submit")!;
     const feedbackEl = document.getElementById("auth-feedback")!;
 
+    const setVkMenuTab = (tab: "rooms" | "create" | "account") => {
+      document.querySelectorAll("[data-vk-menu-tab]").forEach((el) => {
+        el.classList.toggle("vk-tab-active", (el as HTMLElement).dataset.vkMenuTab === tab);
+      });
+      document.getElementById("vk-panel-rooms")?.classList.toggle("hidden", tab !== "rooms");
+      document.getElementById("vk-panel-create")?.classList.toggle("hidden", tab !== "create");
+      document.getElementById("vk-panel-account")?.classList.toggle("hidden", tab !== "account");
+    };
+
+    document.querySelectorAll("[data-vk-menu-tab]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const tab = ((btn as HTMLElement).dataset.vkMenuTab || "rooms") as "rooms" | "create" | "account";
+        setVkMenuTab(tab);
+        if (tab === "account" && this.authTabMode === "guest") {
+          setAuthTab("register");
+        }
+      });
+    });
+
     const setAuthTab = (mode: "guest" | "register" | "login") => {
       this.authTabMode = mode;
       tabGuest.classList.toggle("btn-crimson", mode === "guest");
       tabReg.classList.toggle("btn-crimson", mode === "register");
       tabLogin.classList.toggle("btn-crimson", mode === "login");
 
-      viewGuest.classList.toggle("hidden", mode !== "guest");
+      viewGuest.classList.remove("hidden");
       viewAcc.classList.toggle("hidden", mode === "guest");
       accNickInput.classList.toggle("hidden", mode === "login");
       accSubmitBtn.textContent =
         mode === "register"
-          ? "👑 Kayıt Ol & Mühürlü Zarfı Aç (+150🪙)"
-          : "🔑 Şato Hesabına Giriş Yap";
+          ? "👑 Kayıt Ol & +150🪙 Al"
+          : "🔑 Hesabına Giriş Yap";
       feedbackEl.textContent = "";
+      if (mode === "guest") {
+        setVkMenuTab("rooms");
+        guestInput.focus();
+      }
     };
 
     tabGuest.addEventListener("click", () => setAuthTab("guest"));
@@ -1978,20 +2002,27 @@ class SofraGameApp {
   // HUD AKSİYONLARI & WILD RIFT + HİBRİT YÖN KONTROLLERİ
   // ==========================================================================
   private setupHUDActions(): void {
-    // 🔊 Ses Aç/Kapat Düğmesi
+    // 🔊 Ses Aç/Kapat Düğmesi (Üst bar + Ayarlar menüsü)
     const btnSfx = document.getElementById("btn-hud-sfx");
+    const btnGearSfx = document.getElementById("btn-gear-sfx");
     const syncSfxBtn = () => {
-      if (!btnSfx) return;
       const muted = sfx.isMuted();
-      btnSfx.textContent = muted ? "🔇" : "🔊";
-      btnSfx.style.opacity = muted ? "0.65" : "1";
+      if (btnSfx) {
+        btnSfx.textContent = muted ? "🔇" : "🔊";
+        btnSfx.style.opacity = muted ? "0.65" : "1";
+      }
+      if (btnGearSfx) {
+        btnGearSfx.textContent = muted ? "🔇 Ses Efektleri: Kapalı" : "🔊 Ses Efektleri: Açık";
+      }
     };
     syncSfxBtn();
-    btnSfx?.addEventListener("click", () => {
+    const handleToggleSfx = () => {
       const muted = sfx.toggleMute();
       syncSfxBtn();
       if (!muted) sfx.playUiClick();
-    });
+    };
+    btnSfx?.addEventListener("click", handleToggleSfx);
+    btnGearSfx?.addEventListener("click", handleToggleSfx);
 
     // ⚙️ Kasa & Ayarlar Çarkı Açılır Menüsü
     const btnGear = document.getElementById("btn-hud-gear");
@@ -2035,10 +2066,15 @@ class SofraGameApp {
       if (bEl) bEl.textContent = lbl;
       sfx.playUiClick();
     };
-    document.getElementById("btn-hud-zoom")?.addEventListener("click", () => {
+    const handleCycleZoom = () => {
       this.scene.cycleCameraZoom();
       this.syncCameraZoomUI();
       sfx.playUiClick();
+    };
+    document.getElementById("btn-hud-zoom")?.addEventListener("click", handleCycleZoom);
+    document.getElementById("btn-gear-zoom")?.addEventListener("click", () => {
+      handleCycleZoom();
+      this.closeHudGearMenu();
     });
     this.bindHoldZoomButton(document.getElementById("btn-hud-zoom-in"), -1);
     this.bindHoldZoomButton(document.getElementById("btn-hud-zoom-out"), 1);
@@ -2125,6 +2161,12 @@ class SofraGameApp {
     minChatBtn?.addEventListener("click", (e) => {
       bottomChat.classList.toggle("minimized");
       (e.currentTarget as HTMLElement).textContent = bottomChat.classList.contains("minimized") ? "▴" : "▾";
+    });
+    document.getElementById("btn-chat-all")?.addEventListener("click", () => {
+      if (bottomChat.classList.contains("minimized")) {
+        ensureChatUnminimized();
+        setTimeout(() => document.getElementById("chat-input")?.focus(), 40);
+      }
     });
 
     expandChatBtn?.addEventListener("click", () => {
@@ -3453,14 +3495,10 @@ class SofraGameApp {
     if (key === this.lastDayExtraKey) return;
     this.lastDayExtraKey = key;
 
-    const unreadTag = this.unreadClueCount > 0 ? ` (+${this.unreadClueCount} Yeni!)` : ` (${this.clueJournal.length})`;
-    const btns: string[] = [
-      `<button class="btn" id="btn-day-handbook" style="flex:1 1 100%; padding:5px 8px; font-size:0.72rem; border-color:#ffd166; color:#ffe9a8; background:linear-gradient(180deg,#54371d,#2b1b0f);">📖 El Kitapçığı & İpuçlarım${unreadTag}</button>`,
-      `<button class="btn" id="btn-day-castle-map" style="flex:1; padding:4px 7px; font-size:0.7rem; border-color:var(--gold); color:var(--gold);">🗺️ Şato Odaları</button>`
-    ];
+    const btns: string[] = [];
     if (activeStation) {
       btns.push(
-        `<button class="btn btn-emerald" id="btn-day-medieval-station" style="flex:1; padding:4px 7px; font-size:0.7rem;">${activeStation.icon} ${activeStation.shortLabel} Seçenekleri</button>`
+        `<button class="btn btn-emerald" id="btn-day-medieval-station" style="flex:1; padding:4px 7px; font-size:0.7rem;">${activeStation.icon} ${activeStation.shortLabel}</button>`
       );
     }
     if (!isGhost && isHain) {
@@ -3470,7 +3508,7 @@ class SofraGameApp {
     }
     if (canAskKahya) {
       btns.push(
-        `<button class="btn" id="btn-day-kahya-bell" style="flex:1; padding:4px 7px; font-size:0.7rem;">🔔 Kâhya Zili (50🪙)</button>`
+        `<button class="btn" id="btn-day-kahya-bell" style="flex:1; padding:4px 7px; font-size:0.7rem;">🔔 Kâhya (50🪙)</button>`
       );
     }
     if (isGhost) {
@@ -3842,12 +3880,12 @@ class SofraGameApp {
       <p style="font-size:0.88rem; color:var(--parchment); line-height:1.45;">
         ${escapeHtml(String(ch.prompt || ""))}
       </p>
-      <div style="display:flex; flex-direction:column; gap:7px;">
+      <div class="vk-riddle-options-grid">
         ${ch.options
           .map(
             (opt, idx) => `
-          <button class="btn" data-puz-opt="${idx}" style="text-align:left; padding:10px 12px;">
-            <strong>${idx + 1}.</strong> ${escapeHtml(String(opt || ""))}
+          <button class="btn" data-puz-opt="${idx}">
+            <strong>${idx + 1}.</strong> <span>${escapeHtml(String(opt || ""))}</span>
           </button>
         `
           )
@@ -4948,91 +4986,102 @@ class SofraGameApp {
     panel.innerHTML = `
       <div class="panel-header">
         <div>
-          <h2>${isMatchmaking ? "🔍" : "🏰"} ${state.hasPassword ? "🔒" : isMatchmaking ? "🟢" : "🔓"} ${escapeHtml(
-      state.roomTitle || "ORTA ÇAĞ SOFRA LOBİSİ"
+          <h2>${isMatchmaking ? "🟢" : "🏰"} ${state.hasPassword ? "🔒" : ""} ${escapeHtml(
+      state.roomTitle || "ŞATO LOBİSİ"
     )} (${playerCount}/${targetCount})</h2>
-          <span style="font-size:0.75rem; color:var(--text-muted);">
+          <span style="font-size:0.74rem; color:var(--text-muted);">
             Oda Kodu: <strong style="color:var(--gold);">${escapeHtml(state.code || "---")}</strong> · <strong style="color:#ffe6a1;">${escapeHtml(
       activePreset.title
-    )}</strong> (${escapeHtml(activePreset.summary)})${
+    )}</strong>${
       isMatchmaking
-        ? ` · <strong style="color:#8ce99a;">✨ Oyuncular toplanıyor, kadro dolunca otomatik başlar!</strong>`
+        ? ` · <strong style="color:#8ce99a;">✨ Dolunca otomatik başlar!</strong>`
         : ""
     }
           </span>
         </div>
         <div style="display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
-          <button class="btn" id="btn-lobby-inspect-self">🔍 360° Karakterim</button>
-          <button class="btn" id="btn-share-room">🔗 Davet Kopyala</button>
+          <button class="btn" id="btn-lobby-inspect-self">🎭 360° Gör</button>
+          <button class="btn" id="btn-share-room">🔗 Davet</button>
           ${
             isMatchmaking
               ? isHost
-                ? `<button class="btn btn-crimson" id="btn-start-game">⚡ Hemen Başlat</button>`
-                : `<span style="font-size:0.8rem; color:#8ce99a;">⏳ Oyuncular katılıyor (${playerCount}/${targetCount})...</span>`
+                ? `<button class="btn btn-crimson" id="btn-start-game">⚡ Başlat</button>`
+                : `<span style="font-size:0.78rem; color:#8ce99a;">⏳ Bekleniyor (${playerCount}/${targetCount})</span>`
               : isHost
-              ? `
-            <button class="btn" id="btn-add-bots">🤖 Bot Doldur</button>
-            ${
-              botCount > 0
-                ? `<button class="btn" id="btn-remove-bots">🧹 Botları Sil</button>`
-                : ""
-            }
-            <button class="btn" id="btn-auto-start">⏱️ Oto: ${state.autoStart ? "AÇIK" : "KAPALI"}</button>
-            <button class="btn btn-crimson" id="btn-start-game">🔥 SOFRAYI BAŞLAT</button>
-          `
-              : `<span style="font-size:0.8rem; color:var(--gold);">Kurucunun başlatması bekleniyor...</span>`
+              ? `<button class="btn btn-crimson" id="btn-start-game" style="padding:7px 14px; font-weight:bold;">🔥 OYUNU BAŞLAT</button>`
+              : `<span style="font-size:0.78rem; color:var(--gold);">Kurucu bekleniyor...</span>`
           }
         </div>
       </div>
 
-      <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; justify-content:space-between; background:rgba(28,18,12,0.75); border:1px solid var(--gold-soft); border-radius:10px; padding:7px 10px; margin-bottom:8px; font-size:0.75rem;">
-        <div style="display:flex; gap:5px; align-items:center; flex-wrap:wrap;">
-          <strong style="color:var(--gold);">👥 Sofra Kadrosu:</strong>
-          ${[
-            { n: 8, lbl: "8 Kişi (1 Hain)" },
-            { n: 10, lbl: "10 Kişi (2 Hain)" },
-            { n: 12, lbl: "12 Kişi (2 Hain)" }
-          ]
-            .map(
-              (o) =>
-                `<button class="btn ${targetCount === o.n ? "btn-crimson" : ""}" data-opt-count="${o.n}" ${
-                  !isHost || isMatchmaking ? "disabled" : ""
-                } style="padding:3px 8px; font-size:0.71rem;">${o.lbl}</button>`
-            )
-            .join("")}
+      <details style="background:rgba(20,14,28,0.82); border:1px solid var(--gold-soft); border-radius:10px; padding:6px 10px; margin-bottom:7px; font-size:0.74rem;">
+        <summary style="cursor:pointer; color:var(--gold); font-weight:bold; user-select:none;">
+          ⚙️ Oda, Süre & Bot Ayarları (${targetCount} Kişi · ${escapeHtml(activePreset.badge)})${
+      !isHost ? " — Kurucu Seçimi" : ""
+    }
+        </summary>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; justify-content:space-between; margin-top:7px; padding-top:6px; border-top:1px solid rgba(226,189,83,0.2);">
+          ${
+            !isMatchmaking && isHost
+              ? `<div style="display:flex; gap:5px; align-items:center; flex-wrap:wrap;">
+                   <button class="btn" id="btn-add-bots" style="padding:3px 8px; font-size:0.71rem;">🤖 Bot Doldur</button>
+                   ${
+                     botCount > 0
+                       ? `<button class="btn" id="btn-remove-bots" style="padding:3px 8px; font-size:0.71rem;">🧹 Botları Sil</button>`
+                       : ""
+                   }
+                   <button class="btn" id="btn-auto-start" style="padding:3px 8px; font-size:0.71rem;">⏱️ Oto: ${state.autoStart ? "AÇIK" : "KAPALI"}</button>
+                 </div>`
+              : ""
+          }
+          <div style="display:flex; gap:4px; align-items:center; flex-wrap:wrap;">
+            <strong style="color:var(--gold);">👥 Kadro:</strong>
+            ${[
+              { n: 8, lbl: "8 Kişi" },
+              { n: 10, lbl: "10 Kişi" },
+              { n: 12, lbl: "12 Kişi" }
+            ]
+              .map(
+                (o) =>
+                  `<button class="btn ${targetCount === o.n ? "btn-crimson" : ""}" data-opt-count="${o.n}" ${
+                    !isHost || isMatchmaking ? "disabled" : ""
+                  } style="padding:3px 7px; font-size:0.7rem;">${o.lbl}</button>`
+              )
+              .join("")}
+          </div>
+          <div style="display:flex; gap:4px; align-items:center; flex-wrap:wrap;">
+            <strong style="color:var(--gold);">⏱️ Süre:</strong>
+            ${[
+              { k: "10m", lbl: "⚡ 10 Dk" },
+              { k: "20m", lbl: "⏳ 20 Dk" },
+              { k: "35m", lbl: "🕵️ 35 Dk" },
+              { k: "60m", lbl: "👑 1 Saat" }
+            ]
+              .map(
+                (p) =>
+                  `<button class="btn ${paceMode === p.k ? "btn-crimson" : ""}" data-opt-pace="${p.k}" ${
+                    !isHost || isMatchmaking ? "disabled" : ""
+                  } style="padding:3px 7px; font-size:0.7rem;">${p.lbl}</button>`
+              )
+              .join("")}
+          </div>
+          <div style="display:flex; gap:4px; align-items:center; flex-wrap:wrap;">
+            <strong style="color:var(--gold);">🕯️ Hava:</strong>
+            ${[
+              { k: "torch", lbl: "🔥 Meşale" },
+              { k: "crimson", lbl: "🩸 Kızıl Ay" },
+              { k: "mist", lbl: "🌫️ Sisli" }
+            ]
+              .map(
+                (a) =>
+                  `<button class="btn ${atmo === a.k ? "btn-crimson" : ""}" data-opt-atmo="${a.k}" ${
+                    !isHost ? "disabled" : ""
+                  } style="padding:3px 7px; font-size:0.7rem;">${a.lbl}</button>`
+              )
+              .join("")}
+          </div>
         </div>
-        <div style="display:flex; gap:5px; align-items:center; flex-wrap:wrap;">
-          <strong style="color:var(--gold);">⏱️ Oyun Süresi:</strong>
-          ${[
-            { k: "10m", lbl: "⚡ 10 Dk Hızlı" },
-            { k: "20m", lbl: "⏳ 20 Dk Standart" },
-            { k: "35m", lbl: "🕵️ 35 Dk Dedektif" },
-            { k: "60m", lbl: "👑 1 Saat Destansı" }
-          ]
-            .map(
-              (p) =>
-                `<button class="btn ${paceMode === p.k ? "btn-crimson" : ""}" data-opt-pace="${p.k}" ${
-                  !isHost || isMatchmaking ? "disabled" : ""
-                } style="padding:3px 8px; font-size:0.71rem;">${p.lbl}</button>`
-            )
-            .join("")}
-        </div>
-        <div style="display:flex; gap:5px; align-items:center; flex-wrap:wrap;">
-          <strong style="color:var(--gold);">🕯️ Şato Havası:</strong>
-          ${[
-            { k: "torch", lbl: "🔥 Meşale & Taş" },
-            { k: "crimson", lbl: "🩸 Kızıl Ay" },
-            { k: "mist", lbl: "🌫️ Sisli Fırtına" }
-          ]
-            .map(
-              (a) =>
-                `<button class="btn ${atmo === a.k ? "btn-crimson" : ""}" data-opt-atmo="${a.k}" ${
-                  !isHost ? "disabled" : ""
-                } style="padding:3px 8px; font-size:0.71rem;">${a.lbl}</button>`
-            )
-            .join("")}
-        </div>
-      </div>
+      </details>
 
       <div class="mobile-lobby-tabs">
         <button class="btn ${this.mobileLobbyTab === "seats" ? "btn-crimson" : ""}" id="tab-btn-seats">
@@ -5399,48 +5448,44 @@ class SofraGameApp {
     panel.innerHTML = `
       <div class="panel-header">
         <div>
-          <h2>🔔 EVET, OYUN ZAMANI! — AŞAMA ${tr.stage}/${tr.totalStages}</h2>
-          <span style="font-size:0.75rem; color:var(--text-muted);">
-            Şatoda her şey 1 dakikalığına durdu! İlk bitiren (veya ilk doğru yapan) sonuçlarda belirlenip <strong style="color:var(--gold);">KİMSENİN HABERİ OLMADAN 📿 Altın Kolyeyi</strong> alır!
+          <h2>🔔 BİLMECE YARIŞI (${tr.stage}/${tr.totalStages})</h2>
+          <span style="font-size:0.74rem; color:var(--parchment);">
+            İlk doğru bitiren <strong style="color:var(--gold);">gizlice 📿 Gece Korumalı Altın Kolyeyi</strong> kazanır!
           </span>
         </div>
-        <span class="gold-badge">🪙 Hazine: ${state.pot}</span>
+        <div style="display:flex; gap:6px; align-items:center;">
+          ${
+            isHain && tr.canSabotage
+              ? `<button class="btn btn-crimson" id="btn-sabotage-trial" style="padding:4px 9px; font-size:0.72rem;">🗡️ Sabote Et (+25🪙)</button>`
+              : ""
+          }
+          <span class="gold-badge">🪙 ${state.pot}</span>
+        </div>
       </div>
 
       ${
         tr.feedback
-          ? `<div style="margin-bottom:8px; padding:6px 10px; border-radius:8px; background:rgba(212,175,55,0.14); border:1px solid var(--gold-soft); font-size:0.8rem; color:var(--gold);">
+          ? `<div style="margin-bottom:6px; padding:5px 9px; border-radius:8px; background:rgba(212,175,55,0.14); border:1px solid var(--gold-soft); font-size:0.78rem; color:var(--gold);">
               ${escapeHtml(tr.feedback)}
             </div>`
           : ""
       }
 
-      <div style="background:rgba(22,16,34,0.92); border:1px solid var(--gold-soft); border-radius:12px; padding:12px; margin-bottom:10px;">
-        <div style="font-size:0.76rem; color:var(--gold); margin-bottom:4px;">${escapeHtml(tr.title)}</div>
-        <p style="font-size:0.95rem; line-height:1.45; margin-bottom:10px;">${escapeHtml(tr.prompt)}</p>
-        <div style="display:flex; flex-direction:column; gap:7px;">
+      <div style="background:rgba(22,16,34,0.92); border:1px solid var(--gold-soft); border-radius:11px; padding:10px 12px;">
+        <div style="font-size:0.74rem; color:var(--gold); margin-bottom:3px;">${escapeHtml(tr.title)}</div>
+        <p style="font-size:0.92rem; line-height:1.4; margin-bottom:9px; color:#fff8e7;">${escapeHtml(tr.prompt)}</p>
+        <div class="vk-riddle-options-grid">
           ${(tr.options || [])
             .map(
               (opt: string, idx: number) => `
-            <button class="btn" data-trial-opt="${idx}" style="text-align:left; padding:10px 12px;">
-              <strong>${idx + 1}.</strong> ${escapeHtml(opt)}
+            <button class="btn" data-trial-opt="${idx}">
+              <strong style="color:var(--gold);">${idx + 1}.</strong> <span>${escapeHtml(opt)}</span>
             </button>
           `
             )
             .join("")}
         </div>
       </div>
-
-      ${
-        isHain && tr.canSabotage
-          ? `<div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; background:rgba(155,18,32,0.22); border:1px solid #ff4d5e; border-radius:10px; padding:8px 12px;">
-              <span style="font-size:0.78rem; color:#ffb3bc;">
-                🗡️ <strong>Hain Yetkisi:</strong> Düzeneği gizlice bozup hazineden +25🪙 çalabilirsin (Kâhya sabotaj sayısını sofrada duyurur!).
-              </span>
-              <button class="btn btn-crimson" id="btn-sabotage-trial">🗡️ Gizlice Sabote Et (+25🪙)</button>
-            </div>`
-          : ""
-      }
     `;
 
     panel.querySelectorAll("[data-trial-opt]").forEach((btn) => {
@@ -5643,9 +5688,11 @@ class SofraGameApp {
           )
         : null;
 
+    const votedCount = players.filter((p: any) => Boolean(p.votedForId)).length;
+
     const tieRunoffBanner = isTieRunoff
-      ? `<div style="margin-bottom:8px; padding:9px 12px; border-radius:10px; background:linear-gradient(135deg, rgba(165,24,38,0.42), rgba(212,175,55,0.22)); border:2px solid var(--gold); font-size:0.84rem; color:#fff2cc;">
-           ⚖️ <strong>OYLAR EŞİT ÇIKTI — İKİNCİ TUR (RUNOFF) OYLAMA!</strong> Yalnızca en çok oyu paylaşan adaylara oy atılabilir:
+      ? `<div style="margin-bottom:6px; padding:7px 10px; border-radius:9px; background:linear-gradient(135deg, rgba(165,24,38,0.42), rgba(212,175,55,0.22)); border:1.5px solid var(--gold); font-size:0.8rem; color:#fff2cc;">
+           ⚖️ <strong>EŞİTLİK BOZMA TURU:</strong> Sadece şu adaylara oy verilebilir:
            <strong>${activeTieIds
              .map((tid) => {
                const tp = state.players?.get(tid);
@@ -5657,51 +5704,49 @@ class SofraGameApp {
       : "";
 
     const statusBanner = !canVote
-      ? `<div style="margin-bottom:10px; padding:9px 12px; border-radius:10px; background:rgba(70,85,120,0.25); border:1px solid #7ab8ff; font-size:0.84rem; color:#cfe5ff;">
-           👻 Elenerek Hayalet oldun — yaşayan davetlilerin sofra tartışmasını ve şömine oylamasını izliyorsun.
+      ? `<div style="margin-bottom:7px; padding:6px 10px; border-radius:9px; background:rgba(70,85,120,0.25); border:1px solid #7ab8ff; font-size:0.8rem; color:#cfe5ff;">
+           👻 Hayalet modundasın — oylamayı izliyorsun.
          </div>`
       : this.selectedVoteTargetId === "ABSTAIN"
-      ? `<div style="margin-bottom:10px; padding:9px 12px; border-radius:10px; background:rgba(212,175,55,0.18); border:1px solid var(--gold); font-size:0.86rem; color:var(--gold);">
-           🏳️ <strong>Çekimser kaldın!</strong> İstersen süre bitmeden aşağıdaki kartlardan birine <strong>🔥 OY AT</strong> diyebilirsin.
+      ? `<div style="margin-bottom:7px; padding:6px 10px; border-radius:9px; background:rgba(212,175,55,0.18); border:1px solid var(--gold); font-size:0.8rem; color:var(--gold);">
+           🏳️ <strong>Pas geçtin.</strong> Fikrini değiştirirsen aşağıdan <strong>🔥 OY VER</strong> diyebilirsin.
          </div>`
       : chosenPlayer
-      ? `<div style="margin-bottom:10px; padding:9px 12px; border-radius:10px; background:rgba(40,120,75,0.32); border:2px solid #6ef2b1; font-size:0.88rem; color:#d8ffeb;">
-           ✅ <strong>OYUN MÜHÜRLENDİ:</strong> Koltuk #${chosenPlayer.seat} (${escapeHtml(chosenPlayer.nick)}) seçildi! Süre dolana kadar tartışmaya devam edebilir veya oyunu değiştirebilirsin.
+      ? `<div style="margin-bottom:7px; padding:7px 10px; border-radius:9px; background:rgba(40,120,75,0.34); border:1.5px solid #6ef2b1; font-size:0.82rem; color:#d8ffeb;">
+           ✅ <strong>OYUN VERİLDİ:</strong> #${chosenPlayer.seat} ${escapeHtml(chosenPlayer.nick)} — Süre bitene kadar değiştirebilirsin.
          </div>`
-      : `<div style="margin-bottom:10px; padding:10px 14px; border-radius:10px; background:rgba(178,22,30,0.34); border:2px solid #ff5768; font-size:0.88rem; color:#ffe5e8; font-weight:bold; display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
-           <span>🗣️ Tartış, <strong>👉 Suçla</strong> ve gizli zarfını mühürlemek için <strong>"🔥 BU KİŞİYE OY AT"</strong> butonuna bas!</span>
-           ${
-             preTargetPlayer
-               ? `<button class="btn btn-emerald" id="btn-vote-pretarget-fast" style="padding:6px 11px; font-size:0.76rem;">
-                    🎯 Ön-Hedefin (#${preTargetPlayer.seat} ${escapeHtml(preTargetPlayer.nick)}) İçin Oy Ver!
-                  </button>`
-               : ""
-           }
-         </div>`;
+      : preTargetPlayer
+      ? `<div style="margin-bottom:7px; padding:6px 10px; border-radius:9px; background:rgba(178,22,30,0.28); border:1.5px solid #ff5768; font-size:0.8rem; color:#ffe5e8; display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+           <span>🎯 Şüphelendiğin kişiye tek dokunuşla oy ver:</span>
+           <button class="btn btn-emerald" id="btn-vote-pretarget-fast" style="padding:4px 10px; font-size:0.74rem;">
+             🔥 #${preTargetPlayer.seat} ${escapeHtml(preTargetPlayer.nick)}'e Oy Ver
+           </button>
+         </div>`
+      : "";
 
     panel.innerHTML = `
       <div class="panel-header">
         <div>
-          <h2 style="color:#ff5768; font-size:1.06rem;">🔔 YUVARLAK SOFRA & ŞÖMİNE OYLAMASI — KİM ELENSİN?</h2>
-          <span style="font-size:0.74rem; color:var(--text-muted);">
-            Alttan sofraya yaz, gerekçenle suçla ve oyunu mühürle! <strong>Kırmızı Alev = Hain</strong>, <strong>Beyaz Alev = Masum</strong> · 🪙 Hazine: <strong style="color:var(--gold);">${state.pot || 0}</strong>
+          <h2 style="color:#ff5768; font-size:1.02rem;">⚖️ OYLAMA — ARAMIZDAKİ HAİN KİM?</h2>
+          <span style="font-size:0.73rem; color:var(--parchment);">
+            🗳️ Oy Kullanan: <strong style="color:var(--gold);">${votedCount}/${players.length}</strong> · 🔥 Kırmızı Alev = Hain, ❄️ Beyaz Alev = Masum
           </span>
         </div>
-        <div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
-          <button class="btn" id="btn-vote-open-hb" style="padding:5px 9px; font-size:0.73rem; border-color:#ffd166; color:#ffe9a8;">
-            📖 El Kitapçığı (${this.clueJournal.length})
+        <div style="display:flex; gap:5px; align-items:center; flex-wrap:wrap;">
+          <button class="btn" id="btn-vote-open-hb" style="padding:4px 8px; font-size:0.72rem; border-color:#ffd166; color:#ffe9a8;">
+            📖 Notlar (${this.clueJournal.length})
           </button>
           ${
             canVote && (state.pot || 0) >= 50
-              ? `<button class="btn" id="btn-vote-kahya-ask" style="padding:5px 9px; font-size:0.73rem;">
-                   🔔 Kâhya'ya Sor (50🪙)
+              ? `<button class="btn" id="btn-vote-kahya-ask" style="padding:4px 8px; font-size:0.72rem;">
+                   🔔 Kâhya (50🪙)
                  </button>`
               : ""
           }
           ${
             canVote
-              ? `<button class="btn" id="btn-vote-abstain" style="padding:5px 9px; font-size:0.73rem;">
-                   🏳️ Çekimser Kal
+              ? `<button class="btn" id="btn-vote-abstain" style="padding:4px 8px; font-size:0.72rem;">
+                   🏳️ Pas Geç
                  </button>`
               : ""
           }
@@ -5713,29 +5758,34 @@ class SofraGameApp {
 
       <div class="seat-grid">
         ${players
-          .map((p: any) => {
+          .map((p: any, idx: number) => {
             const isMe = p.id === myId;
             const isPicked = this.selectedVoteTargetId === p.id;
             const tieBlocked = isTieRunoff && !activeTieIds.includes(p.id);
             return `
-              <div class="seat-card ${isPicked ? "active" : ""}" style="border-width:${
+              <div class="seat-card vk-vote-card ${isPicked ? "active voted-target" : ""}" style="animation-delay:${
+              idx * 30
+            }ms; border-width:${
               isPicked || this.preTargetSeat === p.seat ? "2px" : "1px"
-            }; ${tieBlocked && !isMe ? "opacity:0.65;" : ""} display:flex; flex-direction:column; justify-content:space-between;">
+            }; ${tieBlocked && !isMe ? "opacity:0.6;" : ""} display:flex; flex-direction:column; justify-content:space-between;">
                 <div>
-                  <div class="seat-num">SANDALYE #${p.seat}</div>
-                  <div class="seat-name">${escapeHtml(p.nick)} ${isMe ? "(Sen)" : ""}</div>
-                  <div class="seat-title" style="color:${p.votedForId ? "#ffd700" : "var(--text-muted)"};">
-                    ${
-                      !p.connected
-                        ? "⚡ Bağlantı Bekleniyor · "
-                        : isMe && this.myHasSecretNecklace
-                        ? "📿 Gizli Kolye Sende · "
-                        : ""
-                    }${p.votedForId ? "✉️ Zarfını Mühürledi" : "⏳ Tartışıyor..."}
+                  <div style="display:flex; justify-content:space-between; align-items:center; gap:4px;">
+                    <span class="seat-num">#${p.seat}</span>
+                    <span style="font-size:0.66rem; color:${p.votedForId ? "#8ce99a" : "var(--text-muted)"};">
+                      ${p.votedForId ? "✉️ Oy Verdi" : "⏳ Bekliyor"}
+                    </span>
                   </div>
+                  <div class="seat-name">${escapeHtml(p.nick)} ${isMe ? "(Sen)" : ""}</div>
+                  ${
+                    isMe && this.myHasSecretNecklace
+                      ? `<div class="seat-title" style="color:#ffd166;">📿 Gizli Kolye Sende</div>`
+                      : !p.connected
+                      ? `<div class="seat-title" style="color:#ff8593;">⚡ Bağlantı Yok</div>`
+                      : ""
+                  }
                   ${this.renderSeatSuspectBadge(p.seat)}
                 </div>
-                <div style="display:flex; flex-direction:column; gap:5px; margin-top:8px;">
+                <div style="display:flex; flex-direction:column; gap:4px; margin-top:6px;">
                   ${
                     canVote && !isMe
                       ? `<button class="btn ${isPicked ? "" : tieBlocked ? "" : "btn-crimson"}" data-cast-vote="${p.id}" ${
@@ -5745,24 +5795,24 @@ class SofraGameApp {
                         }">
                           ${
                             isPicked
-                              ? "✅ OYUN BU KİŞİDE"
+                              ? "✅ OYUN VERİLDİ"
                               : tieBlocked
-                              ? "⚖️ Eşitlik Dışı"
-                              : "🔥 BU KİŞİYE OY AT"
+                              ? "⚖️ Aday Değil"
+                              : "🔥 OY VER"
                           }
                         </button>`
                       : isMe
-                      ? `<div style="font-size:0.7rem; color:var(--text-muted); text-align:center; padding:5px 0;">Kendi Koltuğun</div>`
+                      ? `<div style="font-size:0.69rem; color:var(--text-muted); text-align:center; padding:4px 0;">Senin Koltuğun</div>`
                       : ""
                   }
                   <div style="display:flex; gap:4px;">
-                    <button class="btn" data-vote-inspect="${p.id}" style="flex:1; padding:4px 5px; font-size:0.68rem;">
-                      🔍 Bar
+                    <button class="btn" data-vote-inspect="${p.id}" style="flex:1; padding:3px 5px; font-size:0.67rem;" title="Kimlerle yakınlaştı?">
+                      🔍 İncele
                     </button>
                     ${
                       canVote && !isMe
-                        ? `<button class="btn" data-vote-accuse="${p.id}" data-seat="${p.seat}" data-nick="${escapeHtml(p.nick)}" style="flex:1; padding:4px 5px; font-size:0.68rem; border-color:rgba(255,87,104,0.5); color:#ffb3bc;">
-                            👉 Suçla
+                        ? `<button class="btn" data-vote-accuse="${p.id}" data-seat="${p.seat}" data-nick="${escapeHtml(p.nick)}" style="flex:1; padding:3px 5px; font-size:0.67rem; border-color:rgba(255,87,104,0.5); color:#ffb3bc;">
+                            🗣️ Suçla
                           </button>`
                         : ""
                     }
@@ -6484,6 +6534,82 @@ class SofraGameApp {
     return out;
   }
 
+  private triggerPhaseCurtain(phase: string, round: number): void {
+    const curtain = document.getElementById("phase-transition-curtain");
+    const kickerEl = document.getElementById("phase-curtain-kicker");
+    const titleEl = document.getElementById("phase-curtain-title");
+    const subEl = document.getElementById("phase-curtain-sub");
+    if (!curtain || !kickerEl || !titleEl || !subEl) return;
+
+    const meta: Record<string, { kicker: string; title: string; sub: string } | undefined> = {
+      ARRIVAL: {
+        kicker: "KARGALI ŞATO DAVETİ",
+        title: "📜 GİZLİ ROL ZARFLARI DAĞITILIYOR",
+        sub: "Yalnızca senin gördüğün mührünü aç — kimseye açık etme!"
+      },
+      DAY: {
+        kicker: `GÜN ${round}`,
+        title: "☀️ ŞATO KEŞFİ BAŞLADI",
+        sub: "Odaları gez, ipuçlarını topla ve şüphelileri gözlemle!"
+      },
+      TRIAL: {
+        kicker: `GÜN ${round} · BÜYÜK ÇAN ÇALDI`,
+        title: "🔔 BİLMECE & ALTIN KOLYE YARIŞI",
+        sub: "Şatoda her şey durdu — ilk doğru bitiren gizlice kolyeyi alır!"
+      },
+      TABLE: {
+        kicker: `GÜN ${round} · YUVARLAK SOFRA`,
+        title: "🗣️ SOFRA TARTIŞMASI BAŞLADI",
+        sub: "Herkes masada toplandı — kanıtları ortaya dök!"
+      },
+      VOTE: {
+        kicker: `GÜN ${round} · HÜKÜM VAKTİ`,
+        title: "⚖️ ŞÖMİNE OYLAMASI BAŞLADI!",
+        sub: "Tüm pencereler kapandı — aranızdaki haini seçip mühürleyin!"
+      },
+      FIRE: {
+        kicker: "ŞÖMİNE HÜKMÜ",
+        title: "🔥 ZARF ATEŞE ATILIYOR...",
+        sub: "Kırmızı Alev = Hain · Beyaz Alev = Masum Misafir"
+      },
+      NIGHT: {
+        kicker: `GECE ${round}`,
+        title: "🌑 ŞATODA KARANLIK ÇÖKTÜ",
+        sub: "Kapılar kilitlendi — Hainler gizlice kurban seçiyor..."
+      },
+      FINAL: {
+        kicker: "SON KARAR",
+        title: "👑 FİNAL GÜVEN OYLAMASI",
+        sub: "Kalanlarla el sıkışacak mısın, yoksa son oylamaya mı gideceksin?"
+      },
+      RESULT: {
+        kicker: "OYUN TAMAMLANDI",
+        title: "🎭 TÜM MASKELER DÜŞTÜ!",
+        sub: "Kargalı Şato'da gerçek roller ortaya çıkıyor..."
+      }
+    };
+
+    const item = meta[phase];
+    if (!item) return;
+
+    kickerEl.textContent = item.kicker;
+    titleEl.textContent = item.title;
+    subEl.textContent = item.sub;
+
+    curtain.classList.remove("hidden", "curtain-play");
+    void curtain.offsetWidth;
+    curtain.classList.add("curtain-play");
+
+    if (this.curtainHideTimer !== null) {
+      window.clearTimeout(this.curtainHideTimer);
+    }
+    this.curtainHideTimer = window.setTimeout(() => {
+      curtain.classList.remove("curtain-play");
+      curtain.classList.add("hidden");
+      this.curtainHideTimer = null;
+    }, 1650);
+  }
+
   private updateLocalDayMovement(dt: number, state: any): void {
     let turnDir = this.camTurnDir;
     if (this.keys.has("arrowleft") || this.keys.has("q")) turnDir += 1;
@@ -6492,7 +6618,10 @@ class SofraGameApp {
       this.scene.cameraYaw += Math.max(-1, Math.min(1, turnDir)) * 2.1 * dt;
     }
 
-    if (!this.room || state.phase !== "DAY") return;
+    if (!this.room || state.phase !== "DAY") {
+      this.scene.setSprintVisual(false);
+      return;
+    }
 
     let forward = 0;
     let strafe = 0;
@@ -6526,6 +6655,8 @@ class SofraGameApp {
     } else {
       this.stamina = Math.min(100, this.stamina + (100 / SOFRA_CONFIG.STAMINA_RECOVER_SEC) * dt);
     }
+
+    this.scene.setSprintVisual(isMoving && speed > SOFRA_CONFIG.WALK_SPEED);
 
     // SVG Stamina Halkası Güncellemesi (Çevre = 283)
     const ringCircle = document.getElementById("stamina-ring-circle");
@@ -6616,6 +6747,7 @@ class SofraGameApp {
       }
 
       const me = state.players?.get(this.room.sessionId);
+      this.scene.localPlayerIsGhost = Boolean(me && (!me.alive || me.ghost));
 
       if (state.phase !== this.lastPhase) {
         const prevPhase = this.lastPhase;
@@ -6623,8 +6755,84 @@ class SofraGameApp {
         this.isLocalReadyForPhase = false;
         this.lastCountdownSec = -1;
         this.announcementChangedAt = now;
+
+        // Evre geçişinde AÇIK OLAN TÜM pencereleri, kitapçığı, menüleri ve klavyeyi temizle!
         this.closeCharacterContextMenu();
+        this.closeHudGearMenu();
+        this.closeHandbookModal();
+        document.getElementById("welcome-modal")?.classList.add("hidden");
+        const pCard = document.getElementById("puzzle-card-content");
+        if (pCard) pCard.style.width = "";
+        document.getElementById("puzzle-modal")?.classList.add("hidden");
+        document.getElementById("dm-picker-modal")?.classList.add("hidden");
+
+        if (this.scene.inspectTargetId) {
+          this.inspectedFromHandbook = false;
+          this.closeInspectOverlay();
+        }
+
+        if (
+          state.phase === "VOTE" ||
+          state.phase === "TRIAL" ||
+          state.phase === "TABLE" ||
+          state.phase === "NIGHT" ||
+          state.phase === "FINAL" ||
+          state.phase === "ARRIVAL"
+        ) {
+          document.getElementById("farewell-toast")?.classList.add("hidden");
+          this.mobileSprintHeld = false;
+          this.keys.clear();
+          this.resetPointersFn?.();
+          if (document.activeElement instanceof HTMLElement && document.activeElement.tagName === "INPUT") {
+            document.activeElement.blur();
+          }
+        }
+
+        const isSelectionScreen =
+          state.phase === "LOBBY" ||
+          state.phase === "ARRIVAL" ||
+          state.phase === "TRIAL" ||
+          state.phase === "TABLE" ||
+          state.phase === "VOTE" ||
+          state.phase === "NIGHT" ||
+          state.phase === "FINAL" ||
+          state.phase === "RESULT";
+
         document.body.classList.toggle("in-fire-mode", state.phase === "FIRE");
+        document.body.classList.toggle(
+          "in-council-focus",
+          state.phase !== "DAY" && state.phase !== "LOBBY"
+        );
+        document.body.classList.toggle(
+          "in-vote-focus",
+          state.phase === "VOTE" || state.phase === "TABLE"
+        );
+        document.body.classList.toggle("in-selection-screen", isSelectionScreen);
+
+        // Telefonda seçim ekranlarına girerken alt sohbet otomatik küçülür ➔ Seçim ekranı %100 TAM EKRAN açılır!
+        const isMobileViewport = window.innerWidth <= 900 || window.innerHeight <= 580;
+        const bottomChatEl = document.getElementById("ko-bottom-chat");
+        const minChatBtnEl = document.getElementById("btn-toggle-chat-min");
+        if (bottomChatEl && isMobileViewport) {
+          if (isSelectionScreen) {
+            bottomChatEl.classList.add("minimized");
+            if (minChatBtnEl) minChatBtnEl.textContent = "▴";
+          } else if (state.phase === "DAY") {
+            bottomChatEl.classList.remove("minimized");
+            if (minChatBtnEl) minChatBtnEl.textContent = "▾";
+          }
+        }
+
+        // Orta seçim paneline yumuşak sahne giriş animasyonu ve tam ekran geçiş perdesi
+        const centerPanelEl = document.getElementById("center-panel");
+        if (centerPanelEl && state.phase !== "DAY") {
+          centerPanelEl.classList.remove("phase-enter-anim");
+          void centerPanelEl.offsetWidth;
+          centerPanelEl.classList.add("phase-enter-anim");
+        }
+        if (prevPhase !== "" && state.phase !== "LOBBY") {
+          this.triggerPhaseCurtain(state.phase, state.round || 1);
+        }
 
         if (state.phase === "DAY") {
           this.dayPhaseEnteredAt = now;
@@ -6640,27 +6848,13 @@ class SofraGameApp {
         }
         const readyBtn = document.getElementById("btn-ready-phase");
         if (readyBtn) readyBtn.textContent = "⏩ Hazırım";
-        const pCard = document.getElementById("puzzle-card-content");
-        if (pCard) pCard.style.width = "";
-        document.getElementById("puzzle-modal")?.classList.add("hidden");
-        document.getElementById("dm-picker-modal")?.classList.add("hidden");
 
-        // Evre her değiştiğinde açık kalan 360° İncele kartını kapat ki Oylama / Gece İnfazı seçim ekranı ASLA gizli kalmasın!
-        if (this.scene.inspectTargetId) {
-          this.inspectedFromHandbook = false;
-          this.closeInspectOverlay();
-        }
-
-        // Oyun Zamanı, Oylama, Gece İnfazı ve Final seçim ekranlarına girerken soldaki PM pencerelerini küçült ki yarış/seçim ekranı tam odakta açılsın!
+        // Oyun Zamanı, Oylama, Gece İnfazı ve Final seçim ekranlarına girerken soldaki PM pencerelerini küçült!
         if (state.phase === "TRIAL" || state.phase === "VOTE" || state.phase === "NIGHT" || state.phase === "FINAL") {
           this.pmThreads.forEach((t) => {
             t.minimized = true;
           });
           this.renderPMWindows();
-        }
-
-        if (state.phase === "ARRIVAL" || state.phase === "RESULT") {
-          this.closeHandbookModal();
         }
 
         if (state.phase === "TRIAL") {
@@ -6989,8 +7183,9 @@ class SofraGameApp {
           this.announcementChangedAt = now;
           annEl.textContent = `"${state.announcement}"`;
         }
-        const autoHideAnn = isDay && now - this.announcementChangedAt > 5200;
-        annEl.classList.toggle("ann-auto-hidden", autoHideAnn);
+        const fadeAnn = now - this.announcementChangedAt > 3800;
+        annEl.classList.toggle("ann-faded", fadeAnn);
+        annEl.classList.toggle("ann-auto-hidden", isDay && now - this.announcementChangedAt > 5200);
       }
 
       if (isDay) {
@@ -7006,7 +7201,10 @@ class SofraGameApp {
       if (zoneEl) {
         const myRoomTag =
           zone.ownerSeat && me?.seat === zone.ownerSeat ? " (Senin Odan 🗝️)" : zone.isPrivateBedroom ? " (Özel)" : "";
-        zoneEl.textContent = `📍 ${zone.name}${myRoomTag}`;
+        const hiddenPresence =
+          isDay && !this.scene.localPlayerIsGhost && this.scene.hasNearbyHiddenPresence(this.localX, this.localZ);
+        zoneEl.textContent = `📍 ${zone.name}${myRoomTag}${hiddenPresence ? " · 👂 Kapı arkasında ses var!" : ""}`;
+        zoneEl.classList.toggle("has-sound-alert", hiddenPresence);
       }
 
       const nearDoor = DOORS.some(
@@ -7072,6 +7270,13 @@ class SofraGameApp {
       this.scene.updateCamera(this.localX, this.localZ, dt);
       this.renderCenterPanel(state);
     } else {
+      document.body.classList.remove(
+        "in-selection-screen",
+        "in-council-focus",
+        "in-vote-focus",
+        "in-day-mode",
+        "in-fire-mode"
+      );
       this.scene.setActivePhase("LOBBY");
       // Kayıt / Ana Menüde "🔍 Karakterimi 360° İncele" açıkken önizleme karakterini Antre halısında çiz!
       if (this.previewSelfOnMenu) {

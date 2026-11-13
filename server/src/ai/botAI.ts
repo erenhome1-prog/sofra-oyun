@@ -1,4 +1,5 @@
 import { PlayerRole } from "@sofra/shared";
+import { MASTER_RIDDLE_BANK, RawRiddleEntry } from "./riddleBank.js";
 
 export type BotPersonality = "FITNECI" | "SAKIN" | "AGRESIF";
 
@@ -1321,89 +1322,100 @@ export interface ActivePuzzleSession {
   expiresAt: number;
 }
 
-const RIDDLE_POOL: Array<{ q: string; opts: string[]; ans: number }> = [
-  {
-    q: "Şömineye atılan zarf KAN KIRMIZISI alevle yanarsa elenen oyuncunun gerçek rolü nedir?",
-    opts: ["🗡️ Hain", "🕯️ Masum Misafir", "👑 Şato Kâhyası"],
-    ans: 0
-  },
-  {
-    q: "Üç davetli konuşuyor: Sinan 'Lale Haindir' diyor, Lale 'Kemal Haindir' diyor, Kemal 'İkisi de yalan söylüyor!' diyor. Yalnızca 1 Hain varsa ve sadece Hain yalan söylüyorsa Hain kimdir?",
-    opts: ["Sinan", "Lale", "Kemal"],
-    ans: 1
-  },
-  {
-    q: "Gündüz şatoda gizli Altın Kolye'yi kazanan oyuncuya gece ne olur?",
-    opts: ["Oyu iki sayılır", "Gece Hain saldırısından korunur", "Kâhya koltuğuna oturur"],
-    ans: 1
-  },
-  {
-    q: "Yuvarlak Sofra'da kimsenin seçemediği ve daima boş duran Kâhya'nın makamı kaç numaralı sandalyedir?",
-    opts: ["Sandalye #1", "Sandalye #11", "Sandalye #12"],
-    ans: 1
-  }
-];
+const shuffledDecks = new Map<string, number[]>();
+const recentByPlayer = new Map<string, number[]>();
 
-const RUNE_COMBOS: Array<{ seq: string; opts: string[]; ans: number }> = [
-  {
-    seq: "Kadim Rün Dizilimi:  🐦‍⬛ Kuzgun  ➔  🕯️ Şamdan  ➔  🗝️ Anahtar  ➔  ❓ (Mühür döngüsünü tamamla: Ateşten sonra ne gelir?)",
-    opts: ["🩸 Kızıl Kadeh", "🕯️ Şamdan", "🐦‍⬛ Kuzgun"],
-    ans: 0
-  },
-  {
-    seq: "Simya Terazisi: 2 Beyaz Zarf + 1 Kırmızı Zarf = 11 Gram, 1 Beyaz + 1 Kırmızı = 8 Gram ise Kırmızı Zarf kaç gramdır?",
-    opts: ["3 Gram", "5 Gram", "6 Gram"],
-    ans: 1
+function refillShuffledDeck(deckKey: string, matchingIndices: number[]): number[] {
+  const arr = [...matchingIndices];
+  for (let i = arr.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [arr[i], arr[j]] = [arr[j], arr[i]];
   }
-];
+  shuffledDecks.set(deckKey, arr);
+  return arr;
+}
 
-const CLOCK_PUZZLES: Array<{ q: string; opts: string[]; ans: number }> = [
-  {
-    q: "Şato Saati Şifresi: [Kâhya'nın Koltuğu] - [Son Final Kişi Sayısı] - [10 Kişideki Hain Sayısı] dizilimi hangisidir?",
-    opts: ["11 - 4 - 2", "12 - 3 - 2", "11 - 2 - 4"],
-    ans: 0
-  },
-  {
-    q: "Gece yarısı çanı 12 kez vurduğunda akrep XII üzerinde, yelkovan tam karşısındaysa saat kaçı gösterir?",
-    opts: ["06:00", "12:30", "12:00"],
-    ans: 1
+function drawUniqueRiddle(
+  kind: "RUNE" | "RIDDLE" | "CLOCK" | "ANY",
+  historyKey = "global"
+): { entry: RawRiddleEntry; bankIndex: number } {
+  const matchingIndices: number[] = [];
+  for (let i = 0; i < MASTER_RIDDLE_BANK.length; i++) {
+    if (kind === "ANY" || MASTER_RIDDLE_BANK[i].kind === kind) {
+      matchingIndices.push(i);
+    }
   }
-];
 
-export function createPuzzleChallenge(kind: "RUNE" | "RIDDLE" | "CLOCK"): ActivePuzzleSession {
-  const puzzleId = `pz_${Math.random().toString(36).slice(2, 9)}`;
-  if (kind === "RUNE") {
-    const item = RUNE_COMBOS[Math.floor(Math.random() * RUNE_COMBOS.length)];
-    return {
-      puzzleId,
-      kind,
-      title: "🔮 Kadim Rün & Simya Kürsüsü",
-      prompt: item.seq,
-      options: item.opts,
-      correctIndex: item.ans,
-      expiresAt: Date.now() + 25000
-    };
+  let deck = shuffledDecks.get(kind);
+  if (!deck || deck.length === 0) {
+    deck = refillShuffledDeck(kind, matchingIndices);
   }
-  if (kind === "CLOCK") {
-    const item = CLOCK_PUZZLES[Math.floor(Math.random() * CLOCK_PUZZLES.length)];
-    return {
-      puzzleId,
-      kind,
-      title: "🕰️ Şato Saati Şifre Mekanizması",
-      prompt: item.q,
-      options: item.opts,
-      correctIndex: item.ans,
-      expiresAt: Date.now() + 25000
-    };
+
+  const playerHist = recentByPlayer.get(historyKey) || [];
+  let pickPos = -1;
+  for (let i = deck.length - 1; i >= 0; i--) {
+    if (!playerHist.includes(deck[i])) {
+      pickPos = i;
+      break;
+    }
   }
-  const item = RIDDLE_POOL[Math.floor(Math.random() * RIDDLE_POOL.length)];
+  if (pickPos === -1) {
+    pickPos = deck.length - 1;
+  }
+
+  const [bankIndex] = deck.splice(pickPos, 1);
+  playerHist.push(bankIndex);
+  while (playerHist.length > 160) {
+    playerHist.shift();
+  }
+  recentByPlayer.set(historyKey, playerHist);
+  if (recentByPlayer.size > 400) {
+    const oldestKey = recentByPlayer.keys().next().value;
+    if (oldestKey) recentByPlayer.delete(oldestKey);
+  }
+
+  return { entry: MASTER_RIDDLE_BANK[bankIndex], bankIndex };
+}
+
+export function getRiddleBankSize(): number {
+  return MASTER_RIDDLE_BANK.length;
+}
+
+export function createPuzzleChallenge(
+  kind: "RUNE" | "RIDDLE" | "CLOCK" | "ANY" = "ANY",
+  historyKey = "global"
+): ActivePuzzleSession {
+  const { entry, bankIndex } = drawUniqueRiddle(kind, historyKey);
+  const puzzleId = `pz_${bankIndex}_${Math.random().toString(36).slice(2, 8)}`;
+
+  // Şıkların sırasını her seferinde rastgele karıştır (ezberi tamamen önler)
+  const tagged = entry.opts.map((text, idx) => ({
+    text,
+    isCorrect: idx === entry.ans
+  }));
+  for (let i = tagged.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [tagged[i], tagged[j]] = [tagged[j], tagged[i]];
+  }
+  const shuffledOptions = tagged.map((t) => t.text);
+  const correctIndex = Math.max(
+    0,
+    tagged.findIndex((t) => t.isCorrect)
+  );
+
+  const titleByKind: Record<"RUNE" | "RIDDLE" | "CLOCK", string> = {
+    RUNE: "🔮 Kadim Rün & Simya Kürsüsü",
+    CLOCK: "🕰️ Şato Saati & Kasa Şifresi",
+    RIDDLE: "📜 Kâhya'nın Büyük Bilmece Hazinesi"
+  };
+
   return {
     puzzleId,
-    kind: "RIDDLE",
-    title: "📜 Kâhya'nın Mantık Bilmecesi",
-    prompt: item.q,
-    options: item.opts,
-    correctIndex: item.ans,
+    kind: entry.kind,
+    title: titleByKind[entry.kind],
+    prompt: entry.q,
+    options: shuffledOptions,
+    correctIndex,
     expiresAt: Date.now() + 25000
   };
 }

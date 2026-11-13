@@ -2291,17 +2291,400 @@
           display: none;
         }
         body:not(.touch-detected) .lol-wheel-cluster {
-          transform: scale(0.78);
-          opacity: 0.72;
+          transform: scale(0.76);
+          opacity: 0.78;
         }
         body:not(.touch-detected) .lol-wheel-cluster:hover {
           opacity: 1;
+        }
+      }
+
+      /* =========================================================
+         6. SADE "VAMPİR KÖYLÜ" ARAYÜZ DÜZENİ & SİNEMATİK EVRE GEÇİŞLERİ
+         ========================================================= */
+      /* Ana menü tek kart sade düzen */
+      .menu-shell.simple-vk-menu {
+        width: min(540px, 95vw);
+        max-height: 92dvh;
+        padding: 14px 16px;
+        gap: 10px;
+      }
+
+      .vk-hero-play-btn {
+        width: 100%;
+        padding: 13px 18px !important;
+        font-size: 1.06rem !important;
+        font-weight: 800;
+        letter-spacing: 0.8px;
+        border-radius: 12px !important;
+        border: 2px solid #ffd166 !important;
+        background: linear-gradient(180deg, #d62839 0%, #7d111d 100%) !important;
+        color: #fff !important;
+        box-shadow: 0 6px 22px rgba(214, 40, 57, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+        transition: transform 0.14s ease, box-shadow 0.18s ease;
+      }
+
+      .vk-hero-play-btn:hover {
+        transform: translateY(-1px) scale(1.01);
+        box-shadow: 0 8px 26px rgba(226, 189, 83, 0.48);
+      }
+
+      .vk-hero-play-btn:active {
+        transform: scale(0.985);
+      }
+
+      .vk-menu-nav {
+        display: flex;
+        gap: 6px;
+      }
+
+      .vk-menu-nav .btn {
+        flex: 1;
+        padding: 7px 8px;
+        font-size: 0.77rem;
+      }
+
+      .vk-menu-nav .btn.vk-tab-active {
+        background: rgba(226, 189, 83, 0.2);
+        border-color: var(--gold);
+        color: #ffe8a3;
+        font-weight: bold;
+      }
+
+      /* Üst bar ve oyun ekranı kalabalık azaltma */
+      .phase-guide-compass,
+      .top-bar .hud-zoom-group,
+      #btn-hud-sfx,
+      #fps-label,
+      .left-control-cluster .cam-turn-row,
+      #btn-wheel-inspect {
+        display: none !important;
+      }
+
+      /* Sağ alt sade aksiyon butonları (Koş + Tek Etkileşim + Fısılda) */
+      .lol-wheel-cluster .sat-whisper {
+        left: auto !important;
+        top: auto !important;
+        right: 92px;
+        bottom: 6px;
+      }
+      .lol-wheel-cluster .sat-door {
+        left: auto !important;
+        top: auto !important;
+        right: 76px;
+        bottom: 66px;
+      }
+      .lol-wheel-cluster .sat-light {
+        left: auto !important;
+        top: auto !important;
+        right: 10px;
+        bottom: 92px;
+      }
+
+      .day-room-pill {
+        max-width: min(310px, 64vw);
+      }
+      .day-room-pill.has-sound-alert {
+        border-color: #ff6b7a;
+        color: #ffe3e6;
+        box-shadow: 0 0 12px rgba(255, 77, 94, 0.38);
+      }
+
+      /* Bilmece & Oyun Zamanı Şıkları: Yan yana 2x2 Izgara (Kaydırmasız Tek Ekran) */
+      .vk-riddle-options-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+        gap: 8px;
+      }
+      .vk-riddle-options-grid .btn {
+        text-align: left;
+        padding: 10px 12px;
+        font-size: 0.86rem;
+        line-height: 1.3;
+        min-height: 42px;
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+
+      /* Duyuru kutusu sadece yeni mesajda kısa süre görünüp kendiliğinden kaybolur */
+      #announcement-box {
+        transition: opacity 0.45s ease, transform 0.45s ease;
+      }
+      #announcement-box.ann-faded {
+        opacity: 0;
+        transform: translateY(-8px);
+        pointer-events: none;
+      }
+
+      /* Oylama / Oyun Zamanı / Gece / Şömine Odak Modu: Arkadaki tüm kalabalık kapanır! */
+      body.in-council-focus #day-action-hud,
+      body.in-council-focus #ko-pm-container,
+      body.in-council-focus #btn-open-dm-list,
+      body.in-council-focus #pc-mouse-hint,
+      body.in-council-focus #char-context-menu {
+        display: none !important;
+      }
+
+      body.in-vote-focus #announcement-box {
+        display: none !important;
+      }
+
+      /* Orta Panel Yumuşak Sahne Geçiş Animasyonu */
+      @keyframes councilPanelReveal {
+        0% {
+          opacity: 0;
+          transform: translateY(18px) scale(0.96);
+        }
+        100% {
+          opacity: 1;
+          transform: translateY(0) scale(1);
+        }
+      }
+
+      .center-panel.phase-enter-anim {
+        animation: councilPanelReveal 0.42s cubic-bezier(0.22, 1, 0.36, 1) both;
+      }
+
+      @keyframes voteCardStagger {
+        0% {
+          opacity: 0;
+          transform: translateY(10px) scale(0.97);
+        }
+        100% {
+          opacity: 1;
+          transform: translateY(0) scale(1);
+        }
+      }
+
+      .vk-vote-card {
+        animation: voteCardStagger 0.32s cubic-bezier(0.22, 1, 0.36, 1) both;
+        transition: transform 0.15s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+      }
+
+      .vk-vote-card:hover {
+        transform: translateY(-2px);
+      }
+
+      @keyframes waxStampPulse {
+        0% {
+          transform: scale(1.14);
+        }
+        60% {
+          transform: scale(0.97);
+        }
+        100% {
+          transform: scale(1);
+        }
+      }
+
+      .vk-vote-card.voted-target {
+        border: 2px solid #6ef2b1 !important;
+        background: linear-gradient(180deg, rgba(28, 88, 58, 0.52), rgba(16, 26, 24, 0.92)) !important;
+        box-shadow: 0 0 18px rgba(110, 242, 177, 0.28);
+        animation: waxStampPulse 0.28s ease-out;
+      }
+
+      /* Sinematik Tam Ekran Evre Geçiş Perdesi */
+      #phase-transition-curtain {
+        position: fixed;
+        inset: 0;
+        z-index: 92;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        pointer-events: none;
+        background: radial-gradient(circle at center, rgba(16, 10, 24, 0.86) 0%, rgba(6, 4, 10, 0.94) 100%);
+        opacity: 0;
+      }
+
+      #phase-transition-curtain.curtain-play {
+        animation: phaseCurtainSweep 1.65s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+      }
+
+      @keyframes phaseCurtainSweep {
+        0% {
+          opacity: 0;
+        }
+        16% {
+          opacity: 1;
+        }
+        72% {
+          opacity: 1;
+        }
+        100% {
+          opacity: 0;
+        }
+      }
+
+      .phase-curtain-inner {
+        text-align: center;
+        padding: 20px 28px;
+        max-width: min(560px, 92vw);
+        border-top: 2px solid rgba(226, 189, 83, 0.75);
+        border-bottom: 2px solid rgba(226, 189, 83, 0.75);
+        background: linear-gradient(90deg, transparent, rgba(28, 14, 26, 0.9), transparent);
+        animation: phaseCrestZoom 1.65s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+      }
+
+      @keyframes phaseCrestZoom {
+        0% {
+          transform: scale(0.88) translateY(10px);
+          opacity: 0;
+        }
+        20% {
+          transform: scale(1) translateY(0);
+          opacity: 1;
+        }
+        78% {
+          transform: scale(1.02) translateY(0);
+          opacity: 1;
+        }
+        100% {
+          transform: scale(1.06) translateY(-8px);
+          opacity: 0;
+        }
+      }
+
+      .phase-curtain-kicker {
+        font-size: 0.76rem;
+        letter-spacing: 2.5px;
+        color: var(--gold);
+        text-transform: uppercase;
+        margin-bottom: 6px;
+      }
+
+      .phase-curtain-title {
+        font-size: clamp(1.25rem, 3.6vw, 1.85rem);
+        font-weight: 800;
+        color: #fff4d6;
+        letter-spacing: 1px;
+        text-shadow: 0 2px 16px rgba(226, 65, 83, 0.55);
+      }
+
+      .phase-curtain-sub {
+        margin-top: 6px;
+        font-size: 0.86rem;
+        color: var(--parchment);
+        opacity: 0.92;
+      }
+
+      /* =========================================================
+         7. MOBİL TAM EKRAN SEÇİM EKRANLARI (PC GÖRÜNÜMÜ KORUNUR!)
+         ========================================================= */
+      @media (max-height: 580px), (max-width: 900px) {
+        #main-menu-overlay {
+          padding: max(4px, env(safe-area-inset-top))
+            max(6px, env(safe-area-inset-right))
+            max(4px, env(safe-area-inset-bottom))
+            max(6px, env(safe-area-inset-left));
+        }
+        .menu-shell.simple-vk-menu {
+          width: 100%;
+          max-width: 100%;
+          height: 100%;
+          max-height: 100%;
+          border-radius: 10px;
+          padding: 8px 11px;
+          gap: 6px;
+        }
+        .vk-hero-play-btn {
+          padding: 10px 14px !important;
+          font-size: 0.95rem !important;
+        }
+
+        /* Lobi, Gizli Zarf, Oyun Zamanı (Bilmece), Sofra, Oylama, Gece, Final, Sonuç -> TELEFONDA %100 TAM EKRAN! */
+        body.in-selection-screen #hud {
+          padding: max(3px, env(safe-area-inset-top))
+            max(5px, env(safe-area-inset-right))
+            max(4px, env(safe-area-inset-bottom))
+            max(5px, env(safe-area-inset-left));
+          gap: 3px;
+        }
+        body.in-selection-screen #announcement-box {
+          display: none !important;
+        }
+        body.in-selection-screen .middle-slot {
+          flex: 1 1 auto;
+          min-height: 0;
+          width: 100%;
+          height: 100%;
+          align-items: stretch;
+          justify-content: stretch;
+        }
+        body.in-selection-screen .center-panel {
+          width: 100% !important;
+          max-width: 100% !important;
+          height: 100% !important;
+          max-height: 100% !important;
+          border-radius: 10px;
+          padding: 8px 11px;
+        }
+        body.in-selection-screen .panel-header {
+          padding-bottom: 5px;
+          margin-bottom: 6px;
+        }
+        body.in-selection-screen .vk-riddle-options-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+          gap: 6px;
+        }
+        body.in-selection-screen .vk-riddle-options-grid .btn {
+          padding: 8px 10px;
+          min-height: 38px;
+          font-size: 0.8rem;
+        }
+
+        /* Telefonda seçim ekranındayken alt sohbet yüksekliği yemez; sağ altta ufak yüzen hap olarak durur! */
+        body.in-selection-screen #ko-bottom-chat.minimized {
+          position: fixed;
+          right: max(8px, env(safe-area-inset-right));
+          bottom: max(6px, env(safe-area-inset-bottom));
+          width: auto !important;
+          padding: 3px 8px;
+          z-index: 66;
+          background: rgba(16, 11, 26, 0.95);
+          border: 1.5px solid var(--gold);
+          border-radius: 99px;
+          box-shadow: 0 6px 20px rgba(0, 0, 0, 0.82);
+        }
+        body.in-selection-screen #ko-bottom-chat.minimized .ko-chat-resize-handle,
+        body.in-selection-screen #ko-bottom-chat.minimized .ko-chat-corner-grip,
+        body.in-selection-screen #ko-bottom-chat.minimized .ko-chat-edge-grip,
+        body.in-selection-screen #ko-bottom-chat.minimized #btn-expand-chat,
+        body.in-selection-screen #ko-bottom-chat.minimized #btn-open-dm-list {
+          display: none !important;
+        }
+        body.in-selection-screen #ko-bottom-chat:not(.minimized) {
+          position: fixed;
+          left: 50%;
+          transform: translateX(-50%);
+          bottom: max(6px, env(safe-area-inset-bottom));
+          width: min(490px, 95vw) !important;
+          z-index: 68;
+          background: rgba(12, 8, 22, 0.97);
+          border: 1.5px solid var(--gold);
+          box-shadow: 0 14px 40px rgba(0, 0, 0, 0.94);
+        }
+      }
+
+      @media (max-width: 480px) {
+        body.in-selection-screen .vk-riddle-options-grid {
+          grid-template-columns: 1fr;
         }
       }
     </style>
   </head>
   <body>
     <div id="canvas-container"></div>
+
+    <!-- SİNEMATİK EVRE GEÇİŞ PERDESİ (Oylama / Oyun Zamanı / Gece / Şömine) -->
+    <div id="phase-transition-curtain" class="hidden" aria-hidden="true">
+      <div class="phase-curtain-inner">
+        <div class="phase-curtain-kicker" id="phase-curtain-kicker">KARGALI ŞATO</div>
+        <div class="phase-curtain-title" id="phase-curtain-title">⚖️ YUVARLAK SOFRA OYLAMASI</div>
+        <div class="phase-curtain-sub" id="phase-curtain-sub">Herkes sofrada toplandı — haini bul!</div>
+      </div>
+    </div>
 
     <!-- MOBİL WEB YATAY (LANDSCAPE) OTOMATİK AÇILAN KİLİT EKRANI -->
     <div id="portrait-rotate-overlay" class="interactive">
@@ -2341,21 +2724,21 @@
          1. BAŞLANGIÇ ANA MENÜ, KAYIT & ODA KURMA EKRANI
          ========================================================= -->
     <div id="main-menu-overlay" class="interactive">
-      <div class="menu-shell">
+      <div class="menu-shell simple-vk-menu">
         <div class="menu-brand-header">
           <div class="menu-brand-left">
             <img src="/marka/muhur.png" alt="SOFRA Mühür" />
             <div>
-              <h1 style="font-size: 1.25rem; color: var(--gold); letter-spacing: 1.5px;">
+              <h1 style="font-size: 1.18rem; color: var(--gold); letter-spacing: 1.2px;">
                 SOFRA: KARGALI ŞATO
               </h1>
-              <p style="font-size: 0.78rem; color: var(--text-muted);">
-                3D Çok Oyunculu Gizem, Fısıltı & Sosyal Çıkarım Oyunu
+              <p style="font-size: 0.75rem; color: var(--parchment);">
+                3D Vampir Köylü · Gündüz Gez, Sofrada Tartış, Haini Yak!
               </p>
             </div>
           </div>
-          <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
-            <span id="menu-account-badge" style="font-size: 0.8rem; color: #ffd700;">Misafir Modu</span>
+          <div style="display: flex; gap: 5px; align-items: center; flex-wrap: wrap;">
+            <span id="menu-account-badge" style="font-size: 0.74rem; color: #ffd700;">Misafir</span>
             <button class="btn" id="btn-menu-landscape" title="Tam Ekran Yatay Mod">⛶ Yatay</button>
             <button class="btn" id="btn-menu-brightness">💡 Işık</button>
           </div>
@@ -2365,199 +2748,139 @@
         <div id="resume-session-banner" class="resume-banner hidden">
           <div>
             <strong style="color: #ffd700;">⚡ Yarım Kalan Oyunun Var!</strong>
-            <div id="resume-session-text" style="font-size: 0.8rem; color: var(--text-light);">
+            <div id="resume-session-text" style="font-size: 0.78rem; color: var(--text-light);">
               Oda: SOFRA-0000
             </div>
           </div>
           <button class="btn btn-crimson" id="btn-resume-session">
-            🔄 Kaldığın Yerden Devam Et
+            🔄 Oyuna Dön
           </button>
         </div>
 
-        <div class="menu-columns">
-          <!-- SOL SÜTUN: HIZLI İSİM VEYA KAYITLI HESAP -->
-          <div class="menu-card">
-            <h3>👤 1. Oyuncu Kimliği & Kayıt Kasası</h3>
-            <div class="auth-tabs">
-              <button class="btn btn-crimson" id="tab-auth-guest">🕯️ Hızlı İsim</button>
-              <button class="btn" id="tab-auth-register">👑 Kayıt Ol (+150🪙)</button>
-              <button class="btn" id="tab-auth-login">🔑 Giriş</button>
-            </div>
-
-            <!-- Hızlı Misafir Görünümü -->
-            <div id="auth-view-guest" style="display: flex; flex-direction: column; gap: 8px;">
-              <label style="font-size: 0.76rem; color: var(--text-muted);">
-                Kayıt olmadan hemen oynamak için adını yaz:
-              </label>
-              <input type="text" id="input-guest-nick" maxlength="18" placeholder="Takma Adın (Örn: Cenker)" />
-            </div>
-
-            <!-- Kayıt Ol / Giriş Yap Görünümü -->
-            <div id="auth-view-account" class="hidden" style="display: flex; flex-direction: column; gap: 8px;">
-              <input type="text" id="input-acc-user" maxlength="18" placeholder="Kullanıcı Adı (Örn: cenker)" />
-              <input type="password" id="input-acc-pin" maxlength="24" placeholder="Şifre veya 4 Haneli PIN" />
-              <input type="text" id="input-acc-nick" maxlength="18" placeholder="Sofrada Görünecek Adın" />
-              <button class="btn btn-emerald" id="btn-acc-submit">
-                👑 Kayıt Ol & Mühürlü Zarfı Al (+150🪙)
-              </button>
-              <div id="auth-feedback" style="font-size: 0.78rem; color: #ff8593;"></div>
-            </div>
-
-            <div
-              style="
-                display: flex;
-                gap: 6px;
-                flex-wrap: wrap;
-                margin-top: 4px;
-              "
-            >
-              <button class="btn" id="btn-menu-inspect-self" style="flex: 1;">
-                🔍 Karakterimi 360° İncele
-              </button>
-            </div>
-
-            <div
-              style="
-                margin-top: auto;
-                padding: 8px 10px;
-                background: rgba(226, 189, 83, 0.08);
-                border-radius: 8px;
-                font-size: 0.76rem;
-                color: var(--parchment);
-              "
-            >
-              💡 <strong>Neden Kayıt Olmalıyım?</strong> Kayıt olanlara Kâhya'nın
-              <strong>Mühürlü Hoş Geldin Zarfı + 150 Altın Kasa</strong> verilir; altınların ve maskelerin hem telefonda hem bilgisayarda korunur!
-            </div>
+        <!-- Tek Bakışta Hızlı Başlangıç: Adını Yaz + Hemen Oyna -->
+        <div
+          style="
+            background: rgba(16, 11, 26, 0.9);
+            border: 1px solid var(--gold-soft);
+            border-radius: 12px;
+            padding: 10px 12px;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+          "
+        >
+          <div id="auth-view-guest" style="display: flex; gap: 7px; align-items: center; flex-wrap: wrap;">
+            <input
+              type="text"
+              id="input-guest-nick"
+              maxlength="18"
+              placeholder="Adını Yaz (Örn: Cenker)"
+              style="flex: 1 1 170px; font-size: 0.92rem; padding: 9px 11px;"
+            />
+            <button class="btn" id="btn-menu-inspect-self" title="Karakterimi 360° Gör">
+              🎭 Karakterim
+            </button>
           </div>
 
-          <!-- SAĞ SÜTUN: HIZLI MAÇ, ŞİFRELİ ODA KURMA & CANLI ODALAR -->
-          <div class="menu-card">
-            <div style="display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap;">
-              <h3>🏰 2. Oda Bul veya Şifreli Oda Kur</h3>
-              <button
-                class="btn"
-                id="btn-quick-play"
-                title="Oyuncu bekleyen canlı şato odalarından birine anında katıl"
-                style="background: linear-gradient(180deg,#b82032,#5f0c16); color:#fff; font-weight:bold; box-shadow: 0 0 12px rgba(226, 65, 83, 0.35);"
-              >
-                🔍 Oda Bul (Hızlı Gir)
-              </button>
+          <button
+            class="btn vk-hero-play-btn"
+            id="btn-quick-play"
+            title="Oyuncu bekleyen canlı şato odalarından birine anında katıl"
+          >
+            🔥 HEMEN OYNA (ODA BUL)
+          </button>
+        </div>
+
+        <!-- Sade 3 Sekmeli Alt Bölüm: Açık Odalar | Oda Kur | Hesap -->
+        <div class="vk-menu-nav">
+          <button type="button" class="btn vk-tab-active" data-vk-menu-tab="rooms">
+            🟢 Açık Odalar
+          </button>
+          <button type="button" class="btn" data-vk-menu-tab="create">
+            🏰 Oda Kur
+          </button>
+          <button type="button" class="btn" data-vk-menu-tab="account">
+            👑 Kayıt / Giriş
+          </button>
+        </div>
+
+        <!-- SEKME 1: AÇIK ODALAR & KODLA GİRİŞ -->
+        <div id="vk-panel-rooms" class="menu-card" style="gap: 7px;">
+          <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+            <input
+              type="text"
+              id="input-join-code"
+              maxlength="14"
+              placeholder="Oda Koduyla Gir (Örn: 4821)"
+              style="flex: 1 1 130px; min-width: 0;"
+            />
+            <button class="btn" id="btn-join-by-code">🔑 Kodla Gir</button>
+            <button class="btn" id="btn-refresh-rooms" title="Odaları Yenile">🔄</button>
+          </div>
+          <div class="room-list-box" id="live-rooms-list" style="max-height: 195px;">
+            <div style="font-size: 0.8rem; color: var(--text-muted);">Odalar yükleniyor...</div>
+          </div>
+        </div>
+
+        <!-- SEKME 2: KENDİ ODANI KUR -->
+        <div id="vk-panel-create" class="menu-card hidden" style="gap: 8px;">
+          <div style="font-size: 0.8rem; color: var(--gold); font-weight: bold;">
+            🏰 Arkadaşlarınla Özel veya Açık Oda Kur:
+          </div>
+          <div style="display: flex; gap: 6px; flex-wrap: wrap;">
+            <input
+              type="text"
+              id="input-create-title"
+              maxlength="24"
+              placeholder="Oda Adı (Örn: Dostlar Masası)"
+              style="flex: 1.2 1 130px; min-width: 0;"
+            />
+            <input
+              type="text"
+              id="input-create-pass"
+              maxlength="16"
+              placeholder="Şifre (Boş = Açık)"
+              style="flex: 1 1 110px; min-width: 0;"
+            />
+          </div>
+          <div style="display: flex; justify-content: space-between; align-items: center; gap: 6px; flex-wrap: wrap;">
+            <div style="display: flex; gap: 4px; flex-wrap: wrap; align-items: center;">
+              <span style="font-size: 0.72rem; color: var(--gold); font-weight: bold;">⏱️ Süre:</span>
+              <button type="button" class="btn" data-create-pace="10m" style="padding: 4px 8px; font-size: 0.72rem;">⚡ 10 Dk</button>
+              <button type="button" class="btn btn-crimson" data-create-pace="20m" style="padding: 4px 8px; font-size: 0.72rem;">⏳ 20 Dk</button>
+              <button type="button" class="btn" data-create-pace="35m" style="padding: 4px 8px; font-size: 0.72rem;">🕵️ 35 Dk</button>
+              <button type="button" class="btn" data-create-pace="60m" style="padding: 4px 8px; font-size: 0.72rem;">👑 1 Saat</button>
             </div>
-
-            <!-- Yeni Oda Kurma Kutusu (Süre & Kadro Seçimli) -->
-            <div
-              style="
-                background: rgba(14, 10, 22, 0.86);
-                border: 1px solid var(--gold-soft);
-                border-radius: 10px;
-                padding: 9px 10px;
-                display: flex;
-                flex-direction: column;
-                gap: 7px;
-              "
-            >
-              <div style="font-size: 0.78rem; color: var(--gold); font-weight: bold;">
-                ➕ Kendi Sofranı Kur (Oyun Süresi, Kadro & İsteğe Bağlı Şifre):
-              </div>
-              <div style="display: flex; gap: 6px; flex-wrap: wrap;">
-                <input
-                  type="text"
-                  id="input-create-title"
-                  maxlength="24"
-                  placeholder="Oda Adı (Örn: Dostlar Sofrası)"
-                  style="flex: 1.2 1 130px; min-width: 0;"
-                />
-                <input
-                  type="text"
-                  id="input-create-pass"
-                  maxlength="16"
-                  placeholder="Şifre (Boş = Açık)"
-                  style="flex: 1 1 110px; min-width: 0;"
-                />
-                <button class="btn btn-crimson" id="btn-create-room">🏰 Oda Kur</button>
-              </div>
-
-              <!-- Oyun Süresi Seçimi: 10 Dk / 20 Dk / 35 Dk / 1 Saat + Kadro -->
-              <div
-                style="
-                  display: flex;
-                  justify-content: space-between;
-                  align-items: center;
-                  gap: 6px;
-                  flex-wrap: wrap;
-                  padding-top: 3px;
-                  border-top: 1px solid rgba(226, 189, 83, 0.18);
-                "
-              >
-                <div style="display: flex; gap: 4px; flex-wrap: wrap; align-items: center;">
-                  <span style="font-size: 0.71rem; color: var(--gold); font-weight: bold;">⏱️ Süre:</span>
-                  <button type="button" class="btn" data-create-pace="10m" style="padding: 4px 8px; font-size: 0.71rem;">
-                    ⚡ 10 Dk
-                  </button>
-                  <button
-                    type="button"
-                    class="btn btn-crimson"
-                    data-create-pace="20m"
-                    style="padding: 4px 8px; font-size: 0.71rem;"
-                  >
-                    ⏳ 20 Dk
-                  </button>
-                  <button type="button" class="btn" data-create-pace="35m" style="padding: 4px 8px; font-size: 0.71rem;">
-                    🕵️ 35 Dk
-                  </button>
-                  <button type="button" class="btn" data-create-pace="60m" style="padding: 4px 8px; font-size: 0.71rem;">
-                    👑 1 Saat
-                  </button>
-                </div>
-
-                <div style="display: flex; gap: 4px; align-items: center;">
-                  <span style="font-size: 0.71rem; color: var(--gold); font-weight: bold;">👥 Kadro:</span>
-                  <button type="button" class="btn" data-create-count="8" style="padding: 4px 7px; font-size: 0.7rem;">
-                    8
-                  </button>
-                  <button
-                    type="button"
-                    class="btn btn-crimson"
-                    data-create-count="10"
-                    style="padding: 4px 7px; font-size: 0.7rem;"
-                  >
-                    10
-                  </button>
-                  <button type="button" class="btn" data-create-count="12" style="padding: 4px 7px; font-size: 0.7rem;">
-                    12
-                  </button>
-                </div>
-              </div>
-
-              <div
-                id="create-duration-desc"
-                style="font-size: 0.69rem; color: var(--parchment); opacity: 0.9;"
-              >
-                ⏳ 20 Dakikalık Standart Oyun (10 Kişi) — Gündüz 3 dk · Sofra & Oylama ~1.5 dk · Gece ~1 dk
-              </div>
+            <div style="display: flex; gap: 4px; align-items: center;">
+              <span style="font-size: 0.72rem; color: var(--gold); font-weight: bold;">👥 Kişi:</span>
+              <button type="button" class="btn" data-create-count="8" style="padding: 4px 8px; font-size: 0.72rem;">8</button>
+              <button type="button" class="btn btn-crimson" data-create-count="10" style="padding: 4px 8px; font-size: 0.72rem;">10</button>
+              <button type="button" class="btn" data-create-count="12" style="padding: 4px 8px; font-size: 0.72rem;">12</button>
             </div>
+          </div>
+          <div id="create-duration-desc" style="font-size: 0.71rem; color: var(--parchment); opacity: 0.9;">
+            ⏳ 20 Dakikalık Standart Oyun (10 Kişi)
+          </div>
+          <button class="btn btn-crimson" id="btn-create-room" style="width: 100%; padding: 10px;">
+            🔥 Odayı Aç & Lobiye Geç
+          </button>
+        </div>
 
-            <!-- Kodla Katılma -->
-            <div style="display: flex; gap: 6px; flex-wrap: wrap;">
-              <input
-                type="text"
-                id="input-join-code"
-                maxlength="14"
-                placeholder="Oda Koduyla Gir (Örn: 4821)"
-                style="flex: 1 1 130px; min-width: 0;"
-              />
-              <button class="btn" id="btn-join-by-code">🔑 Kodla Gir</button>
-              <button class="btn" id="btn-refresh-rooms" title="Odaları Yenile">🔄</button>
-            </div>
-
-            <!-- Canlı Oda Listesi -->
-            <div style="font-size: 0.75rem; color: var(--gold); font-weight: bold;">
-              🟢 Oyuncu Bekleyen Canlı Şato Odaları (Tıkla & Katıl):
-            </div>
-            <div class="room-list-box" id="live-rooms-list">
-              <div style="font-size: 0.8rem; color: var(--text-muted);">Odalar yükleniyor...</div>
-            </div>
+        <!-- SEKME 3: HESAP KAYIT / GİRİŞ -->
+        <div id="vk-panel-account" class="menu-card hidden" style="gap: 8px;">
+          <div class="auth-tabs">
+            <button class="btn" id="tab-auth-guest">🕯️ Misafir</button>
+            <button class="btn btn-crimson" id="tab-auth-register">👑 Kayıt Ol (+150🪙)</button>
+            <button class="btn" id="tab-auth-login">🔑 Giriş</button>
+          </div>
+          <div id="auth-view-account" style="display: flex; flex-direction: column; gap: 7px;">
+            <input type="text" id="input-acc-user" maxlength="18" placeholder="Kullanıcı Adı (Örn: cenker)" />
+            <input type="password" id="input-acc-pin" maxlength="24" placeholder="Şifre veya 4 Haneli PIN" />
+            <input type="text" id="input-acc-nick" maxlength="18" placeholder="Oyunda Görünecek Adın" />
+            <button class="btn btn-emerald" id="btn-acc-submit">
+              👑 Kayıt Ol & +150🪙 Al
+            </button>
+            <div id="auth-feedback" style="font-size: 0.78rem; color: #ff8593;"></div>
           </div>
         </div>
       </div>
@@ -2755,6 +3078,12 @@
               <span style="font-size: 0.75rem; color: var(--parchment);">💰 Kişisel Kasan:</span>
               <span class="gold-badge" id="gold-balance-label">🪙 100</span>
             </div>
+            <button class="btn" id="btn-gear-sfx" type="button">
+              🔊 Ses Efektleri: Açık
+            </button>
+            <button class="btn" id="btn-gear-zoom" type="button">
+              🔭 Kamera Açısı Değiştir
+            </button>
             <button class="btn" id="btn-watch-ad" type="button" title="Reklam İzle +50 Altın">
               🎬 Reklam İzle (+50 🪙)
             </button>

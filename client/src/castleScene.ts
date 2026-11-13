@@ -124,17 +124,16 @@ interface WorldFloatingSprite {
   dayOnly: boolean;
 }
 
-const CAMERA_MIN_DIST = 2.2;
-const CAMERA_MAX_DIST = 15.0;
+const CAMERA_MIN_DIST = 1.9;
+const CAMERA_MAX_DIST = 8.4;
 const INSPECT_MIN_DIST = 1.25;
-const INSPECT_MAX_DIST = 5.4;
+const INSPECT_MAX_DIST = 4.8;
 
 const CAMERA_ZOOM_PRESETS: ReadonlyArray<{ dist: number; pitch: number; label: string }> = [
-  { dist: 7.6, pitch: 0.5, label: "🔭 Uzak" },
-  { dist: 11.2, pitch: 0.64, label: "🔭 Geniş" },
-  { dist: 14.4, pitch: 0.76, label: "🔭 Kuşbakışı" },
-  { dist: 3.1, pitch: 0.28, label: "🔭 Yakın" },
-  { dist: 5.4, pitch: 0.4, label: "🔭 Orta" }
+  { dist: 5.8, pitch: 0.38, label: "🔭 Standart" },
+  { dist: 7.4, pitch: 0.44, label: "🔭 Geniş" },
+  { dist: 2.8, pitch: 0.24, label: "🔭 Yakın" },
+  { dist: 4.3, pitch: 0.32, label: "🔭 Orta" }
 ];
 
 function segmentIntersectsExpandedAABB(
@@ -150,8 +149,8 @@ function segmentIntersectsExpandedAABB(
 ): boolean {
   const dx = bx - ax;
   const dz = bz - az;
-  let t0 = 0.02;
-  let t1 = 0.9;
+  let t0 = 0.025;
+  let t1 = 0.975;
 
   const clip = (p: number, q: number): boolean => {
     if (Math.abs(p) < 1e-6) {
@@ -175,6 +174,62 @@ function segmentIntersectsExpandedAABB(
     clip(dz, maxZ + pad - az) &&
     t0 <= t1
   );
+}
+
+function raycastSegmentAABBEntry(
+  ax: number,
+  az: number,
+  bx: number,
+  bz: number,
+  minX: number,
+  maxX: number,
+  minZ: number,
+  maxZ: number,
+  pad: number
+): number {
+  const bMinX = minX - pad;
+  const bMaxX = maxX + pad;
+  const bMinZ = minZ - pad;
+  const bMaxZ = maxZ + pad;
+
+  // Başlangıç noktası genişletilmiş kutunun içindeyse (ör. kendi kapı eşiğinden geçerken), çekirdek kutuyu test et
+  if (ax > bMinX && ax < bMaxX && az > bMinZ && az < bMaxZ) {
+    if (pad > 0.05) {
+      return raycastSegmentAABBEntry(ax, az, bx, bz, minX, maxX, minZ, maxZ, 0.04);
+    }
+    return 1.0;
+  }
+
+  const dx = bx - ax;
+  const dz = bz - az;
+  let t0 = 0.0;
+  let t1 = 1.0;
+
+  const clip = (p: number, q: number): boolean => {
+    if (Math.abs(p) < 1e-7) {
+      return q >= 0;
+    }
+    const r = q / p;
+    if (p < 0) {
+      if (r > t1) return false;
+      if (r > t0) t0 = r;
+    } else {
+      if (r < t0) return false;
+      if (r < t1) t1 = r;
+    }
+    return true;
+  };
+
+  if (
+    clip(-dx, ax - bMinX) &&
+    clip(dx, bMaxX - ax) &&
+    clip(-dz, az - bMinZ) &&
+    clip(dz, bMaxZ - az) &&
+    t0 <= t1
+  ) {
+    return Math.max(0.0, Math.min(1.0, t0));
+  }
+  return 1.0;
 }
 
 export class CastleScene {
@@ -227,8 +282,14 @@ export class CastleScene {
   // Camera & 360° Character Inspect state
   public cameraYaw = 0;
   public cameraPitch = 0.36;
-  public cameraDistance = 8.4;
-  public targetCameraDistance = 8.4;
+  public cameraDistance = 7.4;
+  public targetCameraDistance = 7.4;
+  private springArmFactor = 1.0;
+  private isSprinting = false;
+  private currentFovBoost = 0;
+  private localPlayerX = 0;
+  private localPlayerZ = 16;
+  public localPlayerIsGhost = false;
   private zoomPresetIndex = 0;
   private cameraFocusMode: "PLAYER" | "TABLE" | "FIRE" = "TABLE";
   public inspectTargetId: string | null = null;
@@ -297,9 +358,100 @@ export class CastleScene {
     const h = Math.max(1, window.innerHeight);
     const aspect = w / h;
     this.camera.aspect = aspect;
-    this.camera.fov = aspect < 1 ? 78 : 65;
+    const baseFov = aspect < 1 ? 76 : 62;
+    this.camera.fov = baseFov + this.currentFovBoost;
     this.camera.updateProjectionMatrix();
     this.renderer.setSize(w, h);
+  }
+
+  public setSprintVisual(active: boolean): void {
+    this.isSprinting = active;
+  }
+
+  public computeCameraWallClamp(
+    originX: number,
+    originZ: number,
+    desiredX: number,
+    desiredZ: number
+  ): number {
+    let minT = 1.0;
+    for (const w of CASTLE_WALLS) {
+      const t = raycastSegmentAABBEntry(
+        originX,
+        originZ,
+        desiredX,
+        desiredZ,
+        w.minX,
+        w.maxX,
+        w.minZ,
+        w.maxZ,
+        0.28
+      );
+      if (t < minT) minT = t;
+    }
+    for (const d of DOORS) {
+      if (this.doorPivots.get(d.id)?.isOpen) continue;
+      const halfW = d.width * 0.5;
+      const halfD = d.depth * 0.5;
+      const t = raycastSegmentAABBEntry(
+        originX,
+        originZ,
+        desiredX,
+        desiredZ,
+        d.x - halfW,
+        d.x + halfW,
+        d.z - halfD,
+        d.z + halfD,
+        0.24
+      );
+      if (t < minT) minT = t;
+    }
+    return minT;
+  }
+
+  public hasLineOfSight2D(ax: number, az: number, bx: number, bz: number): boolean {
+    if (Math.hypot(bx - ax, bz - az) < 0.75) return true;
+    for (const w of CASTLE_WALLS) {
+      if (
+        segmentIntersectsExpandedAABB(ax, az, bx, bz, w.minX, w.maxX, w.minZ, w.maxZ, 0.03)
+      ) {
+        return false;
+      }
+    }
+    for (const d of DOORS) {
+      if (this.doorPivots.get(d.id)?.isOpen) continue;
+      const halfW = d.width * 0.5;
+      const halfD = d.depth * 0.5;
+      if (
+        segmentIntersectsExpandedAABB(
+          ax,
+          az,
+          bx,
+          bz,
+          d.x - halfW,
+          d.x + halfW,
+          d.z - halfD,
+          d.z + halfD,
+          0.02
+        )
+      ) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  public hasNearbyHiddenPresence(playerX: number, playerZ: number, maxRadius = 4.6): boolean {
+    if (this.activePhase !== "DAY" || this.localPlayerIsGhost) return false;
+    for (const [, rig] of this.characterRigs.entries()) {
+      if (rig.isLocal || rig.sessionId === "__preview_self__") continue;
+      if (rig.bodyMat.opacity < 0.8) continue; // Hayaletleri sayma
+      const d = Math.hypot(rig.group.position.x - playerX, rig.group.position.z - playerZ);
+      if (d <= maxRadius && !rig.group.visible) {
+        return true;
+      }
+    }
+    return false;
   }
 
   public setActivePhase(phase: string): void {
@@ -309,6 +461,7 @@ export class CastleScene {
     this.activePhase = nextPhase;
 
     if (!changed) return;
+    this.isSprinting = false;
 
     if (prevPhase === "FIRE" && nextPhase !== "FIRE") {
       this.fireMode = "normal";
@@ -319,10 +472,12 @@ export class CastleScene {
       this.cameraFocusMode = "FIRE";
       this.cameraYaw = 0;
       this.cameraPitch = 0.14;
+      this.cameraDistance = 5.4;
       this.targetCameraDistance = 3.9;
     } else if (
       nextPhase === "TABLE" ||
       nextPhase === "VOTE" ||
+      nextPhase === "NIGHT" ||
       nextPhase === "MORNING" ||
       nextPhase === "FINAL" ||
       nextPhase === "LOBBY" ||
@@ -335,17 +490,20 @@ export class CastleScene {
         (prevPhase === "TABLE" || prevPhase === "VOTE" || prevPhase === "FINAL");
       this.cameraFocusMode = "TABLE";
       if (!wasTableView) {
-        this.cameraYaw = 0;
-        this.cameraPitch = 0.36;
-        this.targetCameraDistance = 8.4;
+        // Sinematik kamera süzülüşü: Avize hizasından Yuvarlak Sofraya yumuşak iniş
+        this.cameraYaw = nextPhase === "VOTE" || nextPhase === "TABLE" ? 0.34 : 0;
+        this.cameraPitch = nextPhase === "VOTE" || nextPhase === "TABLE" ? 0.46 : 0.36;
+        this.cameraDistance = 10.2;
+        this.targetCameraDistance = 8.1;
       }
     } else {
-      // DAY / NIGHT: Oyuncuyu takip eden serbest kamera
+      // DAY: Oyuncuyu takip eden, duvar arkası görmeyen yaylı üçüncü şahıs kamera
       this.cameraFocusMode = "PLAYER";
-      if (prevPhase === "FIRE" || prevPhase === "ARRIVAL" || prevPhase === "MORNING") {
+      this.springArmFactor = 1.0;
+      if (prevPhase === "FIRE" || prevPhase === "ARRIVAL" || prevPhase === "MORNING" || prevPhase === "NIGHT") {
         this.cameraYaw = 0;
-        this.cameraPitch = 0.46;
-        this.targetCameraDistance = 7.6;
+        this.cameraPitch = 0.38;
+        this.targetCameraDistance = 5.8;
       }
     }
   }
@@ -364,10 +522,9 @@ export class CastleScene {
       if (this.targetInspectDistance >= 3.35) return "🔍 Uzak";
       return "🔍 Orta";
     }
-    if (this.targetCameraDistance >= 12.8) return "🔭 Kuşbakışı";
-    if (this.targetCameraDistance >= 9.6) return "🔭 Geniş";
-    if (this.targetCameraDistance >= 6.6) return "🔭 Uzak";
-    if (this.targetCameraDistance >= 4.4) return "🔭 Orta";
+    if (this.targetCameraDistance >= 6.8) return "🔭 Geniş";
+    if (this.targetCameraDistance >= 5.1) return "🔭 Standart";
+    if (this.targetCameraDistance >= 3.6) return "🔭 Orta";
     return "🔭 Yakın";
   }
 
@@ -394,7 +551,7 @@ export class CastleScene {
     const nextT =
       (this.targetCameraDistance - CAMERA_MIN_DIST) / (CAMERA_MAX_DIST - CAMERA_MIN_DIST);
     if (this.cameraFocusMode !== "FIRE") {
-      this.cameraPitch = 0.26 + nextT * 0.5;
+      this.cameraPitch = 0.22 + nextT * 0.24;
     }
     return this.getCameraZoomLabel();
   }
@@ -433,7 +590,7 @@ export class CastleScene {
     const actualDelta = this.targetCameraDistance - prevDist;
     if (Math.abs(actualDelta) > 1e-4 && this.cameraFocusMode !== "FIRE") {
       const deltaT = actualDelta / (CAMERA_MAX_DIST - CAMERA_MIN_DIST);
-      this.cameraPitch = Math.max(0.16, Math.min(0.95, this.cameraPitch + deltaT * 0.42));
+      this.cameraPitch = Math.max(0.16, Math.min(0.47, this.cameraPitch + deltaT * 0.26));
     }
     return this.getCameraZoomLabel();
   }
@@ -861,7 +1018,7 @@ export class CastleScene {
       const cx = (w.minX + w.maxX) / 2;
       const cz = (w.minZ + w.maxZ) / 2;
       const isOuter = w.id.startsWith("outer_");
-      const wallHeight = isOuter ? 6.4 : 5.4;
+      const wallHeight = isOuter ? 7.2 : 6.4;
 
       const len = Math.max(sx, sz);
       const wallMat = new THREE.MeshStandardMaterial({
@@ -1959,7 +2116,7 @@ export class CastleScene {
 
     const targets: THREE.Object3D[] = [];
     for (const [id, rig] of this.characterRigs.entries()) {
-      if (id === "__preview_self__") continue;
+      if (id === "__preview_self__" || !rig.group.visible) continue;
       targets.push(rig.hitCylinder);
       if (rig.labelSprite.visible) {
         targets.push(rig.labelSprite);
@@ -2082,8 +2239,33 @@ export class CastleScene {
         rig.group.position.lerp(rig.targetPos, Math.min(1, dt * 11));
       }
 
-      // Ekran kalabalığını önleyen akıllı 3B İsimlik & Konuşma Balonu Görünürlüğü
+      // GİZLİ ODA GÖRÜŞ HATTI KORUMASI (Duvar / kapalı kapı arkasındaki karakterler ve isimlikleri gizlenir!)
       const labelMat = rig.labelSprite.material as THREE.SpriteMaterial;
+      let hasSecretRoomSight = true;
+      if (
+        this.activePhase === "DAY" &&
+        !ch.isLocal &&
+        ch.sessionId !== "__preview_self__" &&
+        !this.localPlayerIsGhost &&
+        !this.inspectTargetId
+      ) {
+        hasSecretRoomSight =
+          this.hasLineOfSight2D(
+            this.localPlayerX,
+            this.localPlayerZ,
+            rig.group.position.x,
+            rig.group.position.z
+          ) ||
+          this.hasLineOfSight2D(
+            this.camera.position.x,
+            this.camera.position.z,
+            rig.group.position.x,
+            rig.group.position.z
+          );
+      }
+      rig.group.visible = hasSecretRoomSight;
+
+      // Ekran kalabalığını önleyen akıllı 3B İsimlik & Konuşma Balonu Görünürlüğü
       const modalHeavyPhase =
         this.activePhase === "LOBBY" ||
         this.activePhase === "ARRIVAL" ||
@@ -2093,7 +2275,9 @@ export class CastleScene {
         this.activePhase === "FINAL" ||
         this.activePhase === "RESULT";
 
-      if (this.inspectTargetId) {
+      if (!hasSecretRoomSight) {
+        rig.labelSprite.visible = false;
+      } else if (this.inspectTargetId) {
         rig.labelSprite.visible = this.inspectTargetId === ch.sessionId;
         labelMat.opacity = 0.92;
       } else if (modalHeavyPhase) {
@@ -2108,8 +2292,8 @@ export class CastleScene {
             rig.group.position.x - this.cameraTarget.x,
             rig.group.position.z - this.cameraTarget.z
           );
-          const maxD = rig.lastChat ? 18.5 : 14.2;
-          const fadeStart = rig.lastChat ? 12.5 : 9.2;
+          const maxD = rig.lastChat ? 16.5 : 12.8;
+          const fadeStart = rig.lastChat ? 11.5 : 8.5;
           if (dCam > maxD) {
             rig.labelSprite.visible = false;
           } else {
@@ -2447,9 +2631,21 @@ export class CastleScene {
   }
 
   public updateCamera(playerX: number, playerZ: number, dt: number): void {
+    this.localPlayerX = playerX;
+    this.localPlayerZ = playerZ;
+
     const smoothLerp = Math.min(1, dt * 13);
     this.cameraDistance += (this.targetCameraDistance - this.cameraDistance) * smoothLerp;
     this.inspectDistance += (this.targetInspectDistance - this.inspectDistance) * smoothLerp;
+
+    // Koşu sırasında dinamik hız hissi veren yumuşak FOV geçişi (duvar arkasına sarkmadan!)
+    const targetFovBoost = this.cameraFocusMode === "PLAYER" && this.isSprinting ? 5.5 : 0;
+    if (Math.abs(targetFovBoost - this.currentFovBoost) > 0.04) {
+      this.currentFovBoost += (targetFovBoost - this.currentFovBoost) * Math.min(1, dt * 9);
+      const baseFov = this.camera.aspect < 1 ? 76 : 62;
+      this.camera.fov = baseFov + this.currentFovBoost;
+      this.camera.updateProjectionMatrix();
+    }
 
     if (this.inspectTargetId) {
       const rig = this.characterRigs.get(this.inspectTargetId);
@@ -2463,10 +2659,14 @@ export class CastleScene {
         const dist = this.inspectDistance;
         const horizDist = dist * Math.cos(this.inspectPitch);
         const vertDist = dist * Math.sin(this.inspectPitch);
-        const desiredX = focus.x + Math.sin(viewAngle) * horizDist;
-        const desiredZ = focus.z + Math.cos(viewAngle) * horizDist;
-        const desiredY = Math.max(0.95, focus.y + vertDist);
-        this.camera.position.lerp(new THREE.Vector3(desiredX, desiredY, desiredZ), Math.min(1, dt * 13));
+        const rawX = focus.x + Math.sin(viewAngle) * horizDist;
+        const rawZ = focus.z + Math.cos(viewAngle) * horizDist;
+        const clampT = this.computeCameraWallClamp(focus.x, focus.z, rawX, rawZ);
+        const effHoriz = Math.max(0.75, horizDist * clampT);
+        const desiredX = focus.x + Math.sin(viewAngle) * effHoriz;
+        const desiredZ = focus.z + Math.cos(viewAngle) * effHoriz;
+        const desiredY = Math.max(0.95, focus.y + vertDist * Math.max(0.45, clampT));
+        this.camera.position.lerp(new THREE.Vector3(desiredX, desiredY, desiredZ), Math.min(1, dt * 15));
         this.camera.lookAt(this.cameraTarget);
         return;
       }
@@ -2477,39 +2677,66 @@ export class CastleScene {
       // Hükmün Şöminesi sinematik cephe açısı (alev + kıvılcımlar üst-ortada net görünür)
       target = new THREE.Vector3(0, 1.18, -8.85);
     } else if (this.cameraFocusMode === "TABLE") {
-      // Yuvarlak Masa + #11 Kâhya Tahtı + Kuzey Şöminesi ortak kadrajı
+      // Yuvarlak Masa + #11 Kâhya Tahtı + Kuzey Şöminesi ortak kadrajı + yumuşak sinematik süzülme
       target = new THREE.Vector3(0, 1.25, -1.35);
+      if (this.activePhase === "VOTE" || this.activePhase === "TABLE") {
+        this.cameraYaw += (0 - this.cameraYaw) * Math.min(1, dt * 3.4);
+        this.cameraPitch += (0.36 - this.cameraPitch) * Math.min(1, dt * 3.4);
+      } else if (this.activePhase === "NIGHT") {
+        this.cameraYaw += dt * 0.055;
+      }
     } else {
-      target = new THREE.Vector3(playerX, 1.5, playerZ);
+      target = new THREE.Vector3(playerX, 1.48, playerZ);
     }
 
-    this.cameraTarget.lerp(target, Math.min(1, dt * 12));
+    const targetFollowSpeed = this.cameraFocusMode === "PLAYER" ? 24 : 9.5;
+    this.cameraTarget.lerp(target, Math.min(1, dt * targetFollowSpeed));
     this.playerLanternLight.position.set(this.cameraTarget.x, 3.0, this.cameraTarget.z);
 
     const isPortrait = window.innerWidth < window.innerHeight;
-    const distance = this.cameraDistance + (isPortrait ? 0.9 : 0);
-    const horizDist = distance * Math.cos(this.cameraPitch);
-    const vertDist = distance * Math.sin(this.cameraPitch);
+    const clampedPitch =
+      this.cameraFocusMode === "PLAYER"
+        ? Math.max(0.16, Math.min(0.47, this.cameraPitch))
+        : this.cameraPitch;
+    const distance = this.cameraDistance + (isPortrait ? 0.65 : 0);
+    const horizDist = distance * Math.cos(clampedPitch);
+    const vertDist = distance * Math.sin(clampedPitch);
 
     let desiredX = this.cameraTarget.x + Math.sin(this.cameraYaw) * horizDist;
     let desiredZ = this.cameraTarget.z + Math.cos(this.cameraYaw) * horizDist;
     let desiredY = Math.max(1.25, this.cameraTarget.y + vertDist);
 
-    // Büyük Şölen Salonu içindeyken tavan kirişlerine ve Kuzey Şömine Bacasına girmeyi engelle
-    if (
-      this.cameraFocusMode === "FIRE" ||
-      this.cameraFocusMode === "TABLE" ||
-      (Math.abs(this.cameraTarget.x) < 10.5 && Math.abs(this.cameraTarget.z) < 9.6)
-    ) {
+    if (this.cameraFocusMode === "PLAYER") {
+      // YAYLI DUVAR ÇARPIŞMA KAMERASI (Spring-Arm): Koşarken veya dönerken kamera ASLA duvar/kapalı kapı arkasına geçmez!
+      const rawCamX = playerX + Math.sin(this.cameraYaw) * horizDist;
+      const rawCamZ = playerZ + Math.cos(this.cameraYaw) * horizDist;
+      const wallClampT = this.computeCameraWallClamp(playerX, playerZ, rawCamX, rawCamZ);
+      if (wallClampT < this.springArmFactor) {
+        // Duvara yaklaşırken anında içeri çek (sıfır duvar arkası sızıntısı)
+        this.springArmFactor += (wallClampT - this.springArmFactor) * Math.min(1, dt * 36);
+        if (this.springArmFactor - wallClampT < 0.02) this.springArmFactor = wallClampT;
+      } else {
+        // Açık alana çıkarken yumuşakça geri açıl
+        this.springArmFactor += (wallClampT - this.springArmFactor) * Math.min(1, dt * 8.5);
+      }
+
+      const safeHoriz = Math.max(0.76, horizDist * this.springArmFactor);
+      desiredX = playerX + Math.sin(this.cameraYaw) * safeHoriz;
+      desiredZ = playerZ + Math.cos(this.cameraYaw) * safeHoriz;
+      desiredY = Math.min(
+        4.45,
+        Math.max(1.28, this.cameraTarget.y + vertDist * Math.max(0.36, this.springArmFactor))
+      );
+      desiredX = Math.max(-25.6, Math.min(25.6, desiredX));
+      desiredZ = Math.max(-31.6, Math.min(33.6, desiredZ));
+    } else {
+      // Büyük Şölen Salonu masa/şömine kadraj sınırları
       desiredX = Math.max(-10.8, Math.min(10.8, desiredX));
       desiredZ = Math.max(-8.0, Math.min(9.2, desiredZ));
       desiredY = Math.min(4.88, desiredY);
       if (desiredZ < -7.35 && Math.abs(desiredX) < 2.65) {
         desiredZ = -7.35;
       }
-    } else {
-      desiredX = Math.max(-36.5, Math.min(36.5, desiredX));
-      desiredZ = Math.max(-42.5, Math.min(45.5, desiredZ));
     }
 
     this.camera.position.set(desiredX, desiredY, desiredZ);
@@ -2517,44 +2744,9 @@ export class CastleScene {
   }
 
   public render(dt: number, elapsedTime: number): void {
-    // 1. Kamera ile hedef arasına giren taş duvarları, kemerleri ve kapalı kapıları otomatik yarı-saydamlaştır (360° İnceleme dahil!)
-    const camX = this.camera.position.x;
-    const camZ = this.camera.position.z;
+    // Odalar gizli olduğu için taş duvarlar her zaman %100 katı (opak) kalır — duvar arkası asla görünmez!
     const tgtX = this.cameraTarget.x;
     const tgtZ = this.cameraTarget.z;
-
-    for (const wall of this.occludableWalls) {
-      const doorOpen = wall.doorId ? Boolean(this.doorPivots.get(wall.doorId)?.isOpen) : false;
-      const blocking =
-        !doorOpen &&
-        segmentIntersectsExpandedAABB(
-          camX,
-          camZ,
-          tgtX,
-          tgtZ,
-          wall.minX,
-          wall.maxX,
-          wall.minZ,
-          wall.maxZ,
-          0.58
-        );
-      const targetAlpha = blocking ? 0.16 : 1.0;
-      if (Math.abs(wall.alpha - targetAlpha) > 0.004) {
-        wall.alpha += (targetAlpha - wall.alpha) * Math.min(1, dt * 11);
-        if (Math.abs(wall.alpha - targetAlpha) <= 0.006) {
-          wall.alpha = targetAlpha;
-        }
-        const wantTrans = wall.alpha < 0.985;
-        for (const mat of wall.mats) {
-          if (mat.transparent !== wantTrans) {
-            mat.transparent = wantTrans;
-            mat.depthWrite = !wantTrans;
-            mat.needsUpdate = true;
-          }
-          mat.opacity = wantTrans ? wall.alpha : 1.0;
-        }
-      }
-    }
 
     // 2. Uzaktaki oda/kapı/istasyon tabelalarını mesafe ve evreye göre gizle (ekran karmaşasını önle)
     const showWorldLabels = this.activePhase === "DAY" && !this.inspectTargetId;
@@ -2564,7 +2756,9 @@ export class CastleScene {
         continue;
       }
       const d = Math.hypot(ws.x - tgtX, ws.z - tgtZ);
-      if (d > ws.maxDist) {
+      const clearLabelSight =
+        this.localPlayerIsGhost || this.hasLineOfSight2D(this.localPlayerX, this.localPlayerZ, ws.x, ws.z);
+      if (d > ws.maxDist || !clearLabelSight) {
         ws.sprite.visible = false;
       } else {
         ws.sprite.visible = true;

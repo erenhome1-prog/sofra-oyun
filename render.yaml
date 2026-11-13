@@ -3,8 +3,8 @@ services:
     name: sofra-kargali-sato
     runtime: node
     plan: free
-    buildCommand: corepack enable && pnpm install --no-frozen-lockfile && pnpm build
-    startCommand: pnpm start
+    buildCommand: pnpm install --prod=false --no-frozen-lockfile && pnpm build
+    startCommand: node server/dist/index.js
     healthCheckPath: /health
     envVars:
       - key: NODE_ENV

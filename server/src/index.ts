@@ -18,6 +18,7 @@ import {
   registerPersistentRoomSpawner
 } from "./rooms/SofraRoom.js";
 import { accountStore } from "./accounts.js";
+import { getRiddleBankSize } from "./ai/botAI.js";
 
 // İsteğe bağlı ücretsiz LLM anahtarlarını (.env) ek paket gerektirmeden yükle
 function loadOptionalEnvFile() {
@@ -82,7 +83,7 @@ app.use(cors());
 app.use(express.json());
 
 app.get("/health", (_req, res) => {
-  res.json({ status: "ok", rooms: activeRoomsByCode.size });
+  res.json({ status: "ok", rooms: activeRoomsByCode.size, riddles: getRiddleBankSize() });
 });
 
 app.get("/rooms", async (_req, res) => {
